@@ -539,9 +539,9 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Clear every shortcut override, restoring all ten defaults.
+    /// Clear every shortcut override.
     fn reset_all_shortcuts(&mut self, cx: &mut Context<Self>) {
-        self.commit(|s| s.keybindings.clear());
+        self.commit(keybindings::reset_all);
         cx.emit(SettingsEvent::KeybindingsChanged);
         cx.notify();
     }
@@ -1330,14 +1330,7 @@ impl SettingsWindow {
 
     fn shortcuts_page(&self, view: Entity<Self>) -> SettingPage {
         let mut groups = Vec::new();
-        for category in [
-            ShortcutCategory::General,
-            ShortcutCategory::File,
-            ShortcutCategory::Edit,
-            ShortcutCategory::View,
-            ShortcutCategory::Modes,
-            ShortcutCategory::Actions,
-        ] {
+        for category in ShortcutCategory::ALL {
             let items: Vec<SettingItem> = SHORTCUTS
                 .iter()
                 .filter(|d| d.category == category)

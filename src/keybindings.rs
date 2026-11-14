@@ -30,6 +30,17 @@ pub enum ShortcutCategory {
 }
 
 impl ShortcutCategory {
+    /// Every category, in the order the Settings page lists them. A shortcut
+    /// whose category is missing here would have no row on that page.
+    pub const ALL: [ShortcutCategory; 6] = [
+        Self::General,
+        Self::File,
+        Self::Edit,
+        Self::View,
+        Self::Modes,
+        Self::Actions,
+    ];
+
     /// Whether shortcuts in this category are matched as bare, unmodified
     /// keys in the map canvas's key handler (and so can't take modifiers).
     pub fn is_bare_key_category(self) -> bool {
@@ -365,6 +376,13 @@ pub fn validate_reset(settings: &AppSettings, id: &str) -> Result<(), Rejection>
     }
 }
 
+/// Drop every override, so each shortcut in [`SHORTCUTS`] is back on its
+/// default. The defaults are distinct (see the `no_two_defaults_collide`
+/// test), so no per-shortcut conflict check is needed.
+pub fn reset_all(settings: &mut AppSettings) {
+    settings.keybindings.clear();
+}
+
 /// What a key press means while a shortcut is being recorded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Recorded {
@@ -407,18 +425,24 @@ mod tests {
             let label = d.label();
             assert!(!label.starts_with("en."), "{}: {label}", d.id);
         }
-        for category in [
-            ShortcutCategory::General,
-            ShortcutCategory::File,
-            ShortcutCategory::Edit,
-            ShortcutCategory::View,
-            ShortcutCategory::Modes,
-            ShortcutCategory::Actions,
-        ] {
+        for category in ShortcutCategory::ALL {
             assert!(!category.title().starts_with("en."));
         }
         assert_eq!(def("undo").label(), "Undo");
         assert_eq!(ShortcutCategory::Modes.title(), "Modes");
+    }
+
+    #[test]
+    fn every_shortcut_belongs_to_a_listed_category() {
+        for d in SHORTCUTS {
+            assert!(ShortcutCategory::ALL.contains(&d.category), "{}", d.id);
+        }
+        for category in ShortcutCategory::ALL {
+            assert!(
+                SHORTCUTS.iter().any(|d| d.category == category),
+                "{category:?} has no shortcuts"
+            );
+        }
     }
 
     #[test]
@@ -533,6 +557,24 @@ mod tests {
             validate_reset(&s, "mode_add"),
             Err(Rejection::InUse("Switch to Building mode".into()))
         );
+    }
+
+    #[test]
+    fn reset_all_restores_every_default() {
+        let mut s = settings_with(&[]);
+        // Override every shortcut, including ones a count of "ten" would miss.
+        for d in SHORTCUTS {
+            s.keybindings
+                .insert(d.id.to_string(), format!("override-{}", d.id));
+        }
+        for d in SHORTCUTS {
+            assert_ne!(effective_spec(&s, d.id), d.default_spec, "{}", d.id);
+        }
+        reset_all(&mut s);
+        assert!(s.keybindings.is_empty());
+        for d in SHORTCUTS {
+            assert_eq!(effective_spec(&s, d.id), d.default_spec, "{}", d.id);
+        }
     }
 
     #[test]
