@@ -26,7 +26,7 @@ use osm_gpui::ui::style::muted_text_size;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::{EditModeAction, MapViewer, SetMode};
+use crate::{EditMode, MapViewer, SetMode};
 
 gpui::actions!(osm_gpui, [AdjustImageryOffset, ResetImageryOffset]);
 
@@ -153,7 +153,7 @@ impl MapViewer {
         // Leave any other mode (or an adjustment of another layer) first.
         self.on_set_mode(
             &SetMode {
-                mode: EditModeAction::Select,
+                mode: EditMode::Select,
             },
             window,
             cx,
@@ -781,7 +781,7 @@ mod tests {
                 );
                 view.on_set_mode(
                     &SetMode {
-                        mode: EditModeAction::Select,
+                        mode: EditMode::Select,
                     },
                     window,
                     cx,

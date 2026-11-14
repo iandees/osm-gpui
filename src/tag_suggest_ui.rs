@@ -96,7 +96,10 @@ impl osm_gpui::http::HttpClient for FixtureClient {
 }
 
 /// Fetch `query` from taginfo, or from the fixture in a scripted run.
-fn fetch_taginfo(query: &taginfo::TaginfoQuery) -> Result<Vec<TaginfoItem>, taginfo::FetchError> {
+fn fetch_taginfo(
+    http: &dyn osm_gpui::http::HttpClient,
+    query: &taginfo::TaginfoQuery,
+) -> Result<Vec<TaginfoItem>, taginfo::FetchError> {
     if crate::script_harness::script_mode() {
         let fixture = fixture_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
@@ -104,7 +107,7 @@ fn fetch_taginfo(query: &taginfo::TaginfoQuery) -> Result<Vec<TaginfoItem>, tagi
             .unwrap_or(serde_json::Value::Null);
         return taginfo::fetch(&FixtureClient(fixture), query);
     }
-    taginfo::fetch(&osm_gpui::http::UreqClient::new(), query)
+    taginfo::fetch(http, query)
 }
 
 /// One layer's key/value counts and the edit revision they describe.
@@ -574,10 +577,11 @@ impl MapViewer {
             return;
         };
         let query = job.query.clone();
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { fetch_taginfo(&query) })
+                .spawn(async move { fetch_taginfo(http.as_ref(), &query) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let items = this.tag_suggest.taginfo.finish(Instant::now(), job, result);

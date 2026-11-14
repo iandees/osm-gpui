@@ -238,7 +238,7 @@ mod tests {
         let vp = viewport();
         let store = PhotoStore::default();
         store.insert_tile(
-            crate::street_imagery_tiles::TileId { z: 15, x: 0, y: 0 },
+            crate::tiles::TileCoord { z: 15, x: 0, y: 0 },
             vec![photo("a", 10.0, 20.0), photo("b", 10.0, 20.00005)],
         );
         let at = vp.geo_to_screen(10.0, 20.0);

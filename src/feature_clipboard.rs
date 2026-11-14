@@ -17,19 +17,15 @@
 //!   redone as a whole, with the same ids both times.
 
 use std::collections::{HashMap, HashSet};
-use std::f64::consts::PI;
 use std::fmt::Write as _;
 
-use crate::coordinates::lat_lon_to_mercator;
+use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon_wrapped};
 use crate::layers::{EditableLayer, LayerId};
 use crate::limits::{self, Limits};
 use crate::osm::{MemberType, OsmMember};
 use crate::osm_upload::xml_escape;
 use crate::selection::{DeletedFeatureSnapshot, DeletedRelationSnapshot, FeatureKind, FeatureRef};
 use crate::tr;
-
-/// Half the Web Mercator world width, in metres.
-const MERCATOR_HALF_WORLD: f64 = 20037508.34;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipNode {
@@ -198,7 +194,7 @@ impl FeatureClipboard {
     /// the map shows.
     pub fn center(&self) -> Option<(f64, f64)> {
         self.mercator_center()
-            .map(|(x, y)| mercator_to_lat_lon(x, y))
+            .map(|(x, y)| mercator_to_lat_lon_wrapped(x, y))
     }
 
     fn mercator_center(&self) -> Option<(f64, f64)> {
@@ -238,7 +234,7 @@ impl FeatureClipboard {
             return (node.lat, node.lon);
         }
         let (x, y) = lat_lon_to_mercator(node.lat, node.lon);
-        mercator_to_lat_lon(x + dx, y + dy)
+        mercator_to_lat_lon_wrapped(x + dx, y + dy)
     }
 
     /// Check the clipboard against the server's size limits, before anything
@@ -566,22 +562,6 @@ fn take_node(
     true
 }
 
-/// Inverse of `lat_lon_to_mercator`, with the longitude wrapped into
-/// [-180, 180] and the latitude kept where the projection is defined.
-fn mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
-    let lat = (2.0 * (y * PI / MERCATOR_HALF_WORLD).exp().atan() - PI / 2.0).to_degrees();
-    let mut lon = x * 180.0 / MERCATOR_HALF_WORLD;
-    if !(-180.0..=180.0).contains(&lon) {
-        lon = (lon + 180.0).rem_euclid(360.0) - 180.0;
-    }
-    let lat = if lat.is_finite() {
-        lat.clamp(-85.051128779807, 85.051128779807)
-    } else {
-        0.0
-    };
-    (lat, if lon.is_finite() { lon } else { 0.0 })
-}
-
 /// What one paste created, enough to undo it and redo it with the same ids.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PastedFeatures {
@@ -653,9 +633,20 @@ impl PastedFeatures {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinates::MERCATOR_HALF_WORLD_M;
     use crate::layers::osm_layer::OsmLayer;
     use crate::osm::{OsmData, OsmNode, OsmRelation, OsmWay};
     use std::sync::Arc;
+
+    /// Pasting far from the source can overshoot the antimeridian; the
+    /// longitude wraps (unlike `coordinates::mercator_to_lat_lon`, which clamps).
+    #[test]
+    fn mercator_to_lat_lon_wraps_longitude() {
+        let (_, lon) = mercator_to_lat_lon_wrapped(MERCATOR_HALF_WORLD_M * 1.5, 0.0);
+        assert!((lon - -90.0).abs() < 1e-9, "got {lon}");
+        let (lat, lon) = mercator_to_lat_lon_wrapped(MERCATOR_HALF_WORLD_M, 0.0);
+        assert!(lat.abs() < 1e-9 && (lon - 180.0).abs() < 1e-9);
+    }
 
     const A: LayerId = LayerId(1);
     const B: LayerId = LayerId(2);
@@ -800,7 +791,7 @@ mod tests {
         let (min_y, max_y) = merc.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
             (lo.min(p.1), hi.max(p.1))
         });
-        mercator_to_lat_lon((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+        mercator_to_lat_lon_wrapped((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
     }
 
     fn all(layer: &OsmLayer) -> Vec<FeatureRef> {

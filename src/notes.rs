@@ -25,7 +25,7 @@ use quick_xml::Reader;
 
 use crate::coordinates::GeoBounds;
 use crate::http::{
-    fetch_with_retries, HttpClient, HttpError, HttpRequest, Method, RetryPolicy, UreqClient,
+    fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, Method, RetryPolicy,
 };
 use crate::tr;
 
@@ -132,23 +132,30 @@ impl Note {
 
 #[derive(Debug)]
 pub enum NotesError {
-    Http { status: u16, body: String },
+    Http {
+        status: u16,
+        body: String,
+    },
     Network(String),
     Parse(String),
+    /// A local response file (script mode) could not be read.
+    ReadFile {
+        path: String,
+        detail: String,
+    },
+}
+
+impl From<HttpError> for NotesError {
+    fn from(e: HttpError) -> Self {
+        match HttpFailure::from(e) {
+            HttpFailure::Status { status, body } => NotesError::Http { status, body },
+            HttpFailure::Transport(msg) => NotesError::Network(msg),
+            HttpFailure::Cancelled => NotesError::Network("cancelled".into()),
+        }
+    }
 }
 
 impl NotesError {
-    fn from_http(e: HttpError) -> Self {
-        match e {
-            HttpError::Status { status, body } => NotesError::Http {
-                status,
-                body: String::from_utf8_lossy(&body).into_owned(),
-            },
-            HttpError::Transport(msg) => NotesError::Network(msg),
-            HttpError::Cancelled => NotesError::Network("cancelled".into()),
-        }
-    }
-
     /// The HTTP status, if the server answered with one.
     pub fn status(&self) -> Option<u16> {
         match self {
@@ -182,6 +189,7 @@ impl NotesError {
             }
             NotesError::Network(msg) => tr!("error.network", detail = msg).to_string(),
             NotesError::Parse(msg) => tr!("notes.error.parse", detail = msg).to_string(),
+            NotesError::ReadFile { path, detail } => format!("{path}: {detail}"),
         }
     }
 }
@@ -402,8 +410,7 @@ pub fn fetch_notes_with(
         if let Some(token) = token {
             req = req.bearer(token);
         }
-        let resp = fetch_with_retries(client, &req, &RetryPolicy::standard())
-            .map_err(NotesError::from_http)?;
+        let resp = fetch_with_retries(client, &req, &RetryPolicy::standard())?;
         let body = resp
             .into_string()
             .map_err(|e| NotesError::Network(e.to_string()))?;
@@ -419,14 +426,6 @@ pub fn fetch_notes_with(
     }
     out.notes.sort_by_key(|n| n.id);
     Ok(out)
-}
-
-pub fn fetch_notes(
-    base_url: &str,
-    bboxes: &[GeoBounds],
-    token: Option<&str>,
-) -> Result<Fetched, NotesError> {
-    fetch_notes_with(&UreqClient::new(), base_url, bboxes, token)
 }
 
 /// A write to the notes API.
@@ -491,8 +490,7 @@ pub fn write_note_with(
     let mut req =
         HttpRequest::with_text(Method::Post, write_url(base_url, write, text), None).bearer(token);
     req.timeout = Duration::from_secs(30);
-    let resp =
-        fetch_with_retries(client, &req, &RetryPolicy::none()).map_err(NotesError::from_http)?;
+    let resp = fetch_with_retries(client, &req, &RetryPolicy::none())?;
     let body = resp
         .into_string()
         .map_err(|e| NotesError::Network(e.to_string()))?;
@@ -500,15 +498,6 @@ pub fn write_note_with(
         .into_iter()
         .next()
         .ok_or_else(|| NotesError::Parse("the answer holds no note".into()))
-}
-
-pub fn write_note(
-    base_url: &str,
-    token: &str,
-    write: NoteWrite,
-    text: &str,
-) -> Result<Note, NotesError> {
-    write_note_with(&UreqClient::new(), base_url, token, write, text)
 }
 
 // ---------------------------------------------------------------------------
@@ -673,9 +662,12 @@ pub fn menu_shows_notes() -> bool {
 
 /// Load notes from a local file holding an API response (script mode only; the
 /// `load_notes_file` op).
-pub fn load_notes_file(path: &std::path::Path) -> Result<Vec<Note>, String> {
-    let xml = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    parse_notes(&xml).map_err(|e| e.to_string())
+pub fn load_notes_file(path: &std::path::Path) -> Result<Vec<Note>, NotesError> {
+    let xml = std::fs::read_to_string(path).map_err(|e| NotesError::ReadFile {
+        path: path.display().to_string(),
+        detail: e.to_string(),
+    })?;
+    parse_notes(&xml)
 }
 
 #[cfg(test)]
@@ -684,6 +676,45 @@ mod tests {
     use crate::http::fake::{ok, status_err, transport_err, FakeClient};
 
     const BASE: &str = "https://api.openstreetmap.org";
+
+    #[test]
+    fn a_notes_file_that_cannot_be_read_or_parsed_has_its_own_errors() {
+        let dir = std::env::temp_dir().join(format!("osm-gpui-notes-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("missing.xml");
+        let err = load_notes_file(&missing).unwrap_err();
+        assert!(matches!(&err, NotesError::ReadFile { path, .. } if path.ends_with("missing.xml")));
+        assert!(err.to_string().contains("missing.xml"));
+
+        let bad = dir.join("bad.xml");
+        std::fs::write(&bad, "<osm><note").unwrap();
+        assert!(matches!(load_notes_file(&bad), Err(NotesError::Parse(_))));
+
+        let good = dir.join("good.xml");
+        std::fs::write(&good, SAMPLE).unwrap();
+        assert!(!load_notes_file(&good).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn http_failures_map_to_notes_errors() {
+        assert!(matches!(
+            NotesError::from(HttpError::Status {
+                status: 403,
+                body: b"scope".to_vec()
+            }),
+            NotesError::Http { status: 403, body } if body == "scope"
+        ));
+        assert!(matches!(
+            NotesError::from(HttpError::Transport("x".into())),
+            NotesError::Network(m) if m == "x"
+        ));
+        assert!(matches!(
+            NotesError::from(HttpError::Cancelled),
+            NotesError::Network(m) if m == "cancelled"
+        ));
+    }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <osm version="0.6" generator="OpenStreetMap server">

@@ -1,12 +1,14 @@
 use gpui::*;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use crate::coordinates::MAX_MAP_ZOOM;
+use crate::download_bounds::MercRect;
 use crate::imagery::AttributionInfo;
-use crate::imagery_offset::{offset_to_mercator, tiles_covering, ImageryOffset};
+use crate::imagery_offset::{offset_to_mercator, ImageryOffset};
 use crate::layers::{ImageryLayer, LayerId, MapLayer};
 use crate::tile_cache::TileCache;
-use crate::tiles::{url_from_template, TileCoord};
+use crate::tiles::{tiles_covering, url_from_template, TileCoord};
 use crate::viewport::Viewport;
 
 /// The built-in OpenStreetMap Carto tile URL template.
@@ -30,7 +32,6 @@ pub struct TileLayer {
     source_key: String,
     visible: bool,
     tile_cache: Arc<Mutex<TileCache>>,
-    show_boundaries: bool,
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
     attribution: Option<AttributionInfo>,
@@ -74,7 +75,6 @@ impl TileLayer {
             source_key,
             visible: true,
             tile_cache,
-            show_boundaries: false,
             min_zoom: None,
             max_zoom: None,
             attribution: None,
@@ -99,7 +99,7 @@ impl TileLayer {
     /// the shift, so no strip at the viewport edge is left empty.
     fn visible_tiles(&self, viewport: &Viewport, tile_zoom: u32) -> Vec<TileCoord> {
         tiles_covering(
-            viewport.mercator_view_bounds(),
+            viewport.mercator_view_rect(),
             self.mercator_offset(viewport),
             tile_zoom,
         )
@@ -127,40 +127,59 @@ impl TileLayer {
         self
     }
 
-    pub fn set_show_boundaries(&mut self, show: bool) {
-        self.show_boundaries = show;
-    }
-
     /// Compute the tile zoom level to request for a given viewport zoom,
     /// honoring the layer's optional `min_zoom` / `max_zoom` ELI bounds.
     pub fn effective_tile_zoom(&self, viewport_z: f64) -> Option<u32> {
         compute_effective_tile_zoom(viewport_z, self.min_zoom, self.max_zoom)
     }
 
-    /// Whether requesting tiles one zoom deeper on Hi-DPI displays is
-    /// appropriate for this source. OSM Carto tiles are not designed as
-    /// "retina" tiles: their labels and symbols are sized for 256px at 1x, so
-    /// deeper tiles would render everything at half its intended logical
-    /// size. Such sources are instead stretched (slightly soft, right size).
-    fn hidpi_tiles(&self) -> bool {
-        template_supports_hidpi(&self.url_template)
-    }
-
     /// The tile zoom to actually request for a display with `scale_factor`
     /// device pixels per logical pixel: `effective_tile_zoom`, one level
     /// deeper on Hi-DPI displays when the source has tiles that deep.
     fn render_tile_zoom(&self, viewport_z: f64, scale_factor: f32) -> Option<u32> {
-        self.effective_tile_zoom(viewport_z).map(|z| {
-            if self.hidpi_tiles() {
-                hidpi_tile_zoom(z, scale_factor, self.max_zoom)
-            } else {
-                z
-            }
-        })
+        render_tile_zoom(
+            &self.url_template,
+            self.min_zoom,
+            self.max_zoom,
+            viewport_z,
+            scale_factor,
+        )
     }
 }
 
-/// See `TileLayer::hidpi_tiles`.
+/// `TileLayer::render_tile_zoom` for a source with `url_template` and the
+/// given zoom bounds.
+fn render_tile_zoom(
+    url_template: &str,
+    min_zoom: Option<u32>,
+    max_zoom: Option<u32>,
+    viewport_z: f64,
+    scale_factor: f32,
+) -> Option<u32> {
+    compute_effective_tile_zoom(viewport_z, min_zoom, max_zoom).map(|z| {
+        if template_supports_hidpi(url_template) {
+            hidpi_tile_zoom(z, scale_factor, max_zoom)
+        } else {
+            z
+        }
+    })
+}
+
+/// The URLs a layer needs right now: its visible tiles and their parents (the
+/// fallbacks shown while a tile loads).
+fn wanted_urls(url_template: &str, visible_tiles: &[TileCoord]) -> HashSet<String> {
+    visible_tiles
+        .iter()
+        .flat_map(|t| std::iter::once(*t).chain(t.parent()))
+        .map(|t| url_from_template(url_template, &t))
+        .collect()
+}
+
+/// Whether requesting tiles one zoom deeper on Hi-DPI displays is appropriate
+/// for this source. OSM Carto tiles are not designed as "retina" tiles: their
+/// labels and symbols are sized for 256px at 1x, so deeper tiles would render
+/// everything at half its intended logical size. Such sources are instead
+/// stretched (slightly soft, right size).
 fn template_supports_hidpi(url_template: &str) -> bool {
     url_template != OSM_CARTO_TEMPLATE
 }
@@ -208,24 +227,10 @@ fn compute_effective_tile_zoom(
     Some(rounded.min(max_zoom.unwrap_or(GLOBAL_MAX_TILE_ZOOM)))
 }
 
-/// A small, deliberate overlap added to every tile's rendered size so
-/// adjacent tiles overlap slightly instead of exactly abutting. This is the
-/// standard technique tile-based map renderers use (e.g. Leaflet sizes
-/// tiles a pixel larger than their exact geometric size) to guarantee no
-/// gap can ever appear between neighbors, regardless of where their
-/// (necessarily continuous, sub-pixel) edges happen to fall. Since adjacent
-/// map tiles show continuous, matching imagery at their shared edge, a
-/// small overlap of nearly-identical content is imperceptible — unlike a
-/// gap, which exposes the dark fallback background behind the tiles.
-///
-/// Deliberately a *fixed* pixel amount, not proportional to the tile's
-/// current on-screen size: `object_fit: Cover` reacts to a larger
-/// container by magnifying the same fixed-size source image to fill it,
-/// so a bigger container doesn't extend a tile's true content into its
-/// neighbor — it just zooms that tile in past its true scale, sacrificing
-/// real edge content. At 3px this became visible as missing edge pixels
-/// (over-magnified crop); keep this fixed and small — just enough to
-/// survive whatever sub-pixel rounding happens downstream in rendering.
+/// Every tile is drawn this many pixels larger so neighbours overlap instead of
+/// abutting; a gap would show the dark fallback behind as a hairline seam.
+/// Fixed, not proportional to tile size: `object_fit: Cover` magnifies the
+/// image to fill a bigger box, which crops real edge content.
 const TILE_OVERLAP_PX: f32 = 0.5;
 
 /// Source tile size in texels (standard XYZ raster tiles).
@@ -246,23 +251,6 @@ const TILE_TEXELS: f32 = 256.0;
 /// stretching the content by at most half a source texel at the edges.
 fn edge_bleed_margin(tile_width_px: f32) -> f32 {
     (0.5 * tile_width_px / TILE_TEXELS).clamp(0.0, 16.0)
-}
-
-/// Web Mercator (EPSG:3857) bounding box of a tile, in meters, computed
-/// directly from its XYZ grid index (no trig — the XYZ scheme is a
-/// uniform grid in this projected space, so every tile at a given zoom is
-/// exactly the same size). Matches the constant used by
-/// `coordinates::lat_lon_to_mercator`.
-fn tile_mercator_bounds(tile: &TileCoord) -> (f64, f64, f64, f64) {
-    let world_half = 20037508.34_f64;
-    let n = 2.0_f64.powi(tile.z as i32);
-    let tile_size_m = (world_half * 2.0) / n;
-
-    let min_x = -world_half + tile.x as f64 * tile_size_m;
-    let max_x = min_x + tile_size_m;
-    let max_y = world_half - tile.y as f64 * tile_size_m;
-    let min_y = max_y - tile_size_m;
-    (min_x, min_y, max_x, max_y)
 }
 
 /// Screen rect (x, y, width, height) for one tile: each tile is projected
@@ -290,7 +278,12 @@ fn tile_screen_rect_shifted(
     tile: &TileCoord,
     (off_x, off_y): (f64, f64),
 ) -> (Pixels, Pixels, Pixels, Pixels) {
-    let (min_x, min_y, max_x, max_y) = tile_mercator_bounds(tile);
+    let MercRect {
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+    } = tile.mercator_bounds();
     let top_left = viewport.mercator_to_screen(min_x + off_x, max_y + off_y);
     let bottom_right = viewport.mercator_to_screen(max_x + off_x, min_y + off_y);
 
@@ -369,15 +362,9 @@ impl MapLayer for TileLayer {
         let visible_tiles = self.visible_tiles(viewport, tile_zoom);
         let merc_offset = self.mercator_offset(viewport);
 
-        // Tell the tile cache which tiles are needed now (visible tiles and
-        // their parent fallbacks) so downloads for tiles that have scrolled
-        // off the map are cancelled, and re-request any that were cancelled
-        // but are visible again.
-        let wanted: std::collections::HashSet<String> = visible_tiles
-            .iter()
-            .flat_map(|t| std::iter::once(*t).chain(t.parent()))
-            .map(|t| url_from_template(&self.url_template, &t).to_string())
-            .collect();
+        // Downloads for tiles that scrolled off the map are cancelled; ones
+        // cancelled but visible again are re-requested.
+        let wanted = wanted_urls(&self.url_template, &visible_tiles);
         for key in crate::tile_cache::set_wanted_tiles(&self.source_key, wanted) {
             cx.remove_asset::<crate::tile_cache::TileAsset>(&key);
         }
@@ -495,44 +482,7 @@ impl MapLayer for TileLayer {
         elements
     }
 
-    fn render_canvas(&self, viewport: &Viewport, _bounds: Bounds<Pixels>, window: &mut Window) {
-        if !self.show_boundaries {
-            return;
-        }
-
-        // Render tile boundaries for debugging
-        let zoom_level = viewport.zoom_level();
-        let Some(tile_zoom) = self.render_tile_zoom(zoom_level, window.scale_factor()) else {
-            return;
-        };
-        let visible_tiles = self.visible_tiles(viewport, tile_zoom);
-        let merc_offset = self.mercator_offset(viewport);
-
-        let tile_color = rgb(0x4a5568);
-        for tile_coord in &visible_tiles {
-            // Use the same positioning as render_elements for consistency
-            let (tile_x, tile_y, tile_width, tile_height) =
-                tile_screen_rect_shifted(viewport, tile_coord, merc_offset);
-            let screen_top_left = point(tile_x, tile_y);
-            let screen_bottom_right = point(tile_x + tile_width, tile_y + tile_height);
-
-            // Validate coordinates before using in Lyon path
-            use crate::coordinates::is_point_valid;
-            if is_point_valid(screen_top_left) && is_point_valid(screen_bottom_right) {
-                // Draw tile boundary rectangle
-                let mut builder = PathBuilder::stroke(px(1.0));
-                builder.move_to(point(screen_top_left.x, screen_top_left.y));
-                builder.line_to(point(screen_bottom_right.x, screen_top_left.y));
-                builder.line_to(point(screen_bottom_right.x, screen_bottom_right.y));
-                builder.line_to(point(screen_top_left.x, screen_bottom_right.y));
-                builder.close();
-
-                if let Ok(path) = builder.build() {
-                    window.paint_path(path, tile_color);
-                }
-            }
-        }
-    }
+    fn render_canvas(&self, _viewport: &Viewport, _bounds: Bounds<Pixels>, _window: &mut Window) {}
 
     fn stats(&self) -> Vec<(String, String)> {
         let (cached_files, active_downloads) = if let Ok(tile_cache) = self.tile_cache.try_lock() {
@@ -544,10 +494,6 @@ impl MapLayer for TileLayer {
         let mut stats = vec![
             ("Cached Files".to_string(), cached_files.to_string()),
             ("Active Downloads".to_string(), active_downloads.to_string()),
-            (
-                "Show Boundaries".to_string(),
-                self.show_boundaries.to_string(),
-            ),
         ];
         if let Some(min_z) = self.min_zoom {
             stats.push(("Min Zoom".to_string(), min_z.to_string()));
@@ -562,8 +508,8 @@ impl MapLayer for TileLayer {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, tile_mercator_bounds,
-        tile_screen_rect, TILE_OVERLAP_PX,
+        compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, render_tile_zoom,
+        tile_screen_rect, wanted_urls, OSM_CARTO_TEMPLATE, TILE_OVERLAP_PX,
     };
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
@@ -592,8 +538,8 @@ mod tests {
 
         // Corner mercator coordinate shared by all four tiles: top-left
         // tile's right edge / bottom edge.
-        let (_, min_y_a, max_x_a, _) = tile_mercator_bounds(&tiles[0]);
-        let corner = viewport.mercator_to_screen(max_x_a, min_y_a);
+        let a = tiles[0].mercator_bounds();
+        let corner = viewport.mercator_to_screen(a.max_x, a.min_y);
 
         // The corner must be a comfortable *interior* point of each tile's
         // box, not merely on its boundary — an edge that only touches the
@@ -787,12 +733,18 @@ mod tests {
 
     #[test]
     fn hidpi_slot_is_four_subtiles_of_same_area() {
-        use crate::imagery_offset::tiles_covering;
+        use crate::download_bounds::MercRect;
+        use crate::tiles::tiles_covering;
         // One logical tile slot at z covers exactly 4 tiles at z+1.
-        let (min_x, min_y, max_x, max_y) = tile_mercator_bounds(&TileCoord::new(5, 7, 4));
+        let slot = TileCoord::new(5, 7, 4).mercator_bounds();
         let eps = 1.0;
         let tiles = tiles_covering(
-            (min_x + eps, max_x - eps, min_y + eps, max_y - eps),
+            MercRect::new(
+                slot.min_x + eps,
+                slot.max_x - eps,
+                slot.min_y + eps,
+                slot.max_y - eps,
+            ),
             (0.0, 0.0),
             5,
         );
@@ -888,5 +840,72 @@ mod tests {
             layer.source_key,
             source_key_for_template(super::OSM_CARTO_TEMPLATE)
         );
+    }
+
+    const CUSTOM: &str = "https://example.com/{z}/{x}/{y}.png";
+
+    #[test]
+    fn osm_carto_requests_the_viewport_zoom_even_on_hidpi() {
+        assert_eq!(
+            render_tile_zoom(OSM_CARTO_TEMPLATE, None, None, 12.4, 2.0),
+            Some(12)
+        );
+        assert_eq!(
+            render_tile_zoom(OSM_CARTO_TEMPLATE, None, None, 12.6, 1.0),
+            Some(13)
+        );
+    }
+
+    #[test]
+    fn other_sources_go_one_zoom_deeper_on_hidpi_only() {
+        assert_eq!(render_tile_zoom(CUSTOM, None, None, 12.0, 1.0), Some(12));
+        assert_eq!(render_tile_zoom(CUSTOM, None, None, 12.0, 2.0), Some(13));
+    }
+
+    #[test]
+    fn render_zoom_is_none_below_the_sources_min_zoom() {
+        assert_eq!(render_tile_zoom(CUSTOM, Some(8), None, 7.0, 2.0), None);
+        assert_eq!(render_tile_zoom(CUSTOM, Some(8), None, 8.0, 1.0), Some(8));
+    }
+
+    #[test]
+    fn render_zoom_stays_within_the_sources_max_zoom_on_hidpi() {
+        assert_eq!(
+            render_tile_zoom(CUSTOM, None, Some(14), 16.0, 2.0),
+            Some(14)
+        );
+        assert_eq!(
+            render_tile_zoom(CUSTOM, None, Some(14), 13.0, 2.0),
+            Some(14)
+        );
+        assert_eq!(render_tile_zoom(CUSTOM, None, None, 19.0, 3.0), Some(19));
+    }
+
+    #[test]
+    fn wanted_urls_are_the_visible_tiles_and_their_parents() {
+        let tiles = [TileCoord::new(2, 3, 2), TileCoord::new(3, 3, 2)];
+        let wanted = wanted_urls(CUSTOM, &tiles);
+        let expected: std::collections::HashSet<String> = [
+            "https://example.com/2/2/3.png",
+            "https://example.com/2/3/3.png",
+            // Both share one parent.
+            "https://example.com/1/1/1.png",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(wanted, expected);
+    }
+
+    #[test]
+    fn wanted_urls_of_a_world_tile_has_no_parent() {
+        let wanted = wanted_urls(CUSTOM, &[TileCoord::new(0, 0, 0)]);
+        assert_eq!(wanted.len(), 1);
+        assert!(wanted.contains("https://example.com/0/0/0.png"));
+    }
+
+    #[test]
+    fn no_visible_tiles_want_nothing() {
+        assert!(wanted_urls(CUSTOM, &[]).is_empty());
     }
 }

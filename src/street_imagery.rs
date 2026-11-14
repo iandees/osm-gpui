@@ -20,9 +20,9 @@ use serde_json::Value;
 
 use crate::coordinates::GeoBounds;
 use crate::http::{
-    fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy, UreqClient,
+    fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, RetryPolicy,
 };
-use crate::street_imagery_tiles::TileId;
+use crate::tiles::TileCoord;
 
 /// Fotoshi photos per search: anonymous callers get at most 20 a page.
 pub const FOTOSHI_ANON_LIMIT: usize = 20;
@@ -128,14 +128,15 @@ pub enum ImageryError {
     Parse(String),
 }
 
-impl ImageryError {
-    pub(crate) fn from_http(e: HttpError) -> Self {
-        match e {
-            HttpError::Status {
+impl From<HttpError> for ImageryError {
+    fn from(e: HttpError) -> Self {
+        let text = e.to_string();
+        match HttpFailure::from(e) {
+            HttpFailure::Status {
                 status: 401 | 403, ..
             } => ImageryError::Unauthorized,
-            HttpError::Status { status: 429, .. } => ImageryError::RateLimited,
-            other => ImageryError::Network(other.to_string()),
+            HttpFailure::Status { status: 429, .. } => ImageryError::RateLimited,
+            _ => ImageryError::Network(text),
         }
     }
 }
@@ -169,13 +170,8 @@ pub fn fotoshi_url(b: &GeoBounds, limit: usize) -> String {
 
 /// Download an image's bytes (for the viewer).
 pub fn fetch_image_with(client: &dyn HttpClient, url: &str) -> Result<Vec<u8>, ImageryError> {
-    let resp = fetch_with_retries(client, &HttpRequest::get(url), &RetryPolicy::standard())
-        .map_err(ImageryError::from_http)?;
+    let resp = fetch_with_retries(client, &HttpRequest::get(url), &RetryPolicy::standard())?;
     Ok(resp.body)
-}
-
-pub fn fetch_image(url: &str) -> Result<Vec<u8>, ImageryError> {
-    fetch_image_with(&UreqClient::new(), url)
 }
 
 // ---------------------------------------------------------------------------
@@ -392,16 +388,11 @@ pub fn fetch_object_photos_with(
     }
     let req = HttpRequest::get(fotoshi_object_url(osm_id)).bearer(key);
     // One attempt: Fotoshi meters requests.
-    let resp =
-        fetch_with_retries(client, &req, &RetryPolicy::none()).map_err(ImageryError::from_http)?;
+    let resp = fetch_with_retries(client, &req, &RetryPolicy::none())?;
     let body = resp
         .into_string()
         .map_err(|e| ImageryError::Network(e.to_string()))?;
     parse_fotoshi_object(&body)
-}
-
-pub fn fetch_object_photos(osm_id: &str, key: &str) -> Result<ObjectPhotos, ImageryError> {
-    fetch_object_photos_with(&UreqClient::new(), osm_id, key)
 }
 
 /// Panoramax STAC `{"features":[{id, geometry, properties, assets, providers}]}`
@@ -472,7 +463,7 @@ pub struct PhotoStoreInner {
     /// Every photo of every loaded tile, for drawing and hit-testing.
     pub photos: Vec<StreetPhoto>,
     /// The photos of each loaded tile.
-    pub tiles: HashMap<TileId, Vec<StreetPhoto>>,
+    pub tiles: HashMap<TileCoord, Vec<StreetPhoto>>,
     /// The photo open in the viewer, drawn highlighted: (provider, id).
     pub selected: Option<(Provider, String)>,
 }
@@ -505,14 +496,14 @@ impl PhotoStore {
 
     /// Set the photos of tile `t`. A photo on a tile's edge can come from two
     /// tiles; it is kept once.
-    pub fn insert_tile(&self, t: TileId, photos: Vec<StreetPhoto>) {
+    pub fn insert_tile(&self, t: TileCoord, photos: Vec<StreetPhoto>) {
         self.with(|s| {
             s.tiles.insert(t, photos);
             s.rebuild();
         });
     }
 
-    pub fn has_tile(&self, t: TileId) -> bool {
+    pub fn has_tile(&self, t: TileCoord) -> bool {
         self.with(|s| s.tiles.contains_key(&t))
     }
 
@@ -521,7 +512,7 @@ impl PhotoStore {
     }
 
     /// Drop the tiles for which `keep` is false.
-    pub fn retain_tiles(&self, keep: impl Fn(&TileId) -> bool) {
+    pub fn retain_tiles(&self, keep: impl Fn(&TileCoord) -> bool) {
         self.with(|s| {
             s.tiles.retain(|t, _| keep(t));
             s.rebuild();
@@ -749,7 +740,10 @@ mod tests {
     fn store_keeps_tiles_and_dedupes_edge_photos() {
         let store = PhotoStore::default();
         let all = parse_fotoshi(FOTOSHI).unwrap();
-        let (a, b) = (TileId { z: 15, x: 1, y: 1 }, TileId { z: 15, x: 2, y: 1 });
+        let (a, b) = (
+            TileCoord { z: 15, x: 1, y: 1 },
+            TileCoord { z: 15, x: 2, y: 1 },
+        );
         store.insert_tile(a, all.clone());
         // The second tile repeats p1, which sits on the edge.
         store.insert_tile(b, vec![all[0].clone()]);

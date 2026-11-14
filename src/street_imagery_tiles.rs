@@ -19,88 +19,38 @@ use std::collections::HashMap;
 use mvt_reader::feature::Value as MvtValue;
 use mvt_reader::Reader;
 
-use crate::coordinates::GeoBounds;
 use crate::http::{fetch_with_retries, HttpClient, HttpRequest, RetryPolicy};
 use crate::street_imagery::{
     date_from_millis, fotoshi_url, parse_fotoshi, parse_mapillary_image, parse_panoramax,
     ImageryError, Provider, StreetPhoto, FOTOSHI_ANON_LIMIT, FOTOSHI_KEYED_LIMIT,
 };
+use crate::tiles::{tile_position_to_lat_lon, TileCoord};
 
 /// More tiles than this under the view means the map is zoomed out too far
 /// to show photos.
 pub const MAX_TILES_PER_VIEW: usize = 40;
 
-/// A tile of the web-mercator grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TileId {
-    pub z: u8,
-    pub x: u32,
-    pub y: u32,
-}
-
 /// The zoom of the tiles each provider is asked for: where its photo points
 /// are published (Mapillary 14, Panoramax 15), and for Fotoshi's virtual
 /// tiles about 1.2 km at the equator.
-pub fn tile_zoom(provider: Provider) -> u8 {
+pub fn tile_zoom(provider: Provider) -> u32 {
     match provider {
         Provider::Mapillary => 14,
         Provider::Fotoshi | Provider::Panoramax => 15,
     }
 }
 
-fn lon_to_x(lon: f64, z: u8) -> f64 {
-    (lon + 180.0) / 360.0 * f64::from(1u32 << z)
-}
-
-fn lat_to_y(lat: f64, z: u8) -> f64 {
-    let lat = lat.clamp(-85.05112878, 85.05112878).to_radians();
-    (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0 * f64::from(1u32 << z)
-}
-
-fn x_to_lon(x: f64, z: u8) -> f64 {
-    x / f64::from(1u32 << z) * 360.0 - 180.0
-}
-
-fn y_to_lat(y: f64, z: u8) -> f64 {
-    let n = std::f64::consts::PI * (1.0 - 2.0 * y / f64::from(1u32 << z));
-    n.sinh().atan().to_degrees()
-}
-
-/// The tiles at zoom `z` that touch `b`, row by row.
-pub fn tiles_covering(b: &GeoBounds, z: u8) -> Vec<TileId> {
-    let max = (1u32 << z) - 1;
-    let clamp = |v: f64| (v.floor().max(0.0) as u32).min(max);
-    let (x0, x1) = (clamp(lon_to_x(b.min_lon, z)), clamp(lon_to_x(b.max_lon, z)));
-    // Tile y grows southwards.
-    let (y0, y1) = (clamp(lat_to_y(b.max_lat, z)), clamp(lat_to_y(b.min_lat, z)));
-    let mut out = Vec::with_capacity(((x1 - x0 + 1) * (y1 - y0 + 1)) as usize);
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            out.push(TileId { z, x, y });
-        }
-    }
-    out
-}
-
-pub fn tile_bounds(t: TileId) -> GeoBounds {
-    GeoBounds::new(
-        y_to_lat(f64::from(t.y) + 1.0, t.z),
-        y_to_lat(f64::from(t.y), t.z),
-        x_to_lon(f64::from(t.x), t.z),
-        x_to_lon(f64::from(t.x) + 1.0, t.z),
-    )
-}
-
 /// Where the point `(px, py)` of a tile of `extent` units lies.
-fn tile_point_to_geo(t: TileId, extent: u32, px: f32, py: f32) -> (f64, f64) {
+fn tile_point_to_geo(t: TileCoord, extent: u32, px: f32, py: f32) -> (f64, f64) {
     let e = f64::from(extent.max(1));
-    (
-        y_to_lat(f64::from(t.y) + f64::from(py) / e, t.z),
-        x_to_lon(f64::from(t.x) + f64::from(px) / e, t.z),
+    tile_position_to_lat_lon(
+        t.z,
+        f64::from(t.x) + f64::from(px) / e,
+        f64::from(t.y) + f64::from(py) / e,
     )
 }
 
-pub fn mapillary_tile_url(t: TileId, token: &str) -> String {
+pub fn mapillary_tile_url(t: TileCoord, token: &str) -> String {
     format!(
         "https://tiles.mapillary.com/maps/vtp/mly1_public/2/{}/{}/{}?access_token={}",
         t.z,
@@ -110,7 +60,7 @@ pub fn mapillary_tile_url(t: TileId, token: &str) -> String {
     )
 }
 
-pub fn panoramax_tile_url(t: TileId) -> String {
+pub fn panoramax_tile_url(t: TileCoord) -> String {
     format!(
         "https://api.panoramax.xyz/api/map/2/{}/{}/{}.mvt",
         t.z, t.x, t.y
@@ -144,7 +94,7 @@ fn text(v: &MvtValue) -> Option<String> {
 type TilePoint = (f64, f64, HashMap<String, MvtValue>);
 
 /// The point features of `layer` with their position and properties.
-fn points_of(bytes: &[u8], layer: &str, t: TileId) -> Result<Vec<TilePoint>, ImageryError> {
+fn points_of(bytes: &[u8], layer: &str, t: TileCoord) -> Result<Vec<TilePoint>, ImageryError> {
     // An empty body is a tile with nothing in it.
     if bytes.is_empty() {
         return Ok(Vec::new());
@@ -178,7 +128,7 @@ fn points_of(bytes: &[u8], layer: &str, t: TileId) -> Result<Vec<TilePoint>, Ima
 }
 
 /// Mapillary's `image` layer: `id`, `captured_at` (ms), `compass_angle`, ...
-pub fn decode_mapillary_tile(bytes: &[u8], t: TileId) -> Result<Vec<StreetPhoto>, ImageryError> {
+pub fn decode_mapillary_tile(bytes: &[u8], t: TileCoord) -> Result<Vec<StreetPhoto>, ImageryError> {
     let mut out = Vec::new();
     for (lat, lon, props) in points_of(bytes, "image", t)? {
         let Some(id) = props.get("id").and_then(text) else {
@@ -207,7 +157,7 @@ pub fn decode_mapillary_tile(bytes: &[u8], t: TileId) -> Result<Vec<StreetPhoto>
 }
 
 /// Panoramax's `pictures` layer: `id`, `ts` (RFC 3339), `heading`, ...
-pub fn decode_panoramax_tile(bytes: &[u8], t: TileId) -> Result<Vec<StreetPhoto>, ImageryError> {
+pub fn decode_panoramax_tile(bytes: &[u8], t: TileCoord) -> Result<Vec<StreetPhoto>, ImageryError> {
     let mut out = Vec::new();
     for (lat, lon, props) in points_of(bytes, "pictures", t)? {
         let Some(id) = props.get("id").and_then(text) else {
@@ -243,7 +193,7 @@ pub fn decode_panoramax_tile(bytes: &[u8], t: TileId) -> Result<Vec<StreetPhoto>
 pub fn fetch_tile_with(
     client: &dyn HttpClient,
     provider: Provider,
-    t: TileId,
+    t: TileCoord,
     credential: Option<&str>,
 ) -> Result<(Vec<StreetPhoto>, bool), ImageryError> {
     let credential = credential.map(str::trim).filter(|c| !c.is_empty());
@@ -263,14 +213,14 @@ pub fn fetch_tile_with(
             } else {
                 FOTOSHI_ANON_LIMIT
             };
-            let url = fotoshi_url(&tile_bounds(t), limit);
+            let url = fotoshi_url(&t.geo_bounds(), limit);
             // Fotoshi meters requests: one attempt, never retried.
             let mut req = HttpRequest::get(url);
             if let Some(key) = credential {
                 req = req.bearer(key);
             }
             let resp = fetch_with_retries(client, &req, &RetryPolicy::none())
-                .map_err(ImageryError::from_http)?;
+                .map_err(ImageryError::from)?;
             let body = resp
                 .into_string()
                 .map_err(|e| ImageryError::Network(e.to_string()))?;
@@ -289,7 +239,7 @@ fn get_bytes(client: &dyn HttpClient, url: String, retry: bool) -> Result<Vec<u8
     };
     fetch_with_retries(client, &HttpRequest::get(url), &policy)
         .map(|r| r.body)
-        .map_err(ImageryError::from_http)
+        .map_err(ImageryError::from)
 }
 
 /// What a tile leaves out, filled in when a photo is opened: image URLs, the
@@ -339,7 +289,7 @@ mod tests {
 
     /// A real Panoramax tile (zoom 15) over south Minneapolis.
     const PANORAMAX_TILE: &[u8] = include_bytes!("../tests/fixtures/panoramax_15_7898_11796.mvt");
-    const PANORAMAX_TILE_ID: TileId = TileId {
+    const PANORAMAX_TILE_ID: TileCoord = TileCoord {
         z: 15,
         x: 7898,
         y: 11796,
@@ -441,41 +391,8 @@ mod tests {
     // --- tests --------------------------------------------------------------
 
     #[test]
-    fn tile_math_round_trips() {
-        let t = TileId {
-            z: 15,
-            x: 7898,
-            y: 11796,
-        };
-        let b = tile_bounds(t);
-        assert!(b.min_lat < b.max_lat && b.min_lon < b.max_lon);
-        // The tile contains the point it was computed from, and only itself
-        // (plus neighbours when a box straddles an edge).
-        let (lat, lon) = (44.926, -93.2234);
-        assert!(b.min_lat <= lat && lat <= b.max_lat && b.min_lon <= lon && lon <= b.max_lon);
-        let point = GeoBounds::new(lat, lat, lon, lon);
-        assert_eq!(tiles_covering(&point, 15), vec![t]);
-        // A box over a tile's own bounds, nudged inwards, is that tile.
-        let inner = GeoBounds::new(
-            b.min_lat + 1e-6,
-            b.max_lat - 1e-6,
-            b.min_lon + 1e-6,
-            b.max_lon - 1e-6,
-        );
-        assert_eq!(tiles_covering(&inner, 15), vec![t]);
-        // Twice as wide: two tiles side by side.
-        let wide = GeoBounds::new(
-            b.min_lat + 1e-6,
-            b.max_lat - 1e-6,
-            b.min_lon + 1e-6,
-            b.max_lon + (b.max_lon - b.min_lon) - 1e-6,
-        );
-        assert_eq!(tiles_covering(&wide, 15).len(), 2);
-    }
-
-    #[test]
     fn tile_point_positions() {
-        let t = TileId { z: 1, x: 1, y: 0 };
+        let t = TileCoord { z: 1, x: 1, y: 0 };
         // The corner of the tile is the NW corner of the NE quadrant.
         let (lat, lon) = tile_point_to_geo(t, 4096, 0.0, 0.0);
         assert!((lon - 0.0).abs() < 1e-9 && (lat - 85.0511287798).abs() < 1e-6);
@@ -487,7 +404,7 @@ mod tests {
     fn a_real_panoramax_tile_decodes() {
         let photos = decode_panoramax_tile(PANORAMAX_TILE, PANORAMAX_TILE_ID).unwrap();
         assert!(!photos.is_empty(), "the fixture has pictures");
-        let b = tile_bounds(PANORAMAX_TILE_ID);
+        let b = PANORAMAX_TILE_ID.geo_bounds();
         for p in &photos {
             assert_eq!(p.provider, Provider::Panoramax);
             assert_eq!(p.id.len(), 36, "a uuid: {}", p.id);
@@ -508,7 +425,7 @@ mod tests {
 
     #[test]
     fn mapillary_tiles_decode() {
-        let t = TileId { z: 14, x: 3, y: 5 };
+        let t = TileCoord { z: 14, x: 3, y: 5 };
         let tile = encode_tile(
             "image",
             4096,
@@ -540,7 +457,7 @@ mod tests {
 
     #[test]
     fn empty_and_broken_tiles() {
-        let t = TileId { z: 14, x: 0, y: 0 };
+        let t = TileCoord { z: 14, x: 0, y: 0 };
         assert!(decode_mapillary_tile(&[], t).unwrap().is_empty());
         assert!(matches!(
             decode_mapillary_tile(b"\xff\xff\xff not a tile", t),
@@ -550,7 +467,7 @@ mod tests {
 
     #[test]
     fn urls() {
-        let t = TileId { z: 14, x: 3, y: 5 };
+        let t = TileCoord { z: 14, x: 3, y: 5 };
         assert_eq!(
             mapillary_tile_url(t, "MLY|a b"),
             "https://tiles.mapillary.com/maps/vtp/mly1_public/2/14/3/5?access_token=MLY%7Ca%20b"
@@ -566,7 +483,7 @@ mod tests {
     #[test]
     fn mapillary_needs_a_token_and_never_calls_without_one() {
         let client = FakeClient::new(vec![]);
-        let t = TileId { z: 14, x: 3, y: 5 };
+        let t = TileCoord { z: 14, x: 3, y: 5 };
         for cred in [None, Some("  ")] {
             assert_eq!(
                 fetch_tile_with(&client, Provider::Mapillary, t, cred).unwrap_err(),
@@ -578,7 +495,7 @@ mod tests {
 
     #[test]
     fn statuses_map_to_errors() {
-        let t = TileId { z: 14, x: 3, y: 5 };
+        let t = TileCoord { z: 14, x: 3, y: 5 };
         let c = FakeClient::new(vec![status_err(401, "")]);
         assert_eq!(
             fetch_tile_with(&c, Provider::Mapillary, t, Some("t")).unwrap_err(),
@@ -593,7 +510,7 @@ mod tests {
 
     #[test]
     fn fotoshi_tiles_search_the_tile_box_and_flag_a_full_page() {
-        let t = TileId {
+        let t = TileCoord {
             z: 15,
             x: 7898,
             y: 11796,

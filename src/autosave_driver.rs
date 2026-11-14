@@ -10,7 +10,9 @@ use std::time::Instant;
 
 use gpui::{AppContext as _, Context, Window};
 
-use osm_gpui::autosave::{self, CrashedSession, RecoverableLayer, Session, Snapshot, Tracker};
+use osm_gpui::autosave::{
+    self, CrashedSession, RecoverError, RecoverableLayer, Session, Snapshot, Tracker,
+};
 use osm_gpui::layers::{osm_layer::OsmLayer, LayerId, MapLayer};
 use osm_gpui::osm::{FileEdits, OsmData};
 use osm_gpui::script::AutosaveCmd;
@@ -49,7 +51,7 @@ pub(crate) struct LayerOrigin {
 
 type Loaded = Vec<(
     CrashedSession,
-    Vec<(RecoverableLayer, Result<(OsmData, FileEdits), String>)>,
+    Vec<(RecoverableLayer, Result<(OsmData, FileEdits), RecoverError>)>,
 )>;
 
 pub(crate) struct AutosaveState {
@@ -451,7 +453,7 @@ impl MapViewer {
                         self.set_status(tr!(
                             "status.restore_failed",
                             layer = rec.manifest.layer_name,
-                            error = e
+                            error = e.to_string()
                         ));
                         continue;
                     }

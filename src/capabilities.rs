@@ -9,12 +9,41 @@
 //! plain worker thread.
 
 use crate::coordinates::GeoBounds;
-use crate::http::{fetch_with_retries, HttpClient, HttpRequest, RetryPolicy, UreqClient};
+use crate::http::{fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+/// Why the capabilities of a server are not known.
+#[derive(Debug, Clone)]
+pub enum CapabilitiesError {
+    /// The request failed or the answer was not text.
+    Fetch(HttpError),
+    /// The answer is not well-formed XML.
+    Parse(String),
+    /// The background worker could not be started.
+    Spawn,
+}
+
+impl From<HttpError> for CapabilitiesError {
+    fn from(e: HttpError) -> Self {
+        CapabilitiesError::Fetch(e)
+    }
+}
+
+impl std::fmt::Display for CapabilitiesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CapabilitiesError::Fetch(e) => write!(f, "{e}"),
+            CapabilitiesError::Parse(detail) => write!(f, "capabilities XML: {detail}"),
+            CapabilitiesError::Spawn => write!(f, "could not spawn worker thread"),
+        }
+    }
+}
+
+impl std::error::Error for CapabilitiesError {}
 
 /// Public-server default for `/map`: maximum bbox area in square degrees.
 pub const DEFAULT_AREA_MAXIMUM: f64 = 0.25;
@@ -83,7 +112,7 @@ impl Capabilities {
     /// Parse a capabilities document. Unknown or missing elements and
     /// unparsable values keep their defaults; only XML that is not
     /// well-formed is an error.
-    pub fn parse(xml: &str) -> Result<Self, String> {
+    pub fn parse(xml: &str) -> Result<Self, CapabilitiesError> {
         let mut caps = Self::default();
         let mut reader = Reader::from_str(xml);
         loop {
@@ -91,7 +120,7 @@ impl Capabilities {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => caps.apply_element(&e),
                 Ok(Event::Eof) => break,
                 Ok(_) => {}
-                Err(e) => return Err(format!("capabilities XML: {e}")),
+                Err(e) => return Err(CapabilitiesError::Parse(e.to_string())),
             }
         }
         Ok(caps)
@@ -165,6 +194,8 @@ struct Entry {
     caps: Option<Capabilities>,
     in_flight: bool,
     last_attempt: Option<Instant>,
+    /// Why the latest attempt failed; cleared by a success.
+    last_error: Option<CapabilitiesError>,
 }
 
 fn store() -> &'static Mutex<HashMap<String, Entry>> {
@@ -184,6 +215,14 @@ pub fn for_server(base_url: &str) -> Capabilities {
         .ok()
         .and_then(|g| g.get(&key(base_url)).and_then(|e| e.caps.clone()))
         .unwrap_or_default()
+}
+
+/// Why the latest fetch for `base_url` failed, if it did.
+pub fn last_error(base_url: &str) -> Option<CapabilitiesError> {
+    store()
+        .lock()
+        .ok()
+        .and_then(|g| g.get(&key(base_url)).and_then(|e| e.last_error.clone()))
 }
 
 /// Whether the server at `base_url` accepts a download of `bounds`. The one
@@ -221,11 +260,13 @@ fn log_debug(msg: &str) {
 }
 
 /// Single-attempt blocking fetch of `<base>/api/capabilities`.
-pub fn fetch_with(client: &dyn HttpClient, base_url: &str) -> Result<Capabilities, String> {
+pub fn fetch_with(
+    client: &dyn HttpClient,
+    base_url: &str,
+) -> Result<Capabilities, CapabilitiesError> {
     let mut req = HttpRequest::get(format!("{}/api/capabilities", key(base_url)));
     req.timeout = Duration::from_secs(10);
-    let resp = fetch_with_retries(client, &req, &RetryPolicy::none()).map_err(|e| e.to_string())?;
-    let body = resp.into_string().map_err(|e| e.to_string())?;
+    let body = fetch_with_retries(client, &req, &RetryPolicy::none())?.into_string()?;
     Capabilities::parse(&body)
 }
 
@@ -255,16 +296,22 @@ fn begin_attempt(base_url: &str, now: Instant) -> bool {
     true
 }
 
-fn finish_attempt(base_url: &str, result: Result<Capabilities, String>) {
+fn finish_attempt(base_url: &str, result: Result<Capabilities, CapabilitiesError>) {
     let Ok(mut g) = store().lock() else {
         return;
     };
     let e = g.entry(key(base_url)).or_default();
     e.in_flight = false;
     match result {
-        Ok(caps) => e.caps = Some(caps),
+        Ok(caps) => {
+            e.caps = Some(caps);
+            e.last_error = None;
+        }
         // Keep whatever we had (or the defaults) and retry on a later attempt.
-        Err(err) => log_debug(&format!("fetch for {base_url} failed: {err}")),
+        Err(err) => {
+            log_debug(&format!("fetch for {base_url} failed: {err}"));
+            e.last_error = Some(err);
+        }
     }
 }
 
@@ -280,7 +327,7 @@ pub fn refresh_blocking(client: &dyn HttpClient, base_url: &str, now: Instant) -
 /// Start a background fetch for `base_url` if one is due (see
 /// `begin_attempt`). Never blocks; safe to call on every download attempt,
 /// at startup and after the server setting changes.
-pub fn ensure_fetched(base_url: &str) {
+pub fn ensure_fetched(client: Arc<dyn HttpClient>, base_url: &str) {
     if base_url.is_empty() || !begin_attempt(base_url, Instant::now()) {
         return;
     }
@@ -289,10 +336,10 @@ pub fn ensure_fetched(base_url: &str) {
         .name("capabilities".into())
         .spawn({
             let base = base.clone();
-            move || finish_attempt(&base, fetch_with(&UreqClient::new(), &base))
+            move || finish_attempt(&base, fetch_with(client.as_ref(), &base))
         });
     if spawned.is_err() {
-        finish_attempt(&base, Err("could not spawn worker thread".into()));
+        finish_attempt(&base, Err(CapabilitiesError::Spawn));
     }
 }
 
@@ -370,7 +417,50 @@ mod tests {
 
     #[test]
     fn malformed_xml_is_an_error() {
-        assert!(Capabilities::parse("<osm><api></osm>").is_err());
+        let err = Capabilities::parse("<osm><api></osm>").unwrap_err();
+        assert!(matches!(err, CapabilitiesError::Parse(_)), "{err:?}");
+        assert!(err.to_string().starts_with("capabilities XML: "));
+    }
+
+    #[test]
+    fn fetch_errors_are_typed_and_remembered() {
+        let base = "https://caps-errors.test";
+        let client = FakeClient::new(vec![status_err(503, "down")]);
+        let err = fetch_with(&client, base).unwrap_err();
+        assert!(matches!(
+            err,
+            CapabilitiesError::Fetch(HttpError::Status { status: 503, .. })
+        ));
+        assert_eq!(err.to_string(), "HTTP 503");
+
+        let client = FakeClient::new(vec![ok(200, vec![0xff, 0xfe])]);
+        assert!(matches!(
+            fetch_with(&client, base),
+            Err(CapabilitiesError::Fetch(HttpError::Transport(_)))
+        ));
+
+        let client = FakeClient::new(vec![ok(200, "<osm><api></osm>")]);
+        assert!(matches!(
+            fetch_with(&client, base),
+            Err(CapabilitiesError::Parse(_))
+        ));
+
+        assert_eq!(
+            CapabilitiesError::Spawn.to_string(),
+            "could not spawn worker thread"
+        );
+
+        // The failure is kept for the server until a fetch succeeds.
+        let failing = FakeClient::new(vec![status_err(500, "oops")]);
+        assert!(refresh_blocking(&failing, base, Instant::now()));
+        assert!(matches!(
+            last_error(base),
+            Some(CapabilitiesError::Fetch(_))
+        ));
+        let later = Instant::now() + RETRY_COOLDOWN + Duration::from_secs(1);
+        let healthy = FakeClient::new(vec![ok(200, "<osm/>")]);
+        assert!(refresh_blocking(&healthy, base, later));
+        assert!(last_error(base).is_none());
     }
 
     #[test]
