@@ -297,3 +297,86 @@ fn add_clicks_that_snap_onto_a_way_redo_the_splices(cx: &mut TestAppContext) {
         s.assert_no_dangling();
     });
 }
+
+/// What undo and redo select after the newest step: the features it names.
+fn last_step_selects(s: &Session) -> Vec<(FeatureKind, i64)> {
+    s.view
+        .undo_stack
+        .actions
+        .last()
+        .expect("a step")
+        .affected_features()
+        .iter()
+        .map(|f| (f.kind, f.id))
+        .collect()
+}
+
+#[gpui::test]
+fn drawing_steps_select_the_way_the_user_made(cx: &mut TestAppContext) {
+    use FeatureKind::{Node, Way};
+    with_session_in(cx, empty(), EditMode::Building, |s| {
+        for p in [off(s, -60.0, 0.0), off(s, 60.0, 0.0), off(s, 60.0, 50.0)] {
+            crate::modes::building::click(s.view, p);
+        }
+        let [way] = s.new_ways()[..] else {
+            panic!("one new way");
+        };
+        assert_eq!(last_step_selects(s), vec![(Way, way)], "a building");
+    });
+    with_session(cx, data(), |s| {
+        let drag = ExtrudeDrag {
+            layer: s.layer,
+            way_id: 10,
+            node_a: 1,
+            node_b: 2,
+            segment: 0,
+            style: ExtrudeStyle::NewWay,
+            down: off(s, 0.0, 0.0),
+        };
+        let up = off(s, 0.0, -80.0);
+        s.view.commit_extrude(&drag, up);
+        let [way] = s.new_ways()[..] else {
+            panic!("one new way");
+        };
+        assert_eq!(last_step_selects(s), vec![(Way, way)], "an extrusion");
+
+        let at = off(s, 0.0, 0.0);
+        s.view.insert_node_on_segment(&drag, at);
+        let node = s.way_nodes(10).unwrap()[1];
+        assert_eq!(
+            last_step_selects(s),
+            vec![(Way, 10), (Node, node)],
+            "an inserted node"
+        );
+    });
+    with_session(cx, data(), |s| {
+        add_mode(s);
+        for p in [
+            geo(s, LAT, LON - 0.0005),
+            off(s, 0.0, -120.0),
+            geo(s, LAT, LON + 0.0005),
+        ] {
+            s.view.handle_add_click(p, false);
+        }
+        let way = s.new_ways()[0];
+        let node = *s.way_nodes(way).unwrap().last().unwrap();
+        assert_eq!(
+            last_step_selects(s),
+            vec![(Way, way), (Way, 10), (Node, node)],
+            "a click that snaps onto a way"
+        );
+    });
+    with_session(cx, empty(), |s| {
+        add_mode(s);
+        for p in [off(s, -100.0, -50.0), off(s, 0.0, -50.0)] {
+            s.view.handle_add_click(p, false);
+        }
+        let way = s.new_ways()[0];
+        let node = s.way_nodes(way).unwrap()[1];
+        assert_eq!(
+            last_step_selects(s),
+            vec![(Way, way), (Node, node)],
+            "a click that extends a way"
+        );
+    });
+}

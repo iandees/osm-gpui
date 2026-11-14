@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon_wrapped};
+use crate::edit_ops::{replay, EditOp};
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::limits::{self, Limits};
 use crate::osm::{MemberType, OsmMember};
@@ -611,32 +612,30 @@ impl PastedFeatures {
     /// Returns what the layer refused; the rest is still applied.
     pub fn undo(&self, editable: &mut dyn EditableLayer) -> Vec<EditError> {
         let mut refused = Vec::new();
-        for snapshot in self.relations.iter().rev() {
-            refused.extend(editable.delete_relation(snapshot.relation.id).err());
-        }
-        for snapshot in self.ways.iter().rev() {
-            refused.extend(editable.delete_feature(FeatureKind::Way, snapshot.id).err());
-        }
-        for snapshot in self.nodes.iter().rev() {
-            refused.extend(
-                editable
-                    .delete_feature(FeatureKind::Node, snapshot.id)
-                    .err(),
-            );
-        }
+        replay(&self.ops(), false, editable, &mut refused);
         refused
+    }
+
+    /// The paste as ops, in creation order: nodes, ways, then relations.
+    pub fn ops(&self) -> Vec<EditOp> {
+        let put = |snapshot: &DeletedFeatureSnapshot| EditOp::PutFeature {
+            snapshot: snapshot.clone(),
+        };
+        self.nodes
+            .iter()
+            .map(put)
+            .chain(self.ways.iter().map(put))
+            .chain(self.relations.iter().map(|snapshot| EditOp::PutRelation {
+                snapshot: snapshot.clone(),
+            }))
+            .collect()
     }
 
     /// Create the same objects again, under the same ids. Returns what the
     /// layer refused; the rest is still applied.
     pub fn redo(&self, editable: &mut dyn EditableLayer) -> Vec<EditError> {
         let mut refused = Vec::new();
-        for snapshot in self.nodes.iter().chain(&self.ways) {
-            refused.extend(editable.restore_feature(snapshot.clone()).err());
-        }
-        for snapshot in &self.relations {
-            refused.extend(editable.restore_relation(snapshot.clone()).err());
-        }
+        replay(&self.ops(), true, editable, &mut refused);
         refused
     }
 }
