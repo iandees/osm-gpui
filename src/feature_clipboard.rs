@@ -1254,6 +1254,12 @@ mod tests {
             .set_tag(FeatureKind::Way, 10, "highway", "motorway")
             .unwrap();
         layer.commit_node_moves(&[(1, 10.0, 10.0)]).unwrap();
+        // A way a relation lists cannot be deleted: drop it from them first.
+        for relation_id in layer.relations_containing_way(10) {
+            let mut members = layer.relation(relation_id).unwrap().members;
+            members.retain(|m| !(m.member_type == MemberType::Way && m.reference == 10));
+            layer.set_relation_members(relation_id, members).unwrap();
+        }
         layer.delete_feature(FeatureKind::Way, 10).unwrap();
         let pasted = paste(&clip, &mut layer, A, PastePosition::Source);
         let way = &pasted.ways[0];

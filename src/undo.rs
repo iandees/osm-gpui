@@ -4,19 +4,8 @@ use osm_gpui::edit_ops::{replay, EditOp, Recording};
 use osm_gpui::layers::{EditError, LayerId, LayerManager};
 use osm_gpui::osm::OsmMember;
 use osm_gpui::selection::FeatureRef;
+#[cfg(test)]
 use osm_gpui::selection::{DeletedFeatureSnapshot, DeletedRelationSnapshot, FeatureKind};
-
-/// Undo `done`, newest first, for an action that stopped part way. Anything
-/// the layer refuses is logged: the data then differs from what `done` says.
-pub(crate) fn roll_back(layers: &mut LayerManager, done: &[UndoableAction]) {
-    let mut failures = Vec::new();
-    for action in done.iter().rev() {
-        action.apply(layers, false, &mut failures);
-    }
-    for failure in failures {
-        eprintln!("rolling back a half-done edit was refused: {failure}");
-    }
-}
 
 /// Undo what `rec` has recorded so far, for an action that stopped part way.
 pub(crate) fn roll_back_recording(rec: Recording<'_>) {
@@ -61,7 +50,7 @@ pub(crate) fn write_tag_entries(
 }
 
 /// A single node move: its id, (lat, lon) before, and (lat, lon) after.
-pub(crate) type NodeMoveUndoEntry = (i64, (f64, f64), (f64, f64));
+pub(crate) type NodeMoveUndoEntry = osm_gpui::edit_ops::NodeMove;
 
 /// Per layer: node id -> (before (lat, lon), after (lat, lon)).
 pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<NodeMoveUndoEntry>)>;
@@ -71,6 +60,7 @@ pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<NodeMoveUndoEntry>)>;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EditLabel {
     CreatedNode,
+    #[cfg(test)]
     CreatedWay,
     /// A node or way deleted; the kind picks the text.
     Deleted(osm_gpui::selection::FeatureKind),
@@ -82,9 +72,16 @@ pub(crate) enum EditLabel {
     SnappedNode,
     /// Ways reversed, counted.
     Reversed(usize),
+    #[cfg(test)]
     ChangedWayNodes,
     ChangedRelationMembers,
     CreatedRelation,
+    /// Objects purged from a layer's downloaded data.
+    Purged,
+    /// Nodes moved, counted.
+    MovedNodes(usize),
+    /// Tag entries changed, counted.
+    ChangedTags(usize),
     /// A label the caller words itself (a multi-part action's name).
     Text(String),
 }
@@ -94,6 +91,7 @@ impl EditLabel {
         use osm_gpui::selection::FeatureKind;
         match self {
             EditLabel::CreatedNode => osm_gpui::tr!("history.created_node").to_string(),
+            #[cfg(test)]
             EditLabel::CreatedWay => osm_gpui::tr!("history.created_way").to_string(),
             EditLabel::Deleted(FeatureKind::Node) => {
                 osm_gpui::tr!("history.deleted_node").to_string()
@@ -113,11 +111,19 @@ impl EditLabel {
             EditLabel::Reversed(count) => {
                 osm_gpui::tr_count!("action.reverse.done", *count).to_string()
             }
+            #[cfg(test)]
             EditLabel::ChangedWayNodes => osm_gpui::tr!("history.changed_way_nodes").to_string(),
             EditLabel::ChangedRelationMembers => {
                 osm_gpui::tr!("history.changed_relation_members").to_string()
             }
             EditLabel::CreatedRelation => osm_gpui::tr!("history.created_relation").to_string(),
+            EditLabel::Purged => osm_gpui::tr!("history.purged").to_string(),
+            EditLabel::MovedNodes(count) => {
+                osm_gpui::tr_count!("history.moved_nodes", *count).to_string()
+            }
+            EditLabel::ChangedTags(count) => {
+                osm_gpui::tr_count!("history.changed_tags", *count).to_string()
+            }
             EditLabel::Text(text) => text.clone(),
         }
     }
@@ -137,30 +143,6 @@ pub(crate) enum UndoableAction {
         /// from "everything the ops touch, in order" (a drawn building
         /// selects its way, not its corner nodes).
         select: Option<Vec<osm_gpui::selection::FeatureRef>>,
-    },
-    MoveNodes {
-        per_layer: NodeMoveUndoEntries,
-        /// What to select after undoing or redoing this step, when it should
-        /// differ from the moved nodes (a dragged way stays the selection).
-        select: Option<Vec<osm_gpui::selection::FeatureRef>>,
-    },
-    /// One entry per affected feature: which key, and its value before/
-    /// after (`None` = key was/becomes absent). A key rename is modeled as
-    /// two entries for the same feature — remove-old plus add-new — so
-    /// this stays a single uniform apply loop.
-    SetTags {
-        entries: Vec<(
-            osm_gpui::selection::FeatureRef,
-            String,
-            Option<String>,
-            Option<String>,
-        )>,
-    },
-    /// Purge: objects dropped from `layer`'s downloaded data without being
-    /// deleted. Undo puts them back as downloaded; redo purges them again.
-    Purge {
-        layer: LayerId,
-        purged: osm_gpui::selection::PurgedFeatures,
     },
     /// Paste or Duplicate: a set of new nodes, ways and relations created in
     /// one layer at once. Undo removes all of them (and brings back the
@@ -188,6 +170,70 @@ impl UndoableAction {
         }
     }
 
+    /// Nodes moved, one entry list per layer. A step spanning several layers
+    /// is a `Batch` of one `Edit` per layer, each selecting `select`.
+    pub(crate) fn move_nodes(
+        per_layer: NodeMoveUndoEntries,
+        select: Option<Vec<FeatureRef>>,
+    ) -> Self {
+        let count: usize = per_layer.iter().map(|(_, entries)| entries.len()).sum();
+        let mut edits: Vec<UndoableAction> = per_layer
+            .into_iter()
+            .map(|(layer, moves)| {
+                let label = EditLabel::MovedNodes(moves.len());
+                let mut edit = Self::edit(layer, label, vec![EditOp::MoveNodes { moves }]);
+                if let (UndoableAction::Edit { select: slot, .. }, Some(select)) =
+                    (&mut edit, &select)
+                {
+                    *slot = Some(select.clone());
+                }
+                edit
+            })
+            .collect();
+        if edits.len() == 1 {
+            return edits.remove(0);
+        }
+        UndoableAction::Batch {
+            label: EditLabel::MovedNodes(count).text(),
+            actions: edits,
+        }
+    }
+
+    /// Tags changed, one entry per feature and key. A step spanning several
+    /// layers is a `Batch` of one `Edit` per layer.
+    pub(crate) fn set_tags(entries: Vec<TagEntry>) -> Self {
+        let count = entries.len();
+        let mut per_layer: Vec<(LayerId, Vec<EditOp>)> = Vec::new();
+        for (feature, key, before, after) in entries {
+            let op = EditOp::SetTag {
+                kind: feature.kind,
+                id: feature.id,
+                key,
+                before,
+                after,
+            };
+            match per_layer
+                .iter_mut()
+                .find(|(layer, _)| *layer == feature.layer_id)
+            {
+                Some((_, ops)) => ops.push(op),
+                None => per_layer.push((feature.layer_id, vec![op])),
+            }
+        }
+        let mut edits: Vec<UndoableAction> = per_layer
+            .into_iter()
+            .map(|(layer, ops)| Self::edit(layer, EditLabel::ChangedTags(ops.len()), ops))
+            .collect();
+        if edits.len() == 1 {
+            return edits.remove(0);
+        }
+        UndoableAction::Batch {
+            label: EditLabel::ChangedTags(count).text(),
+            actions: edits,
+        }
+    }
+
+    #[cfg(test)]
     /// A node created on `layer` at `(lat, lon)` under `id`.
     pub(crate) fn create_node(layer: LayerId, id: i64, lat: f64, lon: f64) -> Self {
         let snapshot = DeletedFeatureSnapshot {
@@ -205,6 +251,7 @@ impl UndoableAction {
         )
     }
 
+    #[cfg(test)]
     /// A way created on `layer`, as `snapshot` describes it.
     pub(crate) fn create_way(layer: LayerId, snapshot: DeletedFeatureSnapshot) -> Self {
         Self::edit(
@@ -214,12 +261,14 @@ impl UndoableAction {
         )
     }
 
+    #[cfg(test)]
     /// A node or way deleted from `layer`; `snapshot` is what it held.
     pub(crate) fn delete_feature(layer: LayerId, snapshot: DeletedFeatureSnapshot) -> Self {
         let label = EditLabel::Deleted(snapshot.kind);
         Self::edit(layer, label, vec![EditOp::RemoveFeature { snapshot }])
     }
 
+    #[cfg(test)]
     /// `way_ids` reversed on `layer`.
     pub(crate) fn reverse_ways(layer: LayerId, way_ids: Vec<i64>) -> Self {
         let label = EditLabel::Reversed(way_ids.len());
@@ -230,6 +279,7 @@ impl UndoableAction {
         Self::edit(layer, label, ops)
     }
 
+    #[cfg(test)]
     /// A way's node list replaced.
     pub(crate) fn set_way_nodes(
         layer: LayerId,
@@ -258,6 +308,7 @@ impl UndoableAction {
         )
     }
 
+    #[cfg(test)]
     /// A relation created on `layer`.
     pub(crate) fn create_relation(layer: LayerId, snapshot: DeletedRelationSnapshot) -> Self {
         Self::edit(
@@ -267,6 +318,7 @@ impl UndoableAction {
         )
     }
 
+    #[cfg(test)]
     /// A relation deleted from `layer`.
     pub(crate) fn delete_relation(layer: LayerId, snapshot: DeletedRelationSnapshot) -> Self {
         Self::edit(
@@ -291,11 +343,6 @@ impl UndoableAction {
     /// recorded ids, never the layer. The result has no duplicates.
     pub(crate) fn affected_features(&self) -> Vec<osm_gpui::selection::FeatureRef> {
         use osm_gpui::selection::FeatureRef;
-        let node = |layer: LayerId, id: i64| FeatureRef {
-            layer_id: layer,
-            kind: FeatureKind::Node,
-            id,
-        };
         let mut out: Vec<FeatureRef> = Vec::new();
         match self {
             UndoableAction::Edit {
@@ -304,19 +351,6 @@ impl UndoableAction {
                 Some(select) => out.extend(select.iter().copied()),
                 None => out.extend(ops.iter().flat_map(|op| op.touches(*layer))),
             },
-            UndoableAction::MoveNodes { per_layer, select } => {
-                if let Some(select) = select {
-                    out.extend(select.iter().copied());
-                } else {
-                    for (layer, entries) in per_layer {
-                        out.extend(entries.iter().map(|&(id, _, _)| node(*layer, id)));
-                    }
-                }
-            }
-            UndoableAction::SetTags { entries } => {
-                out.extend(entries.iter().map(|(feature, ..)| *feature));
-            }
-            UndoableAction::Purge { layer, purged } => out.extend(purged.features(*layer)),
             UndoableAction::PasteFeatures { pasted } => out.extend(pasted.created()),
             UndoableAction::Batch { actions, .. } => {
                 for action in actions {
@@ -351,17 +385,6 @@ impl UndoableAction {
         };
         match self {
             UndoableAction::Edit { layer, .. } => add(*layer),
-            UndoableAction::MoveNodes { per_layer, .. } => {
-                for (layer, _) in per_layer {
-                    add(*layer);
-                }
-            }
-            UndoableAction::SetTags { entries } => {
-                for (feature, ..) in entries {
-                    add(feature.layer_id);
-                }
-            }
-            UndoableAction::Purge { layer, .. } => add(*layer),
             UndoableAction::PasteFeatures { pasted } => add(pasted.layer),
             UndoableAction::Batch { actions, .. } => {
                 for action in actions {
@@ -387,58 +410,6 @@ impl UndoableAction {
                     .and_then(|layer| layer.as_editable_mut())
                 {
                     replay(ops, forward, editable, failures);
-                }
-            }
-            UndoableAction::MoveNodes { per_layer, .. } => {
-                for (layer_id, entries) in per_layer {
-                    let moves: Vec<(i64, f64, f64)> = entries
-                        .iter()
-                        .map(|&(id, before, after)| {
-                            let (lat, lon) = if forward { after } else { before };
-                            (id, lat, lon)
-                        })
-                        .collect();
-                    if let Some(layer) = layers.find_layer_mut(*layer_id) {
-                        if let Some(editable) = layer.as_editable_mut() {
-                            keep_going(failures, editable.commit_node_moves(&moves));
-                        }
-                    }
-                }
-            }
-            UndoableAction::SetTags { entries } => {
-                for (feature, key, before, after) in entries {
-                    let Some(layer) = layers.find_layer_mut(feature.layer_id) else {
-                        continue;
-                    };
-                    let Some(editable) = layer.as_editable_mut() else {
-                        continue;
-                    };
-                    let value = if forward { after } else { before };
-                    match value {
-                        Some(v) => {
-                            keep_going(failures, editable.set_tag(feature.kind, feature.id, key, v))
-                        }
-                        None => {
-                            keep_going(failures, editable.remove_tag(feature.kind, feature.id, key))
-                        }
-                    }
-                }
-            }
-            UndoableAction::Purge { layer, purged } => {
-                let Some(editable) = layers
-                    .find_layer_mut(*layer)
-                    .and_then(|layer| layer.as_editable_mut())
-                else {
-                    return;
-                };
-                if forward {
-                    let ids: Vec<i64> = purged.nodes.iter().map(|n| n.id).collect();
-                    let way_ids: Vec<i64> = purged.ways.iter().map(|w| w.id).collect();
-                    let relation_ids: Vec<i64> =
-                        purged.relations.iter().map(|(r, ..)| r.id).collect();
-                    editable.purge_features(&ids, &way_ids, &relation_ids);
-                } else {
-                    editable.restore_purged(purged.clone());
                 }
             }
             UndoableAction::PasteFeatures { pasted } => {
@@ -472,14 +443,6 @@ impl UndoableAction {
     pub(crate) fn description(&self) -> String {
         match self {
             UndoableAction::Edit { label, .. } => label.text(),
-            UndoableAction::MoveNodes { per_layer, .. } => {
-                let count: usize = per_layer.iter().map(|(_, entries)| entries.len()).sum();
-                osm_gpui::tr_count!("history.moved_nodes", count).to_string()
-            }
-            UndoableAction::SetTags { entries } => {
-                osm_gpui::tr_count!("history.changed_tags", entries.len()).to_string()
-            }
-            UndoableAction::Purge { .. } => osm_gpui::tr!("history.purged").to_string(),
             UndoableAction::PasteFeatures { pasted } => {
                 let key = if pasted.duplicate {
                     "history.duplicated_features"
@@ -593,13 +556,6 @@ impl UndoStack {
     }
 }
 
-/// Record a refused undo/redo step and carry on; see `apply_undo_action`.
-fn keep_going<T>(failures: &mut Vec<EditError>, result: Result<T, EditError>) {
-    if let Err(e) = result {
-        failures.push(e);
-    }
-}
-
 #[cfg(test)]
 mod undo_stack_tests {
     use super::{EditLabel, LayerId, UndoStack, UndoableAction};
@@ -607,10 +563,7 @@ mod undo_stack_tests {
     use osm_gpui::selection::{FeatureKind, FeatureRef};
 
     fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
-        UndoableAction::MoveNodes {
-            select: None,
-            per_layer: vec![(LayerId(1), vec![(id, before, after)])],
-        }
+        UndoableAction::move_nodes(vec![(LayerId(1), vec![(id, before, after)])], None)
     }
 
     #[test]
@@ -659,10 +612,10 @@ mod undo_stack_tests {
     }
 
     fn move_in(layer: u64, id: i64) -> UndoableAction {
-        UndoableAction::MoveNodes {
-            select: None,
-            per_layer: vec![(LayerId(layer), vec![(id, (0.0, 0.0), (1.0, 1.0))])],
-        }
+        UndoableAction::move_nodes(
+            vec![(LayerId(layer), vec![(id, (0.0, 0.0), (1.0, 1.0))])],
+            None,
+        )
     }
 
     fn create_in(layer: u64, id: i64) -> UndoableAction {
@@ -701,13 +654,13 @@ mod undo_stack_tests {
     #[test]
     fn remove_layer_drops_whole_steps_spanning_layers() {
         let mut stack = UndoStack::default();
-        stack.push(UndoableAction::MoveNodes {
-            select: None,
-            per_layer: vec![
+        stack.push(UndoableAction::move_nodes(
+            vec![
                 (LayerId(1), vec![(1, (0.0, 0.0), (1.0, 1.0))]),
                 (LayerId(2), vec![(2, (0.0, 0.0), (1.0, 1.0))]),
             ],
-        });
+            None,
+        ));
         stack.push(UndoableAction::Batch {
             label: "mixed".into(),
             actions: vec![create_in(1, -1), create_in(3, -2)],
@@ -717,13 +670,13 @@ mod undo_stack_tests {
             actions: vec![create_in(1, -3), move_in(1, 5)],
         });
         // A layer with an empty entry still counts as touched.
-        stack.push(UndoableAction::MoveNodes {
-            select: None,
-            per_layer: vec![
+        stack.push(UndoableAction::move_nodes(
+            vec![
                 (LayerId(1), vec![(9, (0.0, 0.0), (1.0, 1.0))]),
                 (LayerId(2), vec![]),
             ],
-        });
+            None,
+        ));
         assert_eq!(stack.remove_layer(LayerId(2)), 2);
         assert_eq!(stack.remove_layer(LayerId(3)), 1);
         assert_eq!(stack.actions.len(), 1);
@@ -749,14 +702,99 @@ mod undo_stack_tests {
         let one = move_one(1, (0.0, 0.0), (1.0, 1.0));
         assert_eq!(one.description(), "Moved 1 node");
 
-        let two = UndoableAction::MoveNodes {
-            select: None,
-            per_layer: vec![(
+        let two = UndoableAction::move_nodes(
+            vec![(
                 LayerId(1),
                 vec![(1, (0.0, 0.0), (1.0, 1.0)), (2, (0.0, 0.0), (1.0, 1.0))],
             )],
-        };
+            None,
+        );
         assert_eq!(two.description(), "Moved 2 nodes");
+    }
+
+    #[test]
+    fn a_move_is_one_edit_per_layer_and_each_selects_what_was_asked() {
+        let select = vec![FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 7,
+        }];
+        let one = UndoableAction::move_nodes(
+            vec![(LayerId(1), vec![(1, (0.0, 0.0), (1.0, 1.0))])],
+            Some(select.clone()),
+        );
+        let UndoableAction::Edit { layer, ops, .. } = &one else {
+            panic!("one layer is one Edit");
+        };
+        assert_eq!(*layer, LayerId(1));
+        assert_eq!(
+            ops[..],
+            [EditOp::MoveNodes {
+                moves: vec![(1, (0.0, 0.0), (1.0, 1.0))]
+            }]
+        );
+        assert_eq!(one.affected_features(), select);
+
+        let two = UndoableAction::move_nodes(
+            vec![
+                (LayerId(1), vec![(1, (0.0, 0.0), (1.0, 1.0))]),
+                (LayerId(2), vec![(2, (0.0, 0.0), (1.0, 1.0))]),
+            ],
+            Some(select.clone()),
+        );
+        let UndoableAction::Batch { actions, .. } = &two else {
+            panic!("two layers are a Batch");
+        };
+        assert_eq!(actions.len(), 2);
+        assert_eq!(two.layers(), vec![LayerId(1), LayerId(2)]);
+        assert_eq!(two.affected_features(), select);
+        assert_eq!(two.description(), "Moved 2 nodes");
+    }
+
+    #[test]
+    fn tag_entries_become_one_edit_per_layer_in_order() {
+        let at = |layer: u64, id: i64| FeatureRef {
+            layer_id: LayerId(layer),
+            kind: FeatureKind::Node,
+            id,
+        };
+        let entry = |layer: u64, id: i64, key: &str, before: Option<&str>, after: Option<&str>| {
+            (
+                at(layer, id),
+                key.to_string(),
+                before.map(String::from),
+                after.map(String::from),
+            )
+        };
+        let step = UndoableAction::set_tags(vec![
+            entry(1, 5, "a", None, Some("x")),
+            entry(2, 6, "b", Some("y"), None),
+            entry(1, 5, "c", Some("p"), Some("q")),
+        ]);
+        let UndoableAction::Batch { actions, .. } = &step else {
+            panic!("two layers are a Batch");
+        };
+        let ops_of = |action: &UndoableAction| match action {
+            UndoableAction::Edit { layer, ops, .. } => (*layer, ops.clone()),
+            _ => panic!("expected an Edit"),
+        };
+        let (layer, first) = ops_of(&actions[0]);
+        assert_eq!(layer, LayerId(1));
+        assert_eq!(first.len(), 2);
+        assert!(matches!(
+            &first[1],
+            EditOp::SetTag { key, before: Some(b), after: Some(a), .. }
+                if key == "c" && b == "p" && a == "q"
+        ));
+        let (layer, second) = ops_of(&actions[1]);
+        assert_eq!(layer, LayerId(2));
+        assert!(matches!(&second[..], [EditOp::SetTag { after: None, .. }]));
+        assert_eq!(step.description(), "Changed 3 tags");
+        assert_eq!(step.affected_features(), vec![at(1, 5), at(2, 6)]);
+
+        let none = UndoableAction::set_tags(Vec::new());
+        assert_eq!(none.description(), "Changed 0 tags");
+        assert!(none.layers().is_empty());
     }
 
     #[test]
@@ -831,17 +869,14 @@ mod undo_stack_tests {
             id: 1,
         };
 
-        let one = UndoableAction::SetTags {
-            entries: vec![tag_change(f, "highway", None, Some("residential"))],
-        };
+        let one =
+            UndoableAction::set_tags(vec![tag_change(f, "highway", None, Some("residential"))]);
         assert_eq!(one.description(), "Changed 1 tag");
 
-        let two = UndoableAction::SetTags {
-            entries: vec![
-                tag_change(f, "highway", None, Some("residential")),
-                tag_change(f, "surface", None, Some("paved")),
-            ],
-        };
+        let two = UndoableAction::set_tags(vec![
+            tag_change(f, "highway", None, Some("residential")),
+            tag_change(f, "surface", None, Some("paved")),
+        ]);
         assert_eq!(two.description(), "Changed 2 tags");
     }
 
@@ -1054,13 +1089,11 @@ mod undo_stack_tests {
             vec![fref(Node, 3)]
         );
 
-        let tags = UndoableAction::SetTags {
-            entries: vec![
-                (fref(Way, 5), "a".into(), None, Some("b".into())),
-                (fref(Way, 5), "c".into(), None, Some("d".into())),
-                (fref(Node, 6), "a".into(), None, Some("b".into())),
-            ],
-        };
+        let tags = UndoableAction::set_tags(vec![
+            (fref(Way, 5), "a".into(), None, Some("b".into())),
+            (fref(Way, 5), "c".into(), None, Some("d".into())),
+            (fref(Node, 6), "a".into(), None, Some("b".into())),
+        ]);
         assert_eq!(tags.affected_features(), vec![fref(Way, 5), fref(Node, 6)]);
 
         let create_node = UndoableAction::create_node(layer, -1, 0.0, 0.0);

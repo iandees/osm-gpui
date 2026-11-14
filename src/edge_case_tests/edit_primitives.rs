@@ -162,6 +162,16 @@ fn delete_feature_refuses_a_relation_and_restore_feature_a_taken_id() {
             .unwrap_err(),
         EditError::NotNodeOrWay(FeatureKind::Relation)
     );
+    // The relation lists the way, so the way stays until the relation lets go.
+    assert_eq!(
+        layer.delete_feature(FeatureKind::Way, 10).unwrap_err(),
+        EditError::InRelation {
+            kind: FeatureKind::Way,
+            id: 10,
+            relation: 500
+        }
+    );
+    layer.set_relation_members(500, vec![]).unwrap();
     let snapshot = layer.delete_feature(FeatureKind::Way, 10).unwrap();
     layer.restore_feature(snapshot.clone()).unwrap();
     assert_eq!(

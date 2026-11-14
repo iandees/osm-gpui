@@ -86,6 +86,14 @@ fn layer() -> OsmLayer {
     OsmLayer::new_with_data(LayerId(1), "L", Arc::new(server_data()))
 }
 
+/// `server_data` without the named relations, for tests that delete a node
+/// or way the layer would otherwise refuse to delete while they list it.
+fn layer_without_relations(ids: &[i64]) -> OsmLayer {
+    let mut data = server_data();
+    data.relations.retain(|r| !ids.contains(&r.id));
+    OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data))
+}
+
 fn counts(l: &OsmLayer) -> (usize, usize, usize) {
     l.diff_for_upload().counts()
 }
@@ -133,7 +141,7 @@ fn has_pending_edit_follows_each_kind_of_edit_and_clears_when_the_edit_is_undone
 
 #[test]
 fn has_pending_edit_is_false_for_an_object_deleted_here() {
-    let mut l = layer();
+    let mut l = layer_without_relations(&[51]);
     l.delete_feature(Node, 4).unwrap();
     assert!(!l.has_pending_edit(Node, 4));
     assert!(l.is_locally_deleted(Node, 4));
@@ -309,7 +317,7 @@ fn set_base_version_moves_the_base_of_a_pending_edit_and_keeps_the_edit() {
 
 #[test]
 fn set_base_version_moves_the_base_of_a_local_delete() {
-    let mut l = layer();
+    let mut l = layer_without_relations(&[51]);
     l.delete_feature(Node, 4).unwrap();
     assert!(l.set_base_version(Node, 4, 8));
     assert_eq!(l.diff_for_upload().deleted_node_ids, vec![(4, 8)]);
@@ -369,7 +377,7 @@ fn adopting_the_servers_node_drops_the_local_change() {
 
 #[test]
 fn adopting_a_server_deletion_removes_the_object_from_data_and_baseline() {
-    let mut l = layer();
+    let mut l = layer_without_relations(&[51]);
     l.set_tag(Way, 10, "name", "Main").unwrap();
     assert!(l.adopt_server_element(Way, 10, ServerElement::Gone));
     assert!(!l.has_feature(Way, 10));
@@ -456,7 +464,7 @@ fn adopting_an_element_the_server_data_does_not_hold_is_false_and_changes_nothin
 
 #[test]
 fn forgetting_a_local_delete_drops_it_from_the_diff() {
-    let mut l = layer();
+    let mut l = layer_without_relations(&[51]);
     l.delete_feature(Node, 4).unwrap();
     assert_eq!(l.diff_for_upload().deleted_node_ids.len(), 1);
     assert!(l.is_locally_deleted(Node, 4));
@@ -470,7 +478,7 @@ fn forgetting_a_local_delete_drops_it_from_the_diff() {
 
 #[test]
 fn forgetting_a_local_delete_covers_ways_and_relations() {
-    let mut l = layer();
+    let mut l = layer_without_relations(&[50, 52]);
     l.delete_relation(51).unwrap();
     l.delete_feature(Way, 10).unwrap();
     assert!(l.forget_local_delete(Way, 10));
@@ -523,8 +531,8 @@ fn edited_layer() -> OsmLayer {
     let mut l = layer();
     l.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
     l.set_tag(Way, 10, "name", "Main").unwrap();
-    l.delete_feature(Node, 4).unwrap();
     l.delete_relation(51).unwrap();
+    l.delete_feature(Node, 4).unwrap();
     let n = l.add_node(40.2, -74.2);
     let w = l.add_way(
         vec![n, 3],

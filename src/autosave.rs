@@ -1275,8 +1275,15 @@ mod tests {
                 ],
             )
             .unwrap();
-        // Deleted objects: a relation, a way and a loose node.
+        // Deleted objects: a relation, a way and a loose node. The way leaves
+        // the relation that lists it first, as the layer requires.
         layer.delete_relation(201).unwrap();
+        layer
+            .set_relation_members(
+                new_relation,
+                vec![member(MemberType::Way, new_way, "outer")],
+            )
+            .unwrap();
         layer.delete_feature(FeatureKind::Way, 101).unwrap();
         layer.delete_feature(FeatureKind::Node, 9).unwrap();
         // A node created and deleted again never existed on the server.

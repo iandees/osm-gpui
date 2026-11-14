@@ -123,10 +123,10 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
             if editable.commit_node_moves(&[(node, lat, lon)]).is_err() {
                 return;
             }
-            view.undo_stack.push(UndoableAction::MoveNodes {
-                per_layer: vec![(layer_id, vec![(node, before, (lat, lon))])],
-                select: Some(vec![way_ref]),
-            });
+            view.undo_stack.push(UndoableAction::move_nodes(
+                vec![(layer_id, vec![(node, before, (lat, lon))])],
+                Some(vec![way_ref]),
+            ));
         }
         Plan::Insert { index, at } => {
             if view.refuse_way_growth(layer_id, way_id, 1) {
