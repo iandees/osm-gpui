@@ -65,9 +65,9 @@ mod viewer_tests;
 mod welcome;
 
 use crate::menu::{
-    add_imagery_layer, add_osm_carto, add_saved_custom_imagery,
-    download_from_osm, no_op_imagery_info, open_custom_imagery_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
+    add_imagery_layer, add_osm_carto, add_saved_custom_imagery, download_from_osm,
+    no_op_imagery_info, open_custom_imagery_dialog, open_osm_file, open_settings, quit,
+    rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
@@ -84,8 +84,7 @@ use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
 use osm_gpui::layers::{
-    osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId,
-    LayerManager, MapLayer,
+    osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId, LayerManager, MapLayer,
 };
 use osm_gpui::osm::OsmData;
 use osm_gpui::osm_api;

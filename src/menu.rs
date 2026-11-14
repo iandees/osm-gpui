@@ -21,13 +21,13 @@ use crate::street_imagery_ui::{
     RefreshStreetImagery, ToggleFotoshi, ToggleMapillary, TogglePanoramax,
 };
 use crate::{
-    with_map_viewer, with_map_viewer_in, AddCustomImagery, AddImageryLayer,
-    AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
-    DeselectAll, DownloadFromOsm, EditMode, ExportOsmFile, Find, HideApp, HideOtherApps,
-    ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
-    RunSelectionAction, ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps,
-    ToggleDebugOverlay, ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut,
-    ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
+    with_map_viewer, with_map_viewer_in, AddCustomImagery, AddImageryLayer, AddOsmCarto,
+    AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection, DeselectAll,
+    DownloadFromOsm, EditMode, ExportOsmFile, Find, HideApp, HideOtherApps, ImageryLoadState,
+    LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo, RunSelectionAction,
+    ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay,
+    ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut, ZoomToData,
+    ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
 /// The Settings window, once opened. Whether it is still open is read from
