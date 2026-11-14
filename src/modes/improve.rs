@@ -39,7 +39,7 @@ impl MapViewer {
     /// The operation the held modifiers select in Improve Way mode: Shift
     /// deletes, Ctrl/Cmd/Alt insert, none moves.
     fn improve_op(&self) -> osm_gpui::improve_way::Op {
-        let m = self.last_modifiers;
+        let m = self.pointer.last_modifiers;
         osm_gpui::improve_way::Op::from_modifiers(m.shift, m.control || m.platform || m.alt)
     }
 
@@ -198,7 +198,11 @@ pub(super) fn cursor() -> CursorStyle {
 pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: &mut Window) {
     use osm_gpui::improve_way::{marker, preview, Plan};
 
-    let Some(ip) = view.last_mouse_pos.and_then(|c| view.improve_plan_at(c)) else {
+    let Some(ip) = view
+        .pointer
+        .last_mouse_pos
+        .and_then(|c| view.improve_plan_at(c))
+    else {
         return;
     };
     let color = if matches!(ip.plan, Plan::Delete { .. }) {

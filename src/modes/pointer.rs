@@ -68,9 +68,9 @@ impl MapViewer {
         cx: &mut gpui::Context<Self>,
     ) {
         let owner = press_owner(
-            self.menu_swallow_press,
-            self.rotate_session.is_some(),
-            self.space_held,
+            self.pointer.menu_swallow_press,
+            self.pointer.rotate_session.is_some(),
+            self.pointer.space_held,
         );
         if owner == PressOwner::Swallowed {
             return;
@@ -90,7 +90,7 @@ impl MapViewer {
         ev: &gpui::MouseUpEvent,
         cx: &mut gpui::Context<Self>,
     ) {
-        if std::mem::take(&mut self.menu_swallow_press) {
+        if std::mem::take(&mut self.pointer.menu_swallow_press) {
             return;
         }
         self.handle_mouse_up(ev, cx);
@@ -105,7 +105,7 @@ impl MapViewer {
     ) {
         // Adjusting the imagery offset: the press starts moving the imagery.
         if self.offset_adjust_mouse_down(position) {
-            self.interaction = Interaction::Idle;
+            self.pointer.interaction = Interaction::Idle;
             return;
         }
         self.mode_press(position, modifiers);

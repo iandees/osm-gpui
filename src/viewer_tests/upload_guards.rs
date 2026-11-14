@@ -197,7 +197,7 @@ fn upload_without_any_layer_shows_a_status_message(cx: &mut TestAppContext) {
     window
         .update(cx, |view, window, cx| {
             view.open_upload_dialog_as(Some("me"), window, cx);
-            assert!(view.upload_dialog.is_none() && view.sign_in_dialog.is_none());
+            assert!(view.dialogs.upload_dialog.is_none() && view.dialogs.sign_in_dialog.is_none());
             assert!(view.status_message.is_some());
         })
         .unwrap();
@@ -210,9 +210,9 @@ fn upload_signed_out_shows_the_sign_in_dialog(cx: &mut TestAppContext) {
         .update(cx, |view, window, cx| {
             make_pending_change(view);
             view.open_upload_dialog_as(None, window, cx);
-            assert!(view.sign_in_dialog.is_some());
-            assert!(view.upload_dialog.is_none());
-            let dialog = view.sign_in_dialog.as_ref().unwrap().read(cx);
+            assert!(view.dialogs.sign_in_dialog.is_some());
+            assert!(view.dialogs.upload_dialog.is_none());
+            let dialog = view.dialogs.sign_in_dialog.as_ref().unwrap().read(cx);
             assert_eq!(
                 dialog.purpose(),
                 osm_gpui::ui::sign_in_dialog::SignInPurpose::Upload
@@ -232,10 +232,14 @@ fn new_note_signed_out_shows_the_notes_sign_in_wording(cx: &mut TestAppContext) 
     window
         .update(cx, |view, window, cx| {
             view.on_new_note(&crate::notes_ui::NewNote, window, cx);
-            let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+            let dialog = view
+                .dialogs
+                .sign_in_dialog
+                .as_ref()
+                .expect("sign-in prompt");
             assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
             assert!(!view.notes_armed());
-            assert!(view.upload_dialog.is_none());
+            assert!(view.dialogs.upload_dialog.is_none());
         })
         .unwrap();
 }
@@ -271,16 +275,20 @@ fn signed_out_note_panel_actions_open_the_sign_in_prompt(cx: &mut TestAppContext
                     view.note_panel_state(cx).expect("panel stays open");
                 assert_eq!(text, "hello there");
                 assert!(!has_error && !writing);
-                let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+                let dialog = view
+                    .dialogs
+                    .sign_in_dialog
+                    .as_ref()
+                    .expect("sign-in prompt");
                 assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
-                assert!(view.upload_dialog.is_none());
+                assert!(view.dialogs.upload_dialog.is_none());
                 dialog.update(cx, |_, cx| cx.emit(DialogEvent::Cancelled));
             })
             .unwrap();
         cx.run_until_parked();
         window
             .update(cx, |view, _, cx| {
-                assert!(view.sign_in_dialog.is_none());
+                assert!(view.dialogs.sign_in_dialog.is_none());
                 assert_eq!(view.note_panel_state(cx).unwrap().0, "hello there");
             })
             .unwrap();
@@ -296,7 +304,11 @@ fn note_panel_sign_in_uses_notes_wording_and_never_opens_upload(cx: &mut TestApp
     window
         .update(cx, |view, window, cx| {
             view.show_sign_in_dialog(SignInPurpose::Notes, window, cx);
-            let dialog = view.sign_in_dialog.as_ref().expect("sign-in prompt");
+            let dialog = view
+                .dialogs
+                .sign_in_dialog
+                .as_ref()
+                .expect("sign-in prompt");
             assert_eq!(dialog.read(cx).purpose(), SignInPurpose::Notes);
             dialog.update(cx, |_, cx| {
                 cx.emit(osm_gpui::ui::sign_in_dialog::DialogEvent::Cancelled)
@@ -306,8 +318,8 @@ fn note_panel_sign_in_uses_notes_wording_and_never_opens_upload(cx: &mut TestApp
     cx.run_until_parked();
     window
         .update(cx, |view, _, _| {
-            assert!(view.sign_in_dialog.is_none());
-            assert!(view.upload_dialog.is_none());
+            assert!(view.dialogs.sign_in_dialog.is_none());
+            assert!(view.dialogs.upload_dialog.is_none());
         })
         .unwrap();
 }
@@ -345,7 +357,7 @@ fn upload_action_dispatched_through_the_window_opens_a_dialog(cx: &mut TestAppCo
     cx.run_until_parked();
     window
         .update(cx, |view, _, _| {
-            assert!(view.sign_in_dialog.is_some());
+            assert!(view.dialogs.sign_in_dialog.is_some());
         })
         .unwrap();
 }

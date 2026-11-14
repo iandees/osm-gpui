@@ -149,7 +149,10 @@ impl MapViewer {
     pub(crate) fn sync_tag_indexes(&mut self, cx: &mut Context<Self>) {
         let _ = schema();
         let live: HashSet<LayerId> = self.layer_manager.layers().iter().map(|l| l.id()).collect();
-        self.tag_suggest.layers.retain(|id, _| live.contains(id));
+        self.tag_edit
+            .tag_suggest
+            .layers
+            .retain(|id, _| live.contains(id));
 
         let mut jobs: Vec<(LayerId, u64, Arc<osm_gpui::osm::OsmData>)> = Vec::new();
         for layer in self
@@ -160,7 +163,7 @@ impl MapViewer {
         {
             let id = layer.id();
             let revision = layer.edit_revision();
-            let known = self.tag_suggest.layers.get(&id);
+            let known = self.tag_edit.tag_suggest.layers.get(&id);
             if known.is_some_and(|e| e.revision == revision || e.building == Some(revision)) {
                 continue;
             }
@@ -172,6 +175,7 @@ impl MapViewer {
         }
         for (id, revision, data) in jobs {
             let entry = self
+                .tag_edit
                 .tag_suggest
                 .layers
                 .entry(id)
@@ -187,7 +191,7 @@ impl MapViewer {
                     .spawn(async move { DataIndex::from_osm(&data) })
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(entry) = this.tag_suggest.layers.get_mut(&id) {
+                    if let Some(entry) = this.tag_edit.tag_suggest.layers.get_mut(&id) {
                         entry.index = Arc::new(index);
                         entry.revision = revision;
                         entry.building = None;
@@ -209,7 +213,8 @@ impl MapViewer {
             .iter()
             .filter_map(|l| l.as_osm())
             .filter(|l| {
-                self.tag_suggest
+                self.tag_edit
+                    .tag_suggest
                     .layers
                     .get(&l.id())
                     .is_some_and(|e| e.revision == l.edit_revision())
@@ -235,7 +240,7 @@ impl MapViewer {
             else {
                 continue;
             };
-            let Some(entry) = self.tag_suggest.layers.get_mut(id) else {
+            let Some(entry) = self.tag_edit.tag_suggest.layers.get_mut(id) else {
                 continue;
             };
             let index = Arc::make_mut(&mut entry.index);
@@ -254,7 +259,7 @@ impl MapViewer {
             .layers()
             .iter()
             .filter(|l| l.is_visible())
-            .filter_map(|l| self.tag_suggest.layers.get(&l.id()))
+            .filter_map(|l| self.tag_edit.tag_suggest.layers.get(&l.id()))
             .map(|e| e.index.clone())
             .collect()
     }
@@ -289,7 +294,7 @@ impl MapViewer {
     /// selection, the indexes and the latest taginfo answer. Returns whether
     /// anything is shown (or was just removed).
     fn rebuild_suggestions(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(edit) = self.tag_inline_edit.as_ref() else {
+        let Some(edit) = self.tag_edit.tag_inline_edit.as_ref() else {
             return false;
         };
         let Some(target) = edit.suggest.target else {
@@ -363,7 +368,11 @@ impl MapViewer {
             }
         };
 
-        let edit = self.tag_inline_edit.as_mut().expect("checked above");
+        let edit = self
+            .tag_edit
+            .tag_inline_edit
+            .as_mut()
+            .expect("checked above");
         let changed = !(edit.suggest.items.is_empty() && items.is_empty());
         edit.suggest.items = items;
         if edit
@@ -379,20 +388,20 @@ impl MapViewer {
     /// Where the open list goes: under the input if it fits there or if
     /// there is more room below than above, else above.
     fn place_dropdown(&mut self, window: &Window) {
-        self.tag_suggest.viewport_height = window.viewport_size().height;
+        self.tag_edit.tag_suggest.viewport_height = window.viewport_size().height;
         self.replace_dropdown();
     }
 
     /// `place_dropdown` for the window height it last saw.
     fn replace_dropdown(&mut self) {
-        let viewport_height = self.tag_suggest.viewport_height;
-        let Some(edit) = self.tag_inline_edit.as_mut() else {
+        let viewport_height = self.tag_edit.tag_suggest.viewport_height;
+        let Some(edit) = self.tag_edit.tag_inline_edit.as_mut() else {
             return;
         };
         let Some(target) = edit.suggest.target else {
             return;
         };
-        let Some(bounds) = self.tag_suggest.anchor(target).get() else {
+        let Some(bounds) = self.tag_edit.tag_suggest.anchor(target).get() else {
             edit.suggest.below = true;
             return;
         };
@@ -413,13 +422,17 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.tag_inline_edit.is_none() {
+        if self.tag_edit.tag_inline_edit.is_none() {
             return;
         }
         self.sync_tag_indexes(cx);
 
         let (typed, key_text) = {
-            let edit = self.tag_inline_edit.as_ref().expect("checked above");
+            let edit = self
+                .tag_edit
+                .tag_inline_edit
+                .as_ref()
+                .expect("checked above");
             let typed = match target {
                 TagEditField::Value => edit.value.read(cx).value().to_string(),
                 _ => edit.key.read(cx).value().to_string(),
@@ -435,6 +448,7 @@ impl MapViewer {
         // The tag every selected feature shares that says what it is (e.g.
         // amenity=bank): keys that usually go with it are suggested.
         let edit_features = self
+            .tag_edit
             .tag_inline_edit
             .as_ref()
             .expect("checked above")
@@ -458,9 +472,13 @@ impl MapViewer {
             related.as_ref().map(|(k, v)| (k.as_str(), v.as_str())),
             self.object_info(&edit_features).0,
         );
-        let lookup = self.tag_suggest.taginfo.request(Instant::now(), query);
+        let lookup = self
+            .tag_edit
+            .tag_suggest
+            .taginfo
+            .request(Instant::now(), query);
 
-        if let Some(edit) = self.tag_inline_edit.as_mut() {
+        if let Some(edit) = self.tag_edit.tag_inline_edit.as_mut() {
             if edit.suggest.target != Some(target) {
                 edit.suggest.close();
             }
@@ -476,7 +494,7 @@ impl MapViewer {
         }
         self.rebuild_suggestions(cx);
         self.place_dropdown(window);
-        if lookup_state(&self.tag_suggest.taginfo) {
+        if lookup_state(&self.tag_edit.tag_suggest.taginfo) {
             self.schedule_taginfo_poll(cx);
         }
         cx.notify();
@@ -484,14 +502,17 @@ impl MapViewer {
 
     /// Hide the dropdown (and forget any lookup that was wanted for it).
     pub(crate) fn close_tag_suggestions(&mut self) {
-        if let Some(edit) = self.tag_inline_edit.as_mut() {
+        if let Some(edit) = self.tag_edit.tag_inline_edit.as_mut() {
             edit.suggest.close();
         }
-        self.tag_suggest.taginfo.request(Instant::now(), None);
+        self.tag_edit
+            .tag_suggest
+            .taginfo
+            .request(Instant::now(), None);
     }
 
     fn schedule_taginfo_poll(&mut self, cx: &mut Context<Self>) {
-        let Some(wait) = self.tag_suggest.taginfo.wake_in(Instant::now()) else {
+        let Some(wait) = self.tag_edit.tag_suggest.taginfo.wake_in(Instant::now()) else {
             return;
         };
         cx.spawn(async move |this, cx| {
@@ -503,11 +524,14 @@ impl MapViewer {
 
     /// Send the wanted taginfo request if its debounce has run out.
     fn taginfo_poll(&mut self, cx: &mut Context<Self>) {
-        if !taginfo_enabled() || self.tag_inline_edit.is_none() {
-            self.tag_suggest.taginfo.request(Instant::now(), None);
+        if !taginfo_enabled() || self.tag_edit.tag_inline_edit.is_none() {
+            self.tag_edit
+                .tag_suggest
+                .taginfo
+                .request(Instant::now(), None);
             return;
         }
-        let Some(job) = self.tag_suggest.taginfo.poll(Instant::now()) else {
+        let Some(job) = self.tag_edit.tag_suggest.taginfo.poll(Instant::now()) else {
             return;
         };
         let query = job.query.clone();
@@ -518,8 +542,12 @@ impl MapViewer {
                 .spawn(async move { taginfo::fetch(http.as_ref(), &query) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                let items = this.tag_suggest.taginfo.finish(Instant::now(), job, result);
-                if let (Some(items), Some(edit)) = (items, this.tag_inline_edit.as_mut()) {
+                let items = this
+                    .tag_edit
+                    .tag_suggest
+                    .taginfo
+                    .finish(Instant::now(), job, result);
+                if let (Some(items), Some(edit)) = (items, this.tag_edit.tag_inline_edit.as_mut()) {
                     // Only if the dropdown is still the one that asked.
                     if edit.suggest.target.is_some() {
                         edit.suggest.taginfo = items;
@@ -538,7 +566,7 @@ impl MapViewer {
     /// Put suggestion `index` into the input it belongs to and close the
     /// list. Does not commit or move focus.
     fn fill_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(edit) = self.tag_inline_edit.as_mut() else {
+        let Some(edit) = self.tag_edit.tag_inline_edit.as_mut() else {
             return;
         };
         let (Some(target), Some(item)) = (edit.suggest.target, edit.suggest.items.get(index))
@@ -553,13 +581,16 @@ impl MapViewer {
         };
         edit.suggest.close();
         input.update(cx, |state, cx| state.set_value(text, window, cx));
-        self.tag_suggest.taginfo.request(Instant::now(), None);
+        self.tag_edit
+            .tag_suggest
+            .taginfo
+            .request(Instant::now(), None);
         cx.notify();
     }
 
     /// A suggestion was clicked: fill it in, then do what Enter would.
     fn click_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(edit) = self.tag_inline_edit.as_ref() else {
+        let Some(edit) = self.tag_edit.tag_inline_edit.as_ref() else {
             return;
         };
         let target = edit.suggest.target;
@@ -584,6 +615,7 @@ impl MapViewer {
     ) {
         cx.stop_propagation();
         let open = self
+            .tag_edit
             .tag_inline_edit
             .as_ref()
             .is_some_and(|e| e.suggest.is_open_for(target));
@@ -591,7 +623,7 @@ impl MapViewer {
             self.refresh_tag_suggestions(target, window, cx);
             return;
         }
-        if let Some(edit) = self.tag_inline_edit.as_mut() {
+        if let Some(edit) = self.tag_edit.tag_inline_edit.as_mut() {
             let last = edit.suggest.items.len() - 1;
             let next = edit.suggest.highlight.map_or(0, |h| (h + 1).min(last));
             edit.suggest.highlight = Some(next);
@@ -603,7 +635,7 @@ impl MapViewer {
     /// Up: move the highlight up; above the first entry it goes back to
     /// "nothing highlighted". With the list closed, Up is left alone.
     fn on_suggest_up(&mut self, target: TagEditField, cx: &mut Context<Self>) {
-        let Some(edit) = self.tag_inline_edit.as_mut() else {
+        let Some(edit) = self.tag_edit.tag_inline_edit.as_mut() else {
             return;
         };
         if !edit.suggest.is_open_for(target) {
@@ -630,7 +662,7 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(edit) = self.tag_inline_edit.as_ref() else {
+        let Some(edit) = self.tag_edit.tag_inline_edit.as_ref() else {
             return;
         };
         if !edit.suggest.is_open_for(target) {
@@ -645,7 +677,7 @@ impl MapViewer {
     /// Escape: close an open list and swallow the key; with no list open
     /// Escape goes on to abandon the edit.
     fn on_suggest_escape(&mut self, target: TagEditField, cx: &mut Context<Self>) {
-        let Some(edit) = self.tag_inline_edit.as_ref() else {
+        let Some(edit) = self.tag_edit.tag_inline_edit.as_ref() else {
             return;
         };
         if !edit.suggest.is_open_for(target) {
@@ -668,7 +700,7 @@ impl MapViewer {
 
         // The input handles these keys itself, so they are caught on the
         // way down, before it sees them.
-        let anchor = self.tag_suggest.anchor(target).clone();
+        let anchor = self.tag_edit.tag_suggest.anchor(target).clone();
         cell.capture_action(cx.listener(move |this, _: &MoveDown, window, cx| {
             this.on_suggest_down(target, window, cx);
         }))
@@ -700,7 +732,7 @@ impl MapViewer {
     /// clipped by the panel's scroll areas, anchored under the input (above
     /// it when there is no room), with its own scroll.
     fn suggest_dropdown(&self, target: TagEditField, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let edit = self.tag_inline_edit.as_ref()?;
+        let edit = self.tag_edit.tag_inline_edit.as_ref()?;
         let dd = &edit.suggest;
         if !dd.is_open_for(target) {
             return None;

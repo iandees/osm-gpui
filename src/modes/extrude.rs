@@ -157,7 +157,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     let Some(drag) = view.extrude_drag() else {
         return;
     };
-    let Some(mouse_pos) = view.last_mouse_pos else {
+    let Some(mouse_pos) = view.pointer.last_mouse_pos else {
         return;
     };
     if drag.style != ExtrudeStyle::NewWay {
@@ -242,10 +242,10 @@ impl MapViewer {
                 .selecting(vec![way]),
         );
         self.selected = vec![way];
-        self.fields_text_inputs.clear();
-        self.fields_text_subscribed.clear();
-        self.fields_open_combo = None;
-        self.fields_promoted_more_fields.clear();
+        self.fields_panel.fields_text_inputs.clear();
+        self.fields_panel.fields_text_subscribed.clear();
+        self.fields_panel.fields_open_combo = None;
+        self.fields_panel.fields_promoted_more_fields.clear();
     }
 
     /// Resolve a Reshape/Move extrude drag against the cursor at
@@ -404,10 +404,10 @@ impl MapViewer {
             kind: osm_gpui::selection::FeatureKind::Way,
             id: drag.way_id,
         }];
-        self.fields_text_inputs.clear();
-        self.fields_text_subscribed.clear();
-        self.fields_open_combo = None;
-        self.fields_promoted_more_fields.clear();
+        self.fields_panel.fields_text_inputs.clear();
+        self.fields_panel.fields_text_subscribed.clear();
+        self.fields_panel.fields_open_combo = None;
+        self.fields_panel.fields_promoted_more_fields.clear();
     }
 
     /// Double-click on a segment (no drag): insert a new node on that

@@ -204,7 +204,7 @@ fn show_selects_the_object_and_closes_the_dialog(cx: &mut TestAppContext) {
                 .viewport
                 .geo_to_screen(LatLon::new(CENTER_LAT, CENTER_LON + 0.001));
             assert!(p.x > px(0.0) && p.x < px(800.0) && p.y > px(0.0) && p.y < px(600.0));
-            assert!(view.upload_dialog.is_none());
+            assert!(view.dialogs.upload_dialog.is_none());
             assert!(status_text(view).unwrap().contains("Node 2"));
         })
         .unwrap();

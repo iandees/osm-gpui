@@ -372,7 +372,7 @@ impl crate::MapViewer {
     /// it.
     pub(crate) fn paint_mode_preview(&self, frame: &PreviewFrame<'_>, window: &mut Window) {
         let paint_snap = |window: &mut Window| {
-            if let Some(target) = &self.snap_preview {
+            if let Some(target) = &self.pointer.snap_preview {
                 preview::paint_snap_target(target, frame, window);
             }
         };

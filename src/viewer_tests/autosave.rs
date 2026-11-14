@@ -219,7 +219,11 @@ fn a_crashed_run_is_offered_and_restore_brings_the_edits_back(cx: &mut TestAppCo
         .update(cx, |view, window, cx| {
             // (The window's own render may have shown it already.)
             view.check_for_pending_restore(window, cx);
-            let dialog = view.restore_dialog.clone().expect("the offer is shown");
+            let dialog = view
+                .dialogs
+                .restore_dialog
+                .clone()
+                .expect("the offer is shown");
             let items = dialog.read(cx).items().to_vec();
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].layer_name, "Downtown");
@@ -232,7 +236,7 @@ fn a_crashed_run_is_offered_and_restore_brings_the_edits_back(cx: &mut TestAppCo
 
     window
         .update(cx, |view, _window, _cx| {
-            assert!(view.restore_dialog.is_none());
+            assert!(view.dialogs.restore_dialog.is_none());
             let restored = view
                 .layer_manager
                 .layers()
@@ -273,14 +277,14 @@ fn escape_asks_again_next_time_and_discard_deletes(cx: &mut TestAppContext) {
     window
         .update(cx, |view, window, cx| {
             view.check_for_pending_restore(window, cx);
-            let dialog = view.restore_dialog.clone().unwrap();
+            let dialog = view.dialogs.restore_dialog.clone().unwrap();
             dialog.update(cx, |dialog, cx| dialog.press_later(cx));
         })
         .unwrap();
     cx.run_until_parked();
     window
         .update(cx, |view, _window, _cx| {
-            assert!(view.restore_dialog.is_none());
+            assert!(view.dialogs.restore_dialog.is_none());
             assert!(view
                 .layer_manager
                 .layers()
@@ -302,7 +306,7 @@ fn escape_asks_again_next_time_and_discard_deletes(cx: &mut TestAppContext) {
     window
         .update(cx, |view, window, cx| {
             view.check_for_pending_restore(window, cx);
-            let dialog = view.restore_dialog.clone().expect("offered again");
+            let dialog = view.dialogs.restore_dialog.clone().expect("offered again");
             dialog.update(cx, |dialog, cx| dialog.press_discard(cx));
         })
         .unwrap();
@@ -311,7 +315,7 @@ fn escape_asks_again_next_time_and_discard_deletes(cx: &mut TestAppContext) {
     assert_eq!(layer_files(&root), 0);
     window
         .update(cx, |view, _window, _cx| {
-            assert!(view.restore_dialog.is_none());
+            assert!(view.dialogs.restore_dialog.is_none());
             assert!(view
                 .layer_manager
                 .layers()
@@ -341,7 +345,7 @@ fn a_layer_from_another_server_is_flagged_in_the_offer(cx: &mut TestAppContext) 
     window
         .update(cx, |view, window, cx| {
             view.check_for_pending_restore(window, cx);
-            let dialog = view.restore_dialog.clone().unwrap();
+            let dialog = view.dialogs.restore_dialog.clone().unwrap();
             let items = dialog.read(cx).items().to_vec();
             let (from, current) = items[0].other_server.clone().expect("flagged");
             assert!(from.contains("master.apis.dev"), "{from}");

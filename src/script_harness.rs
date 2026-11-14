@@ -308,7 +308,7 @@ impl MapViewer {
     pub(crate) fn script_check_snap(&self, want: script::SnapExpect) -> Result<(), String> {
         use crate::SnapTarget;
         use script::SnapExpect;
-        let got = match &self.snap_preview {
+        let got = match &self.pointer.snap_preview {
             None => SnapExpect::None,
             Some(SnapTarget::Node { id, .. }) => SnapExpect::Node(*id),
             Some(SnapTarget::Way { way_id, index, .. }) => SnapExpect::Way {
@@ -701,7 +701,7 @@ impl MapViewer {
                     bus.set_assert_result(result);
                 }
                 ScriptCommand::SetComment(text) => {
-                    let result = match self.upload_dialog.clone() {
+                    let result = match self.dialogs.upload_dialog.clone() {
                         Some(dialog) => {
                             dialog.update(cx, |dialog, cx| {
                                 dialog.set_draft_comment(text, window, cx)
@@ -717,7 +717,7 @@ impl MapViewer {
                     bus.set_assert_result(result);
                 }
                 ScriptCommand::UploadCancel => {
-                    let result = match self.upload_dialog.clone() {
+                    let result = match self.dialogs.upload_dialog.clone() {
                         Some(dialog) if matches!(dialog.read(cx).phase(), Phase::Busy) => {
                             Err("the upload dialog cannot be cancelled while busy".to_string())
                         }
@@ -732,7 +732,7 @@ impl MapViewer {
                     bus.set_assert_result(result);
                 }
                 ScriptCommand::DeleteLayerDialog { confirm } => {
-                    let result = match self.delete_layer_dialog.clone() {
+                    let result = match self.dialogs.delete_layer_dialog.clone() {
                         Some(dialog) => {
                             // Deferred like the upload dialog's presses: the
                             // dialog's event is handled by this view, which
@@ -805,11 +805,11 @@ impl MapViewer {
     ) -> Result<(), String> {
         use script::UploadDialogCmd as Cmd;
         if matches!(cmd, Cmd::OpenPreview) {
-            if self.upload_dialog.is_some() {
+            if self.dialogs.upload_dialog.is_some() {
                 return Err("the upload dialog is already open".to_string());
             }
             self.open_upload_dialog_preview(window, cx);
-            return if self.upload_dialog.is_some() {
+            return if self.dialogs.upload_dialog.is_some() {
                 Ok(())
             } else {
                 Err("the preview did not open (a dialog is already showing)".to_string())
@@ -821,12 +821,12 @@ impl MapViewer {
                 osm_gpui::changeset_tags::push_recent_comment(&mut s.recent_comments, text)
             });
             let recent_comments = osm_gpui::settings_store::snapshot().recent_comments;
-            if let Some(dialog) = self.upload_dialog.clone() {
+            if let Some(dialog) = self.dialogs.upload_dialog.clone() {
                 dialog.update(cx, |d, cx| d.set_recent_comments(recent_comments, cx));
             }
             return Ok(());
         }
-        let Some(dialog) = self.upload_dialog.clone() else {
+        let Some(dialog) = self.dialogs.upload_dialog.clone() else {
             return Err("the upload dialog is not open".to_string());
         };
         dialog.update(cx, |d, cx| match cmd {
@@ -923,7 +923,7 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let Some(dialog) = self.upload_dialog.clone() else {
+        let Some(dialog) = self.dialogs.upload_dialog.clone() else {
             return Err("the upload dialog is not open (run `action UploadToOsm` first)".into());
         };
         if let Some(refusal) = scripted_upload_refusal(&settings_store::api_base_url()) {
@@ -983,7 +983,7 @@ impl MapViewer {
             script::ConflictChoice::DropMine => ConflictAction::DropMyChange,
             script::ConflictChoice::Show => ConflictAction::Show,
         };
-        let Some(dialog) = self.upload_dialog.clone() else {
+        let Some(dialog) = self.dialogs.upload_dialog.clone() else {
             return Err("the upload dialog is not open".into());
         };
         if let Some(refusal) = scripted_upload_refusal(&settings_store::api_base_url()) {
@@ -1035,7 +1035,11 @@ impl MapViewer {
         use osm_gpui::ui::upload_dialog::Phase;
         use script::{Check, DialogExpect, SelectionKind};
 
-        let phase = self.upload_dialog.as_ref().map(|d| d.read(cx).phase());
+        let phase = self
+            .dialogs
+            .upload_dialog
+            .as_ref()
+            .map(|d| d.read(cx).phase());
         match check {
             Check::Snap(want) => self.script_check_snap(*want),
             Check::WayNodes { way, nodes } => self.script_check_way_nodes(*way, nodes),
@@ -1111,7 +1115,7 @@ impl MapViewer {
             }
             Check::ChangesetTag { key, value } => {
                 // The tags the dialog would send now; nothing is sent.
-                let Some(dialog) = &self.upload_dialog else {
+                let Some(dialog) = &self.dialogs.upload_dialog else {
                     return Err("the upload dialog is not open".to_string());
                 };
                 let tags = dialog.read(cx).changeset_tags(cx);
@@ -1312,7 +1316,7 @@ impl MapViewer {
                     ))
                 }
             }
-            Check::FindPreview(text) => match &self.find_dialog {
+            Check::FindPreview(text) => match &self.dialogs.find_dialog {
                 None => Err("the Find dialog is not open".into()),
                 Some(dialog) => {
                     let shown = dialog.read(cx).preview_text().to_string();
@@ -1331,11 +1335,11 @@ impl MapViewer {
                 let found = self.describe_dialog(&phase);
                 let ok = match (want, &phase) {
                     (DialogExpect::None, _) => found == "no dialog",
-                    (DialogExpect::SignIn, _) => self.sign_in_dialog.is_some(),
-                    (DialogExpect::Notice, _) => self.notice_dialog.is_some(),
-                    (DialogExpect::DeleteLayer, _) => self.delete_layer_dialog.is_some(),
-                    (DialogExpect::Restore, _) => self.restore_dialog.is_some(),
-                    (DialogExpect::Find, _) => self.find_dialog.is_some(),
+                    (DialogExpect::SignIn, _) => self.dialogs.sign_in_dialog.is_some(),
+                    (DialogExpect::Notice, _) => self.dialogs.notice_dialog.is_some(),
+                    (DialogExpect::DeleteLayer, _) => self.dialogs.delete_layer_dialog.is_some(),
+                    (DialogExpect::Restore, _) => self.dialogs.restore_dialog.is_some(),
+                    (DialogExpect::Find, _) => self.dialogs.find_dialog.is_some(),
                     (DialogExpect::History, _) => self.object_history.view.is_some(),
                     (DialogExpect::Editing, Some(Phase::Editing)) => true,
                     (DialogExpect::InFlight, Some(Phase::Busy)) => true,
@@ -1370,11 +1374,13 @@ impl MapViewer {
                 view.conflict.describe(),
                 conflict_kind_name(&view.conflict.kind)
             ),
-            None if self.sign_in_dialog.is_some() => "the sign-in prompt".into(),
-            None if self.notice_dialog.is_some() => "a notice dialog".into(),
-            None if self.delete_layer_dialog.is_some() => "the delete-layer confirmation".into(),
-            None if self.restore_dialog.is_some() => "the restore-autosave offer".into(),
-            None if self.find_dialog.is_some() => "the Find dialog".into(),
+            None if self.dialogs.sign_in_dialog.is_some() => "the sign-in prompt".into(),
+            None if self.dialogs.notice_dialog.is_some() => "a notice dialog".into(),
+            None if self.dialogs.delete_layer_dialog.is_some() => {
+                "the delete-layer confirmation".into()
+            }
+            None if self.dialogs.restore_dialog.is_some() => "the restore-autosave offer".into(),
+            None if self.dialogs.find_dialog.is_some() => "the Find dialog".into(),
             None if self.object_history.view.is_some() => "the object history view".into(),
             None => "no dialog".into(),
         }

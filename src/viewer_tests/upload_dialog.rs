@@ -25,7 +25,7 @@ fn upload_is_refused_for_an_oversized_way_and_selects_it(cx: &mut TestAppContext
                 .set_way_nodes(100, long_way_nodes(2104))
                 .unwrap();
             view.open_upload_dialog_as(Some("me"), window, cx);
-            assert!(view.upload_dialog.is_none() && view.sign_in_dialog.is_none());
+            assert!(view.dialogs.upload_dialog.is_none() && view.dialogs.sign_in_dialog.is_none());
             assert_eq!(
                 view.status_message.as_ref().map(|(m, _)| m.as_str()),
                 Some(
@@ -38,15 +38,15 @@ fn upload_is_refused_for_an_oversized_way_and_selects_it(cx: &mut TestAppContext
             // The refusal is also a dialog naming the object and limit,
             // and it is shown to a signed-out user too (signing in would
             // not help).
-            let notice = view.notice_dialog.clone().expect("refusal dialog");
+            let notice = view.dialogs.notice_dialog.clone().expect("refusal dialog");
             assert!(notice
                 .read(cx)
                 .message()
                 .contains("Way 100 has 2,104 nodes"));
             assert!(notice.read(cx).message().contains("allows 2,000"));
-            view.notice_dialog = None;
+            view.dialogs.notice_dialog = None;
             view.open_upload_dialog_as(None, window, cx);
-            assert!(view.notice_dialog.is_some() && view.sign_in_dialog.is_none());
+            assert!(view.dialogs.notice_dialog.is_some() && view.dialogs.sign_in_dialog.is_none());
         })
         .unwrap();
 }
@@ -80,7 +80,7 @@ fn upload_without_changes_shows_a_status_message(cx: &mut TestAppContext) {
     window
         .update(cx, |view, window, cx| {
             view.open_upload_dialog_as(Some("me"), window, cx);
-            assert!(view.upload_dialog.is_none() && view.sign_in_dialog.is_none());
+            assert!(view.dialogs.upload_dialog.is_none() && view.dialogs.sign_in_dialog.is_none());
             assert_eq!(
                 view.status_message.as_ref().map(|(m, _)| m.as_str()),
                 Some("Nothing to upload")
@@ -114,16 +114,16 @@ fn the_upload_comment_survives_closing_the_dialog(cx: &mut TestAppContext) {
         make_pending_change(view);
 
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog opens");
         dialog.update(cx, |d, cx| {
             d.set_draft_comment("Add a cafe".into(), window, cx)
         });
         view.close_upload_dialog_keeping_draft(cx);
-        assert!(view.upload_dialog.is_none());
+        assert!(view.dialogs.upload_dialog.is_none());
         assert_eq!(view.upload_comment_draft, "Add a cafe");
 
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog reopens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog reopens");
         assert_eq!(dialog.read(cx).draft_comment(cx), "Add a cafe");
     });
 }
@@ -137,7 +137,7 @@ fn the_upload_dialog_validates_once_and_only_errors_block(cx: &mut TestAppContex
     view.update_in(vcx, |view, window, cx| {
         make_pending_change(view);
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog opens");
         dialog.update(cx, |d, cx| {
             d.set_draft_comment("Add a node".into(), window, cx)
         });
@@ -158,7 +158,7 @@ fn the_upload_dialog_validates_once_and_only_errors_block(cx: &mut TestAppContex
             .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "note", "")
             .unwrap();
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog reopens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog reopens");
         let d = dialog.read(cx);
         assert_eq!(d.validation().errors(), 1);
         assert_eq!(d.validation().count_of(Check::TagEmptyValue), 1);
@@ -175,7 +175,7 @@ fn the_upload_dialog_validates_once_and_only_errors_block(cx: &mut TestAppContex
     // "Show in side panel" closes the dialog (keeping the comment) and
     // opens the Validation section with the same findings.
     view.update_in(vcx, |view, _window, _cx| {
-        assert!(view.upload_dialog.is_none());
+        assert!(view.dialogs.upload_dialog.is_none());
         assert_eq!(view.upload_comment_draft, "Add a node");
         let report = view.shown_validation().expect("the section opens");
         assert_eq!((report.errors(), report.warnings()), (1, 1));
@@ -201,7 +201,7 @@ fn the_dialog_writes_source_review_locale_and_hashtags(cx: &mut TestAppContext) 
     view.update_in(vcx, |view, window, cx| {
         make_pending_change(view);
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog opens");
         // Nothing beyond created_by, the comment and the language.
         dialog.update(cx, |d, cx| {
             d.set_draft_comment("Add a cafe #cafe #Cafe #pizza".into(), window, cx)
@@ -250,7 +250,7 @@ fn the_upload_event_carries_the_same_tags_the_dialog_shows(cx: &mut TestAppConte
     view.update_in(vcx, |view, window, cx| {
         let dialog = cx.new(|cx| UploadDialog::new(window, cx, Vec::new()));
         // Keep it alive until the event has been delivered.
-        view.upload_dialog = Some(dialog.clone());
+        view.dialogs.upload_dialog = Some(dialog.clone());
         let sink = seen.clone();
         cx.subscribe(&dialog, move |_this, _d, event: &DialogEvent, _cx| {
             if let DialogEvent::Upload {
@@ -293,7 +293,7 @@ fn the_preview_dialog_can_never_upload(cx: &mut TestAppContext) {
     view.update_in(vcx, |view, window, cx| {
         make_pending_change(view);
         view.open_upload_dialog_preview(window, cx);
-        let dialog = view.upload_dialog.clone().expect("preview opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("preview opens");
         assert!(dialog.read(cx).is_preview());
         dialog.update(cx, |d, cx| {
             d.set_draft_comment("Add a node".into(), window, cx)
@@ -319,7 +319,7 @@ fn recent_comments_are_offered_and_picking_one_replaces_the_comment(cx: &mut Tes
     view.update_in(vcx, |view, window, cx| {
         make_pending_change(view);
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog opens");
         dialog.update(cx, |d, cx| {
             // Nothing to open while there are no recent comments.
             d.toggle_recent_comments(cx);
@@ -364,7 +364,7 @@ fn imagery_is_written_unless_cleared_and_only_visible_imagery_counts(cx: &mut Te
 
         make_pending_change(view);
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog opens");
         assert_eq!(
             tag(&dialog, "imagery_used", cx).as_deref(),
             Some("Esri World Imagery;Shifted Imagery")
@@ -386,7 +386,7 @@ fn a_comment_or_source_over_255_characters_blocks_upload(cx: &mut TestAppContext
     view.update_in(vcx, |view, window, cx| {
         make_pending_change(view);
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog opens");
         dialog.update(cx, |d, cx| {
             d.set_draft_comment("ok".into(), window, cx);
             d.set_draft_source("s".repeat(255), window, cx);
@@ -411,14 +411,14 @@ fn the_source_is_prefilled_from_the_draft_and_the_review_box_is_not_kept(cx: &mu
     view.update_in(vcx, |view, window, cx| {
         make_pending_change(view);
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog opens");
         dialog.update(cx, |d, cx| {
             d.press_source_chip("survey", window, cx);
             d.set_review_requested(true, cx);
         });
         view.close_upload_dialog_keeping_draft(cx);
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog reopens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog reopens");
         assert_eq!(dialog.read(cx).draft_source(cx), "survey");
         assert!(!dialog.read(cx).review_requested());
     });
@@ -446,10 +446,10 @@ fn the_upload_dialog_has_nothing_to_show_in_the_panel_without_findings(cx: &mut 
             )
             .unwrap();
         view.open_upload_dialog_as(Some("me"), window, cx);
-        let dialog = view.upload_dialog.clone().expect("dialog opens");
+        let dialog = view.dialogs.upload_dialog.clone().expect("dialog opens");
         assert!(dialog.read(cx).validation().is_empty());
         dialog.update(cx, |d, cx| assert!(!d.press_show_in_panel(cx)));
-        assert!(view.upload_dialog.is_some());
+        assert!(view.dialogs.upload_dialog.is_some());
         assert!(!view.validation_shown());
     });
 }

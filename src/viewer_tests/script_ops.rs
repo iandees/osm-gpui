@@ -55,7 +55,7 @@ fn typed_script_text_lands_in_the_comment_field(cx: &mut TestAppContext) {
     view.update_in(vcx, |view, window, cx| {
         make_pending_change(view);
         view.open_upload_dialog_as(Some("me"), window, cx);
-        assert!(view.upload_dialog.is_some());
+        assert!(view.dialogs.upload_dialog.is_some());
     });
     let text = "osm-gpui live test: a b x & <ok> \"q\" caf\u{e9} \u{65e5}";
     for ch in text.chars() {
@@ -64,7 +64,7 @@ fn typed_script_text_lands_in_the_comment_field(cx: &mut TestAppContext) {
         });
     }
     view.update_in(vcx, |view, _window, cx| {
-        let dialog = view.upload_dialog.clone().unwrap();
+        let dialog = view.dialogs.upload_dialog.clone().unwrap();
         assert_eq!(dialog.read(cx).draft_comment(cx), text);
     });
 }
@@ -102,16 +102,22 @@ fn script_checks_see_pending_edits_dialogs_and_selection(cx: &mut TestAppContext
         // The Upload button does nothing without a comment, and the
         // script says why.
         assert!(view
+            .dialogs
             .upload_dialog
             .clone()
             .unwrap()
             .read(cx)
             .confirm_blocker(cx)
             .is_some());
-        view.upload_dialog.clone().unwrap().update(cx, |d, cx| {
-            d.set_draft_comment("osm-gpui live test".into(), window, cx)
-        });
+        view.dialogs
+            .upload_dialog
+            .clone()
+            .unwrap()
+            .update(cx, |d, cx| {
+                d.set_draft_comment("osm-gpui live test".into(), window, cx)
+            });
         assert!(view
+            .dialogs
             .upload_dialog
             .clone()
             .unwrap()
@@ -125,7 +131,8 @@ fn script_checks_see_pending_edits_dialogs_and_selection(cx: &mut TestAppContext
             "Version mismatch: Provided 1, server had: 2 of Node 2",
         );
         let conflict_view = view.conflict_view(conflict);
-        view.upload_dialog
+        view.dialogs
+            .upload_dialog
             .clone()
             .unwrap()
             .update(cx, |d, cx| d.fail_with_conflict(conflict_view, cx));

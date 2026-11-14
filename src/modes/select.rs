@@ -25,7 +25,7 @@ pub(super) fn press_gesture(
     modifiers: gpui::Modifiers,
     grab_vertices: bool,
 ) {
-    view.vertex_grab = None;
+    view.pointer.vertex_grab = None;
     let mut hit_move_targets = if view.selected.is_empty()
         || view
             .layer_manager
@@ -43,18 +43,18 @@ pub(super) fn press_gesture(
     };
     if hit_move_targets.is_none() && grab_vertices && !modifiers.shift {
         if let Some((feature, targets)) = view.unselected_node_grab(position) {
-            view.vertex_grab = Some(feature);
+            view.pointer.vertex_grab = Some(feature);
             hit_move_targets = Some(targets);
         }
     }
-    view.interaction = interaction::on_left_mouse_down(to_pt(position), hit_move_targets);
+    view.pointer.interaction = interaction::on_left_mouse_down(to_pt(position), hit_move_targets);
 }
 
 /// Whether the hover highlight and the vertex preview follow the pointer: only
 /// in Select mode, with no button down, no pan pending and no imagery offset
 /// adjustment going on.
 pub(super) fn hover_enabled(view: &MapViewer, button_down: bool) -> bool {
-    !button_down && !view.space_held && view.offset_adjust.is_none()
+    !button_down && !view.pointer.space_held && view.offset_adjust.is_none()
 }
 
 /// Resolve a plain click into a selection change. `shift_held` toggles the
@@ -85,10 +85,10 @@ pub(crate) fn click(
         }
     }
     view.selected = osm_gpui::selection::apply_click_selection(&view.selected, hit, shift_held);
-    view.fields_text_inputs.clear();
-    view.fields_text_subscribed.clear();
-    view.fields_open_combo = None;
-    view.fields_promoted_more_fields.clear();
+    view.fields_panel.fields_text_inputs.clear();
+    view.fields_panel.fields_text_subscribed.clear();
+    view.fields_panel.fields_open_combo = None;
+    view.fields_panel.fields_promoted_more_fields.clear();
 }
 
 /// Escape clears the selection, unless it just cancelled a move-drag.
@@ -128,8 +128,8 @@ mod tests {
         with_osm(cx, empty_data(), EditMode::Select, |view, _w, _cx, _l| {
             let at = gpui::point(gpui::px(10.0), gpui::px(10.0));
             press_gesture(view, at, gpui::Modifiers::none(), true);
-            assert!(!matches!(view.interaction, Interaction::Idle));
-            assert!(view.vertex_grab.is_none());
+            assert!(!matches!(view.pointer.interaction, Interaction::Idle));
+            assert!(view.pointer.vertex_grab.is_none());
         });
     }
 
@@ -138,7 +138,7 @@ mod tests {
         with_osm(cx, empty_data(), EditMode::Select, |view, _w, _cx, _l| {
             assert!(hover_enabled(view, false));
             assert!(!hover_enabled(view, true));
-            view.space_held = true;
+            view.pointer.space_held = true;
             assert!(!hover_enabled(view, false));
         });
     }

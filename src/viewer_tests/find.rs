@@ -101,7 +101,7 @@ fn find_without_a_data_layer_explains_in_the_status_bar(cx: &mut TestAppContext)
     window
         .update(cx, |view, window, cx| {
             view.on_find(&Find, window, cx);
-            assert!(view.find_dialog.is_none());
+            assert!(view.dialogs.find_dialog.is_none());
             assert_eq!(
                 view.status_message.as_ref().map(|(m, _)| m.as_str()),
                 Some("There is no data layer to search")
@@ -118,19 +118,23 @@ fn find_dialog_applies_on_submit_and_leaves_the_selection_on_cancel(cx: &mut Tes
         .update(cx, |view, window, cx| {
             view.apply_find("type:way", SearchMode::Replace).unwrap();
             view.on_find(&Find, window, cx);
-            let dialog = view.find_dialog.clone().expect("Find opens a dialog");
+            let dialog = view
+                .dialogs
+                .find_dialog
+                .clone()
+                .expect("Find opens a dialog");
             dialog.update(cx, |d, cx| d.set_query("type:node", window, cx));
             dialog.update(cx, |d, cx| d.press_cancel(cx));
         })
         .unwrap();
     window
         .update(cx, |view, window, cx| {
-            assert!(view.find_dialog.is_none());
+            assert!(view.dialogs.find_dialog.is_none());
             assert_eq!(view.selected.len(), 1, "cancel leaves the selection alone");
             assert!(view.find_history.is_empty());
 
             view.on_find(&Find, window, cx);
-            let dialog = view.find_dialog.clone().unwrap();
+            let dialog = view.dialogs.find_dialog.clone().unwrap();
             dialog.update(cx, |d, cx| {
                 d.set_mode(SearchMode::Add, cx);
                 d.set_query("type:node", window, cx);
@@ -140,7 +144,7 @@ fn find_dialog_applies_on_submit_and_leaves_the_selection_on_cancel(cx: &mut Tes
         .unwrap();
     window
         .update(cx, |view, _window, _cx| {
-            assert!(view.find_dialog.is_none());
+            assert!(view.dialogs.find_dialog.is_none());
             assert_eq!(view.selected.len(), 3, "added to the way");
             assert_eq!(view.find_history.entries(), ["type:node"]);
             assert_eq!(view.find_mode, SearchMode::Add);
@@ -172,7 +176,7 @@ fn find_dialog_stays_open_on_a_bad_query_and_counts_matches(cx: &mut TestAppCont
             );
 
             view.on_find(&Find, window, cx);
-            let dialog = view.find_dialog.clone().unwrap();
+            let dialog = view.dialogs.find_dialog.clone().unwrap();
             dialog.update(cx, |d, cx| {
                 d.set_query("(type:node", window, cx);
                 d.press_apply(cx);
@@ -199,7 +203,11 @@ fn find_opened_from_the_menu_gets_focus_in_its_query_field(cx: &mut TestAppConte
             view.on_find(&Find, window, cx);
             let map = view.focus_handle.clone();
             window.focus(&map, cx);
-            let dialog = view.find_dialog.clone().expect("Find opens a dialog");
+            let dialog = view
+                .dialogs
+                .find_dialog
+                .clone()
+                .expect("Find opens a dialog");
             let query = osm_gpui::ui::modal::ModalDialog::initial_focus(dialog.read(cx), cx);
             assert!(!query.is_focused(window), "the map took focus");
             // A window with the dialog open can't be drawn in a test (its
@@ -214,7 +222,7 @@ fn find_opened_from_the_menu_gets_focus_in_its_query_field(cx: &mut TestAppConte
             // this update. The Escape keystroke can't be sent either (it
             // draws): the delete-layer test above covers the keystroke,
             // the script run covers Find's.
-            view.find_dialog = None;
+            view.dialogs.find_dialog = None;
         })
         .unwrap();
 }

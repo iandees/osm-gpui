@@ -360,7 +360,8 @@ fn tab_reaches_member_buttons_in_row_order_and_reveals_the_row(cx: &mut TestAppC
     // Which row (if any) holds focus now.
     let focused_row = |vcx: &mut gpui::VisualTestContext| -> Option<usize> {
         view.update_in(vcx, |view, window, cx| {
-            view.member_controls_focus
+            view.tag_edit
+                .member_controls_focus
                 .borrow()
                 .iter()
                 .position(|handle| handle.contains_focused(window, cx))

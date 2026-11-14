@@ -226,11 +226,11 @@ fn add_to_relation_appends_the_new_members_as_one_undo_step(cx: &mut TestAppCont
             });
             // The action asks for a relation first and changes nothing.
             view.run_selection_action("add_to_relation", cx);
-            assert!(view.pending_relation_picker);
+            assert!(view.dialogs.pending_relation_picker);
             assert!(view.undo_stack.actions.is_empty());
             // (Opening the picker needs a window root, which the test
             // window lacks.)
-            view.pending_relation_picker = false;
+            view.dialogs.pending_relation_picker = false;
 
             view.add_selection_to_relation(900);
             assert_eq!(view.undo_stack.actions.len(), 1);
@@ -276,7 +276,7 @@ fn add_to_relation_needs_features_and_a_relation_to_add_them_to(cx: &mut TestApp
         .update(cx, |view, _window, cx| {
             select(view, Way, &[100]);
             view.run_selection_action("add_to_relation", cx);
-            assert!(!view.pending_relation_picker);
+            assert!(!view.dialogs.pending_relation_picker);
             assert!(view
                 .status_message
                 .as_ref()
@@ -289,7 +289,7 @@ fn add_to_relation_needs_features_and_a_relation_to_add_them_to(cx: &mut TestApp
             // A selected relation alone has nothing to add.
             view.select_relation(view.active_layer.unwrap(), 900);
             view.run_selection_action("add_to_relation", cx);
-            assert!(!view.pending_relation_picker);
+            assert!(!view.dialogs.pending_relation_picker);
         })
         .unwrap();
 }

@@ -82,15 +82,15 @@ impl MapViewer {
             key,
             modifiers,
             self.offset_field_focused(window, cx),
-            self.rotate_session.is_some(),
+            self.pointer.rotate_session.is_some(),
             self.mode(),
             &osm_gpui::settings_store::snapshot(),
         );
         match meaning {
             MapKey::Ignored => {}
             MapKey::Space => {
-                if !self.space_held {
-                    self.space_held = true;
+                if !self.pointer.space_held {
+                    self.pointer.space_held = true;
                     cx.notify();
                 }
             }
