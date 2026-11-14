@@ -253,7 +253,10 @@ mod tests {
             .collect();
         assert_eq!(
             shown,
-            vec![("name", Widget::Text, "Name"), ("levels", Widget::Text, "Levels")]
+            vec![
+                ("name", Widget::Text, "Name"),
+                ("levels", Widget::Text, "Levels")
+            ]
         );
         assert!(got.addable.is_empty());
     }
@@ -289,9 +292,17 @@ mod tests {
         };
         assert_eq!(
             ids(&[Geometry::Area, Geometry::Line]),
-            ["building", "building/house", "area/highway", "highway/residential"]
+            [
+                "building",
+                "building/house",
+                "area/highway",
+                "highway/residential"
+            ]
         );
-        assert_eq!(ids(&[Geometry::Line, Geometry::Area])[0], "highway/residential");
+        assert_eq!(
+            ids(&[Geometry::Line, Geometry::Area])[0],
+            "highway/residential"
+        );
     }
 
     #[test]

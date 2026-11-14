@@ -42,9 +42,7 @@ const INPUT_INSET: f32 = 8.0;
 /// The bundled schema's keys and values, built once on first use.
 fn schema() -> &'static SchemaIndex {
     static SCHEMA: OnceLock<SchemaIndex> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        osm_gpui::catalogue::Catalogue::bundled().schema_index()
-    })
+    SCHEMA.get_or_init(|| osm_gpui::catalogue::Catalogue::bundled().schema_index())
 }
 
 /// Whether taginfo may be asked right now: the setting is on, and this is

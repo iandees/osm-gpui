@@ -314,9 +314,7 @@ impl MapViewer {
                                     .py_1()
                                     .cursor_pointer()
                                     .hover(|el| el.bg(cx.theme().accent))
-                                    .child(Label::new(
-                                        cat.option_label(field, opt).to_string(),
-                                    ))
+                                    .child(Label::new(cat.option_label(field, opt).to_string()))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, _ev, _window, cx| {
@@ -631,12 +629,7 @@ impl MapViewer {
         // and inheritance); here only the feature's geometry and tags decide
         // what applies, plus what the user has added.
         let cat = osm_gpui::catalogue::Catalogue::bundled();
-        let resolved = cat.fields_for(
-            preset,
-            geometry,
-            &tags,
-            &self.fields_promoted_more_fields,
-        );
+        let resolved = cat.fields_for(preset, geometry, &tags, &self.fields_promoted_more_fields);
         // Only a feature with nothing to show *and* nothing to add is empty;
         // universal fields (name, note, ...) are always on offer.
         if resolved.shown.is_empty() && resolved.addable.is_empty() {
@@ -733,8 +726,7 @@ impl MapViewer {
         let tags: std::collections::HashMap<String, String> =
             editable.feature_tags(feat)?.into_iter().collect();
         let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
-        let preset =
-            osm_gpui::catalogue::Catalogue::bundled().match_preset(&tags, geometry)?;
+        let preset = osm_gpui::catalogue::Catalogue::bundled().match_preset(&tags, geometry)?;
         Some((preset, tags, geometry))
     }
 }

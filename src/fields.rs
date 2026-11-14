@@ -628,7 +628,13 @@ mod tests {
             (T::Combo, W::Text, W::Combo, W::Combo, W::Text),
             (T::TypeCombo, W::Text, W::Combo, W::Combo, W::Text),
             (T::SemiCombo, W::Text, W::SemiCombo, W::SemiCombo, W::Text),
-            (T::MultiCombo, W::Text, W::SemiCombo, W::PrefixMulti, W::Text),
+            (
+                T::MultiCombo,
+                W::Text,
+                W::SemiCombo,
+                W::PrefixMulti,
+                W::Text,
+            ),
             (T::ManyCombo, W::Text, W::Combo, W::Combo, W::Text),
             (T::NetworkCombo, W::Text, W::Combo, W::Combo, W::Text),
             (T::DirectionalCombo, W::Text, W::Text, W::Text, W::MultiKey),
@@ -636,16 +642,38 @@ mod tests {
             (T::DefaultCheck, W::Check, W::Check, W::Check, W::Check),
             (T::OnewayCheck, W::Text, W::Combo, W::Combo, W::Text),
             (T::Radio, W::Text, W::Radio, W::Radio, W::Text),
-            (T::StructureRadio, W::MultiKey, W::MultiKey, W::MultiKey, W::MultiKey),
-            (T::Access, W::MultiKey, W::MultiKey, W::MultiKey, W::MultiKey),
-            (T::Address, W::MultiKey, W::MultiKey, W::MultiKey, W::MultiKey),
+            (
+                T::StructureRadio,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+            ),
+            (
+                T::Access,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+            ),
+            (
+                T::Address,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+            ),
             (T::Restrictions, W::Text, W::Text, W::Text, W::Text),
             (T::Other, W::Text, W::Text, W::Text, W::Text),
         ];
         let make = |ft: T, options: bool, key: &str, keys: bool| Field {
             field_type: ft,
             key: key.to_string(),
-            keys: if keys { vec!["a".to_string()] } else { Vec::new() },
+            keys: if keys {
+                vec!["a".to_string()]
+            } else {
+                Vec::new()
+            },
             options: if options {
                 vec![FieldOption {
                     value: "v".into(),
@@ -658,8 +686,16 @@ mod tests {
         };
         for (ft, bare, opts, prefix, multi) in table {
             assert_eq!(make(*ft, false, "k", false).widget(), *bare, "{ft:?} bare");
-            assert_eq!(make(*ft, true, "k", false).widget(), *opts, "{ft:?} options");
-            assert_eq!(make(*ft, true, "k:", false).widget(), *prefix, "{ft:?} prefix");
+            assert_eq!(
+                make(*ft, true, "k", false).widget(),
+                *opts,
+                "{ft:?} options"
+            );
+            assert_eq!(
+                make(*ft, true, "k:", false).widget(),
+                *prefix,
+                "{ft:?} prefix"
+            );
             assert_eq!(make(*ft, false, "k", true).widget(), *multi, "{ft:?} keys");
         }
     }

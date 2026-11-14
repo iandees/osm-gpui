@@ -15,8 +15,8 @@ use gpui_component::{
 };
 use std::collections::HashMap;
 
-use crate::preset_recents::{self, Section};
 use crate::catalogue::Catalogue;
+use crate::preset_recents::{self, Section};
 use crate::presets::{Geometry, Preset};
 use crate::tr;
 use crate::ui::modal;
