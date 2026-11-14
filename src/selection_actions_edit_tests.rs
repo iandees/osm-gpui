@@ -72,16 +72,8 @@ fn a_refused_step_undoes_what_was_applied_and_reports_it() {
     editable.set_way_nodes(10, vec![1, 3]).unwrap();
     let removed = editable.delete_feature(FeatureKind::Node, 2).unwrap();
     let done = vec![
-        UndoableAction::SetWayNodes {
-            layer: id,
-            way_id: 10,
-            before: vec![1, 2, 3],
-            after: vec![1, 3],
-        },
-        UndoableAction::DeleteFeature {
-            layer: id,
-            snapshot: removed,
-        },
+        UndoableAction::set_way_nodes(id, 10, vec![1, 2, 3], vec![1, 3]),
+        UndoableAction::delete_feature(id, removed),
     ];
     // ...and the third was refused.
     let message = abort(&mut layers, &done, EditError::NodeInWay(7));

@@ -30,14 +30,8 @@ use gpui::SharedString;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::layers::labels::{
-    label_text, Key, DEFAULT_FONT_PX, DEFAULT_HALO_ALPHA, DEFAULT_HALO_COLOR, LABEL_MIN_ZOOM,
-};
+use crate::layers::labels::{label_text, Key, TextLook, LABEL_MIN_ZOOM};
 
-/// Area text colour when the stylesheet gives none.
-pub const DEFAULT_AREA_COLOR: u32 = 0xE8E8E8;
-/// Halo radius when the stylesheet gives none.
-pub const DEFAULT_AREA_HALO: f32 = 1.5;
 /// Smallest font an area label is shrunk to before it is dropped.
 pub const MIN_AREA_FONT_PX: f32 = 9.0;
 /// Pixels of polygon kept clear around the text.
@@ -58,11 +52,7 @@ const GEOM_CACHE_CAP: usize = 6000;
 #[derive(Debug, Clone, PartialEq)]
 pub struct AreaLabel {
     pub text: SharedString,
-    pub font_px: f32,
-    pub color: u32,
-    pub halo_color: u32,
-    pub halo_radius: f32,
-    pub halo_alpha: f32,
+    pub look: TextLook,
     /// Tier (see [`area_priority`]); the size bonus is added per placement.
     pub priority: i32,
 }
@@ -118,11 +108,7 @@ pub fn resolve_area_label(
     let text = label_text(style.text.as_deref()?, tags)?;
     Some(AreaLabel {
         text: text.into(),
-        font_px: style.font_size.unwrap_or(DEFAULT_FONT_PX),
-        color: style.color.unwrap_or(DEFAULT_AREA_COLOR),
-        halo_color: style.halo_color.unwrap_or(DEFAULT_HALO_COLOR),
-        halo_radius: style.halo_radius.unwrap_or(DEFAULT_AREA_HALO),
-        halo_alpha: style.halo_opacity.unwrap_or(DEFAULT_HALO_ALPHA),
+        look: TextLook::resolve(style, TextLook::AREA),
         priority: area_priority(tags),
     })
 }
@@ -668,7 +654,7 @@ mod tests {
         let z18 = sheet.way_text_style(&bld, true, 18.2);
         let l = resolve_area_label(&z18, &bld, 18.2).unwrap();
         assert_eq!(
-            (l.text.as_ref(), l.font_px, l.priority),
+            (l.text.as_ref(), l.look.font_px, l.priority),
             ("Hall", 11.0, 250)
         );
         // An unclosed way never matches an `area` rule.
@@ -676,7 +662,7 @@ mod tests {
         let lake = tags(&[("natural", "water"), ("name", "Mirror Lake")]);
         let st = sheet.way_text_style(&lake, true, 16.0);
         let l = resolve_area_label(&st, &lake, 16.0).unwrap();
-        assert_eq!((l.color, l.priority), (0x7cc4ff, 320));
+        assert_eq!((l.look.color, l.priority), (0x7cc4ff, 320));
         // No name tag, no label.
         let anon = tags(&[("natural", "water")]);
         assert!(resolve_area_label(&st, &anon, 16.0).is_none());
@@ -709,6 +695,36 @@ mod tests {
         );
     }
     const HYST: i32 = 40;
+
+    #[test]
+    fn area_label_look_resolves_defaults_and_every_property() {
+        let t = tags(&[("building", "yes"), ("name", "Hall")]);
+        let bare = TextStyle {
+            text: Some("name".into()),
+            ..TextStyle::default()
+        };
+        let l = resolve_area_label(&bare, &t, 18.0).unwrap();
+        assert_eq!(
+            (l.look.font_px, l.look.color, l.look.halo_color),
+            (12.0, 0xE8E8E8, 0x000000)
+        );
+        assert_eq!((l.look.halo_radius, l.look.halo_alpha), (1.5, 0.9));
+        let all = TextStyle {
+            text: Some("name".into()),
+            font_size: Some(15.0),
+            color: Some(0x112233),
+            halo_color: Some(0x445566),
+            halo_radius: Some(2.5),
+            halo_opacity: Some(0.4),
+            ..TextStyle::default()
+        };
+        let l = resolve_area_label(&all, &t, 18.0).unwrap();
+        assert_eq!(
+            (l.look.font_px, l.look.color, l.look.halo_color),
+            (15.0, 0x112233, 0x445566)
+        );
+        assert_eq!((l.look.halo_radius, l.look.halo_alpha), (2.5, 0.4));
+    }
 
     #[test]
     fn font_scales_stop_at_the_minimum() {
