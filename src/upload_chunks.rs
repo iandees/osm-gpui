@@ -3,8 +3,9 @@
 //! The server refuses a changeset with more than `max_changeset_elements`
 //! (10,000 on the public server) elements. [`plan_chunks`] splits the pending
 //! diffs into an ordered list of chunks of at most that many elements;
-//! [`run_chunked_upload`] sends them one after another, each in a changeset of
+//! [`UploadDriver`] sends them one after another, each in a changeset of
 //! its own, carrying the server-assigned ids of earlier chunks into later ones.
+//! The app and the tests drive the same `UploadDriver` and [`send`].
 //!
 //! # Why cutting the sequence at the limit is valid
 //!
@@ -53,7 +54,7 @@ use crate::changeset_tags::ChangesetTags;
 use crate::http::HttpClient;
 use crate::layers::diff::LayerDiff;
 use crate::osm::{MemberType, OsmNode, OsmRelation, OsmWay};
-use crate::osm_upload::{run_upload, UploadFailure, UploadResult};
+use crate::osm_upload::{run_upload, UploadConflict, UploadError, UploadFailure, UploadResult};
 use crate::tr;
 use crate::transfer::TransferPhase;
 
@@ -466,6 +467,9 @@ pub struct ChunkedUpload {
     /// Why the sequence stopped before the end, if it did. The chunks after
     /// `completed` were not sent (the one that failed was closed).
     pub failure: Option<UploadFailure>,
+    /// The same stop as the app reports it (also set when no token could be
+    /// had, which leaves `failure` empty).
+    pub stop: Option<UploadStop>,
 }
 
 /// Which changeset of how many is being sent: `(index from 1, total)`. `None`
@@ -546,12 +550,220 @@ pub fn upload_chunk(
     })
 }
 
+/// Why a chunked upload stopped before the end.
+#[derive(Debug)]
+pub enum UploadStop {
+    /// The server refused the diff (409/410/412); the changeset is closed.
+    Refused(UploadConflict),
+    /// The server may have applied the diff (always an
+    /// `UploadError::OutcomeUnknown`, carried as its message); the upload must
+    /// not be offered again without the user checking the server first.
+    OutcomeUnknown(String),
+    /// Any other failure, as a message.
+    Failed(String),
+}
+
+impl UploadStop {
+    pub fn from_error(error: &UploadError) -> Self {
+        match error {
+            UploadError::Conflict(conflict) => UploadStop::Refused(conflict.clone()),
+            UploadError::OutcomeUnknown { .. } => UploadStop::OutcomeUnknown(error.to_string()),
+            other => UploadStop::Failed(other.to_string()),
+        }
+    }
+}
+
+/// One changeset to send: which part of the upload it is, its tags, and the
+/// chunk with the server ids of earlier parts already swapped in.
+#[derive(Debug)]
+pub struct ChunkRequest {
+    pub part: Part,
+    pub tags: ChangesetTags,
+    pub chunk: LayerDiff,
+}
+
+/// What came back for a [`ChunkRequest`]: the token step and the send step
+/// together.
+#[derive(Debug)]
+pub enum ChunkOutcome {
+    /// No usable token (the message); nothing was sent.
+    TokenFailed(String),
+    Sent(CompletedChunk),
+    Failed(UploadFailure),
+}
+
+/// Why the driver stopped, with the raw failure when the server was reached
+/// (`None` when no token could be had).
+#[derive(Debug)]
+pub struct Stopped {
+    pub reason: UploadStop,
+    pub failure: Option<UploadFailure>,
+}
+
+/// What the caller does after [`UploadDriver::record`].
+#[derive(Debug)]
+pub enum Step {
+    /// The server accepted this part: apply it to local state, then ask for
+    /// the next request. `last` on the chunk says whether it was the final one.
+    Apply(CompletedChunk),
+    /// Stop; no further request will be handed out.
+    Stop(Stopped),
+}
+
+/// Every sequencing decision of a chunked upload: what is sent next, what an
+/// answer means, when it stops. The caller only performs the hops (token and
+/// send on a worker via [`send`], applying on the foreground) and does what
+/// each [`Step`] says. A chunk is handed out once: after a failure nothing is
+/// re-sent, and a retry plans afresh from the layers' remaining diff.
+pub struct UploadDriver {
+    queue: ChunkQueue,
+    tags: ChangesetTags,
+    accepted: usize,
+    last_changeset: u64,
+    stopped: bool,
+}
+
+impl UploadDriver {
+    pub fn plan(
+        diffs: &[&LayerDiff],
+        max: usize,
+        tags: impl Into<ChangesetTags>,
+    ) -> Result<Self, PlanError> {
+        Ok(UploadDriver {
+            queue: ChunkQueue::plan(diffs, max)?,
+            tags: tags.into(),
+            accepted: 0,
+            last_changeset: 0,
+            stopped: false,
+        })
+    }
+
+    /// Chunks planned.
+    pub fn total(&self) -> usize {
+        self.queue.total()
+    }
+
+    /// Chunks the server accepted so far.
+    pub fn accepted(&self) -> usize {
+        self.accepted
+    }
+
+    /// The changeset id of the last accepted chunk (0 before any).
+    pub fn last_changeset(&self) -> u64 {
+        self.last_changeset
+    }
+
+    /// `(accepted, total)` for a split upload, for "N of M uploaded".
+    pub fn partial(&self) -> Option<(usize, usize)> {
+        (self.total() > 1).then_some((self.accepted, self.total()))
+    }
+
+    /// The next request, or `None` when everything was sent or it stopped.
+    pub fn next_request(&mut self) -> Option<ChunkRequest> {
+        if self.stopped {
+            return None;
+        }
+        let (part, chunk) = self.queue.next_chunk()?;
+        Some(ChunkRequest {
+            part,
+            tags: self.tags.clone(),
+            chunk,
+        })
+    }
+
+    /// Take the answer for the request last handed out.
+    pub fn record(&mut self, outcome: ChunkOutcome) -> Step {
+        match outcome {
+            ChunkOutcome::Sent(mut done) => {
+                done.last = self.queue.remaining() == 0;
+                self.queue.accept(&done.result);
+                self.accepted += 1;
+                self.last_changeset = done.changeset_id;
+                Step::Apply(done)
+            }
+            ChunkOutcome::TokenFailed(message) => self.stop(Stopped {
+                reason: UploadStop::Failed(message),
+                failure: None,
+            }),
+            ChunkOutcome::Failed(failure) => self.stop(Stopped {
+                reason: UploadStop::from_error(&failure.error),
+                failure: Some(failure),
+            }),
+        }
+    }
+
+    fn stop(&mut self, stopped: Stopped) -> Step {
+        self.stopped = true;
+        Step::Stop(stopped)
+    }
+}
+
+/// Perform one request: get a token, then send the chunk in a changeset of its
+/// own. Blocking; the app calls it on the background executor.
+pub fn send(
+    request: ChunkRequest,
+    client: &dyn HttpClient,
+    base_url: &str,
+    token: &mut dyn FnMut() -> Result<String, String>,
+    on_phase: &mut dyn FnMut(Part, TransferPhase),
+) -> ChunkOutcome {
+    let token = match token() {
+        Ok(token) => token,
+        Err(message) => return ChunkOutcome::TokenFailed(message),
+    };
+    match upload_chunk(
+        client,
+        base_url,
+        &token,
+        request.tags,
+        request.part,
+        request.chunk,
+        on_phase,
+    ) {
+        Ok(done) => ChunkOutcome::Sent(done),
+        Err(failure) => ChunkOutcome::Failed(failure),
+    }
+}
+
+/// Run `driver` to its end on this thread: [`send`] each request, record the
+/// answer, and call `on_chunk` with each accepted chunk before the next is
+/// sent. Stops at the first failure; nothing is re-sent.
+pub fn drive_to_completion(
+    mut driver: UploadDriver,
+    client: &dyn HttpClient,
+    base_url: &str,
+    token: &mut dyn FnMut() -> Result<String, String>,
+    on_phase: &mut dyn FnMut(Part, TransferPhase),
+    on_chunk: &mut dyn FnMut(&CompletedChunk),
+) -> ChunkedUpload {
+    let mut out = ChunkedUpload {
+        total: driver.total(),
+        completed: Vec::new(),
+        failure: None,
+        stop: None,
+    };
+    while let Some(request) = driver.next_request() {
+        let outcome = send(request, client, base_url, token, on_phase);
+        match driver.record(outcome) {
+            Step::Apply(done) => {
+                on_chunk(&done);
+                out.completed.push(done);
+            }
+            Step::Stop(stopped) => {
+                out.failure = stopped.failure;
+                out.stop = Some(stopped.reason);
+            }
+        }
+    }
+    out
+}
+
 /// Upload `layers` in changesets of at most `max` elements, one after the
-/// other. Any error stops the sequence and is reported in the result along
-/// with the chunks already accepted; a diff is never re-sent here, so a lost
-/// response can't turn into duplicate creates. `on_chunk` is called with each
-/// accepted chunk before the next one is sent (the app applies it to the
-/// layers there).
+/// other, with one fixed token. Any error stops the sequence and is reported
+/// in the result along with the chunks already accepted; a diff is never
+/// re-sent here, so a lost response can't turn into duplicate creates.
+/// `on_chunk` is called with each accepted chunk before the next one is sent
+/// (the app applies it to the layers there).
 #[allow(clippy::too_many_arguments)]
 pub fn run_chunked_upload(
     client: &dyn HttpClient,
@@ -563,29 +775,16 @@ pub fn run_chunked_upload(
     on_phase: &mut dyn FnMut(Part, TransferPhase),
     on_chunk: &mut dyn FnMut(&CompletedChunk),
 ) -> Result<ChunkedUpload, PlanError> {
-    let tags: ChangesetTags = tags.into();
     let diffs: Vec<&LayerDiff> = layers.iter().map(|(_, d)| d).collect();
-    let mut queue = ChunkQueue::plan(&diffs, max)?;
-    let mut out = ChunkedUpload {
-        total: queue.total(),
-        completed: Vec::new(),
-        failure: None,
-    };
-    while let Some((part, chunk)) = queue.next_chunk() {
-        match upload_chunk(client, base_url, token, &tags, part, chunk, on_phase) {
-            Ok(mut done) => {
-                done.last = queue.remaining() == 0;
-                queue.accept(&done.result);
-                on_chunk(&done);
-                out.completed.push(done);
-            }
-            Err(failure) => {
-                out.failure = Some(failure);
-                break;
-            }
-        }
-    }
-    Ok(out)
+    let driver = UploadDriver::plan(&diffs, max, tags)?;
+    Ok(drive_to_completion(
+        driver,
+        client,
+        base_url,
+        &mut || Ok(token.to_string()),
+        on_phase,
+        on_chunk,
+    ))
 }
 
 /// One `UploadResult` holding every completed chunk's answers.

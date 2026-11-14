@@ -1243,8 +1243,8 @@ fn editing_then_undoing_an_element_the_server_changed_uploads_nothing_and_cannot
 fn after_an_unknown_outcome_the_dialog_asks_for_a_check_and_offers_no_plain_retry(
     cx: &mut TestAppContext,
 ) {
-    use crate::UploadStop;
     use gpui::AppContext as _;
+    use osm_gpui::upload_chunks::UploadStop;
     use osm_gpui::ui::upload_dialog::{ConfirmKind, FailureKind, UploadDialog};
 
     cx.update(gpui_component::init);
@@ -1270,11 +1270,12 @@ fn after_an_unknown_outcome_the_dialog_asks_for_a_check_and_offers_no_plain_retr
                 .failure
                 .expect("the upload failed")
                 .error;
-            let UploadStop::OutcomeUnknown(error) = UploadStop::from_error(error) else {
+            let UploadStop::OutcomeUnknown(message) = UploadStop::from_error(&error) else {
                 panic!("an unknown outcome must not be reported as a plain failure");
             };
+            assert_eq!(message, error.to_string());
             dialog.update(s.cx, |d, cx| {
-                d.fail_outcome_unknown(error.to_string().into(), cx)
+                d.fail_outcome_unknown(message.clone().into(), cx)
             });
             let dialog = dialog.read(s.cx);
             assert_eq!(dialog.failure_kind(), Some(FailureKind::OutcomeUnknown));
@@ -1289,24 +1290,24 @@ fn after_an_unknown_outcome_the_dialog_asks_for_a_check_and_offers_no_plain_retr
 
 #[test]
 fn only_a_refusal_and_an_unknown_outcome_get_their_own_stop() {
-    use crate::UploadStop;
+    use osm_gpui::upload_chunks::UploadStop;
     assert!(matches!(
-        UploadStop::from_error(UploadError::Network("x".into())),
+        UploadStop::from_error(&UploadError::Network("x".into())),
         UploadStop::Failed(_)
     ));
     assert!(matches!(
-        UploadStop::from_error(UploadError::Parse("x".into())),
+        UploadStop::from_error(&UploadError::Parse("x".into())),
         UploadStop::Failed(_)
     ));
     assert!(matches!(
-        UploadStop::from_error(UploadError::Http {
+        UploadStop::from_error(&UploadError::Http {
             status: 400,
             body: String::new()
         }),
         UploadStop::Failed(_)
     ));
     assert!(matches!(
-        UploadStop::from_error(UploadError::OutcomeUnknown {
+        UploadStop::from_error(&UploadError::OutcomeUnknown {
             changeset_id: 1,
             url: "u".into(),
             detail: "d".into()
@@ -1314,7 +1315,7 @@ fn only_a_refusal_and_an_unknown_outcome_get_their_own_stop() {
         UploadStop::OutcomeUnknown(_)
     ));
     assert!(matches!(
-        UploadStop::from_error(UploadError::Conflict(UploadConflict {
+        UploadStop::from_error(&UploadError::Conflict(UploadConflict {
             kind: ConflictKind::Other,
             object: None,
             status: 409,
