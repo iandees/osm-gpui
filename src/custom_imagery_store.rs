@@ -55,14 +55,14 @@ pub fn load_from(path: &Path) -> Vec<CustomImageryEntry> {
     persist::load_json(path, "custom_imagery_store")
 }
 
-/// Atomically write entries to the given path. Writes to a sibling temp file
-/// then renames into place.
+/// Atomically write entries to the given path (see `persist::write_atomic`).
 pub fn save_to(path: &Path, entries: &[CustomImageryEntry]) -> std::io::Result<()> {
     persist::save_json(path, entries, WriteOpts::default())
 }
 
 /// Default on-disk location: `<config_dir>/osm-gpui/custom-imagery.json`.
-/// Returns `None` if the OS has no conventional config dir (e.g., exotic platforms).
+/// `None` where the persistence policy forbids touching real state (see
+/// `persist::config_file`), or the OS has no config dir.
 pub fn default_path() -> Option<PathBuf> {
     persist::config_file("custom-imagery.json")
 }

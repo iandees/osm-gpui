@@ -2,7 +2,7 @@
 //! OAuth token bookkeeping) and other atomically-written cache files (tile
 //! cache, ELI imagery cache).
 //!
-//! Two shared pieces:
+//! The main pieces:
 //!
 //! - [`write_atomic`]: write bytes to a file such that a concurrent reader,
 //!   or a crash mid-write, never observes a torn/truncated file.
@@ -201,9 +201,8 @@ fn write_if(
     Ok(WriteOutcome::Written)
 }
 
-/// Best-effort restriction of a file's permissions to owner-only read/write.
-/// No-op on non-unix platforms (Windows ACLs already default to the owning
-/// user).
+/// Restrict a file's permissions to owner-only read/write. No-op on non-unix
+/// platforms (Windows ACLs already default to the owning user).
 #[cfg(unix)]
 fn restrict_permissions(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;

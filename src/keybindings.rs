@@ -294,7 +294,7 @@ pub fn effective_bindings(settings: &AppSettings) -> Vec<(&'static str, String)>
 
 /// Keys that can never be assigned to a customizable shortcut, because
 /// they're hardcoded interaction primitives elsewhere (cancel, confirm,
-/// delete-selection) — see the design doc's "Out of scope" section.
+/// delete-selection).
 const RESERVED_KEYS: &[&str] = &["escape", "enter", "return", "delete", "backspace"];
 
 /// Keys that are reserved only when unmodified: the map's hardcoded
