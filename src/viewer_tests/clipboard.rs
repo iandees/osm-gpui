@@ -197,7 +197,7 @@ fn duplicate_pastes_at_the_source_and_leaves_the_clipboard_alone(cx: &mut TestAp
         .update(cx, |view, _window, cx| {
             select(view, Way, &[102]);
             view.run_selection_action("copy_features", cx);
-            let copied = clipboard_actions::clipboard_content();
+            let copied = view.clipboards.features.clone();
 
             select(view, Way, &[103]);
             let ways_before = ids_of(view, Way);
@@ -231,7 +231,7 @@ fn duplicate_pastes_at_the_source_and_leaves_the_clipboard_alone(cx: &mut TestAp
             };
             assert_eq!(at(dup.id), at(103));
             // Duplicating does not touch what Copy put on the clipboard.
-            assert_eq!(clipboard_actions::clipboard_content(), copied);
+            assert_eq!(view.clipboards.features.clone(), copied);
             // Drag the duplicate away: the original stays where it was.
             let first = editable.way_node_ids(dup.id).unwrap()[0];
             assert!(first < 0 && editable.node_lat_lon(8).is_some());

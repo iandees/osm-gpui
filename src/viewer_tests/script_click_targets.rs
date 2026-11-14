@@ -186,7 +186,7 @@ fn relations_script_targets_hit_their_features_and_the_split_keeps_the_route() {
         kind: Node,
         id: 8105,
     }];
-    (action.apply)(&mut layers, &sel, Some(LayerId(1))).unwrap();
+    (action.apply())(&mut layers, &sel, Some(LayerId(1))).unwrap();
     assert_eq!(hit_at(&layers, 760.0, 200.0), Some((Way, -1)));
     assert_eq!(hit_at(&layers, 520.0, 200.0), Some((Way, 8202)));
     let route = layers
@@ -257,15 +257,19 @@ fn more_actions_script_targets_hit_their_features_and_actions_apply() {
                 id,
             }]);
     };
-    let run = |layers: &mut osm_gpui::layers::LayerManager, id: &str, sel: &[FeatureRef]| {
+    let mut clipboards = clipboard_actions::Clipboards::default();
+    let mut run = |layers: &mut osm_gpui::layers::LayerManager, id: &str, sel: &[FeatureRef]| {
         let action = selection_actions::find(id).unwrap();
         let env = selection_actions::ActionEnv {
             selection: sel,
             active_layer: Some(LayerId(1)),
             layers,
+            clipboards: &clipboards,
         };
         assert!((action.is_applicable)(&env), "{id} not offered");
-        (action.apply)(layers, sel, Some(LayerId(1))).unwrap_or_else(|e| panic!("{id}: {e}"))
+        action
+            .run_direct(layers, sel, Some(LayerId(1)), &mut clipboards)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
     };
 
     select_way(&mut layers, 5101);
