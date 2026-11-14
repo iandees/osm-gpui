@@ -25,6 +25,7 @@ use gpui_component::{
 use osm_gpui::coordinates::GeoBounds;
 use osm_gpui::layers::street_imagery_layer::StreetImageryLayer;
 use osm_gpui::layers::LayerId;
+use osm_gpui::secrets;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
 use osm_gpui::settings_store;
 use osm_gpui::street_imagery::{
@@ -97,14 +98,13 @@ struct ProviderState {
 /// The credential `provider` is asked with: Mapillary's access token, or the
 /// optional Fotoshi API key.
 fn credential(provider: Provider) -> Option<String> {
-    let s = settings_store::snapshot();
-    let c = match provider {
-        Provider::Mapillary => s.mapillary_token,
-        Provider::Fotoshi => s.fotoshi_api_key,
-        Provider::Panoramax => String::new(),
-    };
-    let c = c.trim().to_string();
-    (!c.is_empty()).then_some(c)
+    // The first call for a secret kept in the keychain reads it (the only keychain
+    // read street imagery makes); later calls are in memory.
+    match provider {
+        Provider::Mapillary => secrets::get(secrets::MAPILLARY_TOKEN),
+        Provider::Fotoshi => secrets::get(secrets::FOTOSHI_API_KEY),
+        Provider::Panoramax => None,
+    }
 }
 
 /// Zoom and pan of the full-size photo. The photo is drawn in a box the size
@@ -309,9 +309,7 @@ impl MapViewer {
     ) {
         // Turning it on without a token would show an empty layer: explain
         // and offer Settings instead.
-        if !self.shows_imagery(Provider::Mapillary)
-            && settings_store::snapshot().mapillary_token.trim().is_empty()
-        {
+        if !self.shows_imagery(Provider::Mapillary) && !secrets::is_set(secrets::MAPILLARY_TOKEN) {
             self.show_sign_in_dialog(SignInPurpose::Mapillary, window, cx);
             return;
         }
@@ -514,7 +512,7 @@ impl MapViewer {
     /// (new features have negative ids).
     fn fotoshi_lookup_target(&self) -> Option<(FeatureRef, String)> {
         let settings = settings_store::snapshot();
-        if !settings.fotoshi_lookup_selected || settings.fotoshi_api_key.trim().is_empty() {
+        if !settings.fotoshi_lookup_selected || !secrets::is_set(secrets::FOTOSHI_API_KEY) {
             return None;
         }
         let [f] = self.selected.as_slice() else {
@@ -549,7 +547,7 @@ impl MapViewer {
             state: ObjectState::Loading,
         });
         let epoch = self.imagery.object_epoch;
-        let key = settings_store::snapshot().fotoshi_api_key;
+        let key = secrets::get(secrets::FOTOSHI_API_KEY).unwrap_or_default();
         let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx

@@ -160,12 +160,14 @@ pub struct AppSettings {
     pub window_bounds: Option<WindowRect>,
     /// How downloaded GPS traces draw (colours, width, age filter).
     pub gps_trace_style: crate::trace_style::TraceStyle,
-    /// Mapillary access token (a client token from the Mapillary developer
-    /// dashboard), needed to show Mapillary street imagery. Empty when unset.
+    /// Legacy: older builds kept the Mapillary access token here. It is read
+    /// only so `crate::secrets::migrate_from_settings` can move it into secret
+    /// storage; it is blank afterwards and never written while empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub mapillary_token: String,
-    /// Fotoshi API key. Optional: it raises the size of the photo searches
-    /// that draw the Fotoshi layer, and is required to look up the photos of
-    /// a selected OSM feature. Empty when unset.
+    /// Legacy: older builds kept the Fotoshi API key here (see
+    /// `mapillary_token`).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub fotoshi_api_key: String,
     /// Whether selecting a feature asks Fotoshi for photos of it. Off by
     /// default: the lookup sends the feature's OSM id to Fotoshi, which tells
@@ -351,18 +353,12 @@ fn update_in(
     persist: bool,
     f: impl FnOnce(&mut AppSettings),
 ) -> Option<AppSettings> {
-    let updated = store.update("settings_store", f)?;
-    if persist {
-        match path {
-            Some(p) => {
-                if let Err(e) = save_to(p, &updated) {
-                    eprintln!("settings_store: save {:?} failed: {}", p, e);
-                }
-            }
-            None => eprintln!("settings_store: no config dir, skipping save"),
-        }
+    if !persist {
+        return store.update("settings_store", f);
     }
-    Some(updated)
+    store.update_and_save("settings_store", f, |updated| {
+        persist::save_reporting("settings_store", path, |p| save_to(p, updated));
+    })
 }
 
 pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
@@ -377,18 +373,8 @@ pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
     update(persist, |s| s.suggest_from_taginfo = on);
 }
 
-/// Surrounding whitespace is dropped.
-pub fn set_fotoshi_api_key(key: &str, persist: bool) {
-    update(persist, |s| s.fotoshi_api_key = key.trim().to_string());
-}
-
 pub fn set_fotoshi_lookup_selected(on: bool, persist: bool) {
     update(persist, |s| s.fotoshi_lookup_selected = on);
-}
-
-/// Surrounding whitespace is dropped.
-pub fn set_mapillary_token(token: &str, persist: bool) {
-    update(persist, |s| s.mapillary_token = token.trim().to_string());
 }
 
 /// Values outside the allowed range are ignored (`false`).
@@ -579,6 +565,31 @@ mod tests {
         assert_eq!(on_disk.mapillary_token, "t");
         // The earlier in-memory-only change rode along with the next write.
         assert_eq!(on_disk.last_source, "a");
+    }
+
+    #[test]
+    fn concurrent_persisting_updates_leave_the_latest_state_on_disk() {
+        let dir = tmp_dir("update-concurrent");
+        let path = dir.join("settings.json");
+        let store = local_store();
+        let threads = 16;
+        std::thread::scope(|scope| {
+            for t in 0..threads {
+                let (store, path) = (&store, &path);
+                scope.spawn(move || {
+                    for i in 0..25 {
+                        update_in(store, Some(path), true, |s| match t % 4 {
+                            0 => s.last_source = format!("source {t}-{i}"),
+                            1 => s.cache_budget_mb = (t * 1000 + i) as u64,
+                            2 => s.recent_comments.push(format!("comment {t}-{i}")),
+                            _ => s.custom_api_url = format!("https://x.example/{t}/{i}"),
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(load_from(&path), store.snapshot("t"));
     }
 
     #[test]

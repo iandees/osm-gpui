@@ -272,6 +272,82 @@ pub fn save_json<T: Serialize + ?Sized>(
     write_atomic(path, &json, opts)
 }
 
+/// Receives `(store label, detail)` for a failed save of the user's state.
+type SaveFailureHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// Which failed saves have already been reported, so the same failure repeating
+/// on every later save (every window move, every keystroke) reaches the user once.
+#[derive(Default)]
+struct SaveFailures {
+    hook: Option<SaveFailureHook>,
+    last_reported: std::collections::HashMap<String, String>,
+}
+
+impl SaveFailures {
+    /// Whether this failure is new for `label` (not the same as its last one).
+    fn is_new(&mut self, label: &str, detail: &str) -> bool {
+        if self.last_reported.get(label).map(String::as_str) == Some(detail) {
+            return false;
+        }
+        self.last_reported
+            .insert(label.to_string(), detail.to_string());
+        true
+    }
+}
+
+static SAVE_FAILURES: Mutex<Option<SaveFailures>> = Mutex::new(None);
+
+fn with_save_failures<R>(f: impl FnOnce(&mut SaveFailures) -> R) -> R {
+    let mut guard = SAVE_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(SaveFailures::default))
+}
+
+/// Install the process-wide receiver of save failures (the app shows them to
+/// the user). It runs on whichever thread did the save, while that store's
+/// save lock is held, so it must not itself save to a store (hand the message
+/// to the UI thread instead).
+pub fn set_save_failure_hook(hook: impl Fn(&str, &str) + Send + Sync + 'static) {
+    with_save_failures(|s| s.hook = Some(Arc::new(hook)));
+}
+
+/// Record that saving the store named `label` failed. Always logged to
+/// stderr; passed to the hook unless it repeats the previous failure of that
+/// store.
+pub fn report_save_failure(label: &str, detail: &str) {
+    eprintln!("{label}: save failed: {detail}");
+    let hook = with_save_failures(|s| s.is_new(label, detail).then(|| s.hook.clone()).flatten());
+    if let Some(hook) = hook {
+        hook(label, detail);
+    }
+}
+
+/// Record that saving the store named `label` worked, so a later failure is
+/// reported again even if it reads the same.
+pub fn report_save_ok(label: &str) {
+    with_save_failures(|s| {
+        s.last_reported.remove(label);
+    });
+}
+
+/// Run `save` against `path` and report how it went. A skipped write (the
+/// policy forbids touching real state) is `Ok` and so not a failure; no path
+/// under [`Policy::Disabled`] is the same, while no path under any other
+/// policy means the platform has no config directory, which is one.
+pub fn save_reporting(
+    label: &str,
+    path: Option<&Path>,
+    save: impl FnOnce(&Path) -> std::io::Result<()>,
+) {
+    match path {
+        Some(p) => match save(p) {
+            Ok(()) => report_save_ok(label),
+            Err(e) => report_save_failure(label, &format!("{e} ({})", p.display())),
+        },
+        None if policy() == Policy::Disabled => {}
+        None => report_save_failure(label, "no config directory"),
+    }
+}
+
 /// A process-wide, lazily-initialized, mutex-guarded in-memory cache of a
 /// value of type `T` — the pattern shared by every JSON-backed store in this
 /// app (settings, custom imagery, OAuth token bookkeeping). Callers own
@@ -279,12 +355,15 @@ pub fn save_json<T: Serialize + ?Sized>(
 /// manages the shared in-memory copy.
 pub struct JsonStore<T> {
     cell: OnceLock<Arc<Mutex<T>>>,
+    /// Orders [`JsonStore::update_and_save`] calls; see there.
+    save_lock: Mutex<()>,
 }
 
 impl<T> JsonStore<T> {
     pub const fn new() -> Self {
         Self {
             cell: OnceLock::new(),
+            save_lock: Mutex::new(()),
         }
     }
 
@@ -314,6 +393,41 @@ impl<T> JsonStore<T> {
                 None
             }
         }
+    }
+
+    /// [`JsonStore::update`], then `save` with the value as it stands after
+    /// `f`, with concurrent calls serialised so the last `save` to run always
+    /// writes the latest state. Without that, two threads could each apply
+    /// their change, release the store, and write their snapshots in the
+    /// opposite order, leaving the older one on disk.
+    ///
+    /// The snapshot is taken after `save_lock` is acquired, so a `save` always
+    /// sees every change applied before it, including ones from callers still
+    /// queued behind it. The store's own mutex is deliberately not held while
+    /// `save` runs: readers (the UI reads settings every frame) must not wait
+    /// on disk or keychain I/O. Lock order is `save_lock` then the store
+    /// mutex; nothing takes them the other way round, and `f` and `save` must
+    /// not call back into `update_and_save` on the same store.
+    pub fn update_and_save<F, S>(&self, label: &str, f: F, save: S) -> Option<T>
+    where
+        T: Clone,
+        F: FnOnce(&mut T),
+        S: FnOnce(&T),
+    {
+        let store = self.cell.get()?;
+        let _ordering = self.save_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = match store.lock() {
+            Ok(mut g) => {
+                f(&mut g);
+                g.clone()
+            }
+            Err(e) => {
+                eprintln!("{label}: mutex poisoned, skipping update: {e}");
+                return None;
+            }
+        };
+        save(&snapshot);
+        Some(snapshot)
     }
 
     /// A clone of the current in-memory value, or `T::default()` if the
@@ -378,6 +492,57 @@ mod tests {
     struct Sample {
         name: String,
         count: u32,
+    }
+
+    #[test]
+    fn identical_consecutive_failures_are_reported_once() {
+        let mut failures = SaveFailures::default();
+        assert!(failures.is_new("a", "disk full"));
+        assert!(!failures.is_new("a", "disk full"));
+        assert!(
+            failures.is_new("b", "disk full"),
+            "another store is separate"
+        );
+        assert!(failures.is_new("a", "read-only file system"));
+        failures.last_reported.remove("a");
+        assert!(failures.is_new("a", "read-only file system"));
+    }
+
+    #[test]
+    fn save_failures_reach_the_hook_once_and_skipped_writes_are_not_failures() {
+        static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        const LABEL: &str = "persist_hook_test";
+        set_save_failure_hook(|label, detail| {
+            if label == LABEL {
+                SEEN.lock().unwrap().push(detail.to_string());
+            }
+        });
+        let dir = tmp_dir("save-failure-hook");
+        let blocker = dir.join("a-file");
+        fs::write(&blocker, b"x").unwrap();
+        // A parent that is a file: creating the directory fails.
+        let bad = blocker.join("settings.json");
+        let failing = |p: &Path| save_json(p, &Sample::default(), WriteOpts::new());
+
+        save_reporting(LABEL, Some(&bad), failing);
+        save_reporting(LABEL, Some(&bad), failing);
+        assert_eq!(SEEN.lock().unwrap().len(), 1, "the repeat is coalesced");
+
+        // A good save re-arms reporting.
+        save_reporting(LABEL, Some(&dir.join("ok.json")), failing);
+        save_reporting(LABEL, Some(&bad), failing);
+        assert_eq!(SEEN.lock().unwrap().len(), 2);
+
+        // No path under the (test-default) Disabled policy, and a write the
+        // policy skips, are not failures.
+        assert_eq!(policy(), Policy::Disabled);
+        save_reporting(LABEL, None, failing);
+        let real = dirs::config_dir().map(|d| d.join("osm-gpui").join("x.json"));
+        if let Some(real) = real {
+            save_reporting(LABEL, Some(&real), failing);
+            assert!(!real.exists());
+        }
+        assert_eq!(SEEN.lock().unwrap().len(), 2);
     }
 
     #[test]
