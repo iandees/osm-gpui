@@ -21,7 +21,11 @@ use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
 
 use crate::clipboard_actions::{ClipboardOp, Clipboards};
+#[cfg(test)]
+use crate::undo::EditLabel;
 use crate::undo::{roll_back, NodeMoveUndoEntry, TagEntry, UndoableAction};
+#[cfg(test)]
+use osm_gpui::edit_ops::EditOp;
 
 /// Read-only view of what an action's `is_applicable` predicate may look at.
 pub(crate) struct ActionEnv<'a> {
@@ -1093,12 +1097,12 @@ pub(crate) fn simplify_ways(
             continue;
         }
         if editable.set_way_nodes(way.way_id, after.clone()).is_ok() {
-            actions.push(UndoableAction::SetWayNodes {
-                layer: layer_id,
-                way_id: way.way_id,
-                before: way.node_ids.clone(),
+            actions.push(UndoableAction::set_way_nodes(
+                layer_id,
+                way.way_id,
+                way.node_ids.clone(),
                 after,
-            });
+            ));
             dropped.extend(
                 way.node_ids
                     .iter()
@@ -1114,10 +1118,7 @@ pub(crate) fn simplify_ways(
     for &id in &dropped {
         // A dropped node another way still uses is refused, and stays.
         if let Ok(snapshot) = editable.delete_feature(FeatureKind::Node, id) {
-            actions.push(UndoableAction::DeleteFeature {
-                layer: layer_id,
-                snapshot,
-            });
+            actions.push(UndoableAction::delete_feature(layer_id, snapshot));
         }
     }
     let status =
@@ -1290,19 +1291,16 @@ fn apply_reverse(
             editable
                 .set_relation_members(relation_id, after.clone())
                 .map_err(refused)?;
-            relation_edits.push(UndoableAction::SetRelationMembers {
-                layer: layer_id,
+            relation_edits.push(UndoableAction::set_relation_members(
+                layer_id,
                 relation_id,
-                before: relation.members,
+                relation.members,
                 after,
-            });
+            ));
         }
     }
     let status = tr_count!("action.reverse.done", reversed.len()).to_string();
-    let reverse = UndoableAction::ReverseWays {
-        layer: layer_id,
-        way_ids: reversed,
-    };
+    let reverse = UndoableAction::reverse_ways(layer_id, reversed);
     // The node order, the tag flips and the role swaps are one undo step.
     let undo = if tag_entries.is_empty() && relation_edits.is_empty() {
         reverse
@@ -1377,12 +1375,12 @@ fn apply_join(
         id,
     };
 
-    let mut actions = vec![UndoableAction::SetWayNodes {
-        layer: layer_id,
-        way_id: plan.keep,
-        before: kept.nodes.clone(),
-        after: plan.nodes.clone(),
-    }];
+    let mut actions = vec![UndoableAction::set_way_nodes(
+        layer_id,
+        plan.keep,
+        kept.nodes.clone(),
+        plan.nodes.clone(),
+    )];
     // A refusal from here on undoes what `actions` holds before reporting it.
     editable
         .set_way_nodes(plan.keep, plan.nodes)
@@ -1411,19 +1409,16 @@ fn apply_join(
         if let Err(e) = editable.set_relation_members(relation_id, after.clone()) {
             return Err(abort(layers, &actions, e));
         }
-        actions.push(UndoableAction::SetRelationMembers {
-            layer: layer_id,
+        actions.push(UndoableAction::set_relation_members(
+            layer_id,
             relation_id,
             before,
             after,
-        });
+        ));
     }
     for id in &plan.remove {
         match editable.delete_feature(FeatureKind::Way, *id) {
-            Ok(snapshot) => actions.push(UndoableAction::DeleteFeature {
-                layer: layer_id,
-                snapshot,
-            }),
+            Ok(snapshot) => actions.push(UndoableAction::delete_feature(layer_id, snapshot)),
             Err(e) => return Err(abort(layers, &actions, e)),
         }
     }
@@ -1508,12 +1503,7 @@ fn apply_extract(
             kind: FeatureKind::Node,
             id,
         };
-        actions.push(UndoableAction::CreateNode {
-            layer: layer_id,
-            id,
-            lat,
-            lon,
-        });
+        actions.push(UndoableAction::create_node(layer_id, id, lat, lon));
         let mut entries = Vec::new();
         for (key, value) in plan.split.moved.iter().chain(&plan.split.copied) {
             entries.push((node, key.clone(), None, Some(value.clone())));
@@ -1673,23 +1663,18 @@ fn separate_node(
 
     let mut actions: Vec<UndoableAction> = created
         .iter()
-        .map(|&id| UndoableAction::CreateNode {
-            layer: layer_id,
-            id,
-            lat,
-            lon,
-        })
+        .map(|&id| UndoableAction::create_node(layer_id, id, lat, lon))
         .collect();
     for edit in edits {
         if let Err(e) = editable.set_way_nodes(edit.way_id, edit.after.clone()) {
             return Err(abort(layers, &actions, e));
         }
-        actions.push(UndoableAction::SetWayNodes {
-            layer: layer_id,
-            way_id: edit.way_id,
-            before: edit.before,
-            after: edit.after,
-        });
+        actions.push(UndoableAction::set_way_nodes(
+            layer_id,
+            edit.way_id,
+            edit.before,
+            edit.after,
+        ));
     }
 
     let label = if unjoin {
@@ -1972,9 +1957,9 @@ fn apply_split(
         for (k, nodes) in finals.iter().enumerate().skip(1) {
             let new_id = editable.add_way(nodes.clone(), tags.clone());
             new_ids.push((ids[k], new_id));
-            actions.push(UndoableAction::CreateWay {
-                layer: layer_id,
-                snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+            actions.push(UndoableAction::create_way(
+                layer_id,
+                osm_gpui::selection::DeletedFeatureSnapshot {
                     kind: FeatureKind::Way,
                     id: new_id,
                     tags: tags.clone(),
@@ -1982,7 +1967,7 @@ fn apply_split(
                     node_lat_lon: None,
                     version: 0,
                 },
-            });
+            ));
         }
         if plan.cuts().is_empty() {
             // A closed way only turned to start at the node.
@@ -1991,12 +1976,12 @@ fn apply_split(
         if let Err(e) = editable.set_way_nodes(plan.way_id, finals[0].clone()) {
             return Err(abort(layers, &actions, e));
         }
-        actions.push(UndoableAction::SetWayNodes {
-            layer: layer_id,
-            way_id: plan.way_id,
-            before: plan.before.clone(),
-            after: finals[0].clone(),
-        });
+        actions.push(UndoableAction::set_way_nodes(
+            layer_id,
+            plan.way_id,
+            plan.before.clone(),
+            finals[0].clone(),
+        ));
     }
     for relation in relations {
         let Some(before) = editable.relation(relation.id).map(|r| r.members) else {
@@ -2012,12 +1997,12 @@ fn apply_split(
             if let Err(e) = editable.set_relation_members(relation.id, after.clone()) {
                 return Err(abort(layers, &actions, e));
             }
-            actions.push(UndoableAction::SetRelationMembers {
-                layer: layer_id,
-                relation_id: relation.id,
+            actions.push(UndoableAction::set_relation_members(
+                layer_id,
+                relation.id,
                 before,
                 after,
-            });
+            ));
         }
     }
 
@@ -2224,9 +2209,9 @@ fn apply_delete_segment(
                 }
                 let new_id = editable.add_way(nodes.clone(), tags.clone());
                 new_ids.push((ids[k], new_id));
-                actions.push(UndoableAction::CreateWay {
-                    layer: layer_id,
-                    snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+                actions.push(UndoableAction::create_way(
+                    layer_id,
+                    osm_gpui::selection::DeletedFeatureSnapshot {
                         kind: FeatureKind::Way,
                         id: new_id,
                         tags: tags.clone(),
@@ -2234,7 +2219,7 @@ fn apply_delete_segment(
                         node_lat_lon: None,
                         version: 0,
                     },
-                });
+                ));
             }
             finals.swap_remove(0)
         }
@@ -2243,12 +2228,12 @@ fn apply_delete_segment(
     if let Err(e) = editable.set_way_nodes(way_id, kept.clone()) {
         return Err(abort(layers, &actions, e));
     }
-    actions.push(UndoableAction::SetWayNodes {
-        layer: layer_id,
+    actions.push(UndoableAction::set_way_nodes(
+        layer_id,
         way_id,
-        before: deletion.before.clone(),
-        after: kept,
-    });
+        deletion.before.clone(),
+        kept,
+    ));
     for relation in relations {
         let Some(before) = editable.relation(relation.id).map(|r| r.members) else {
             continue;
@@ -2263,12 +2248,12 @@ fn apply_delete_segment(
             if let Err(e) = editable.set_relation_members(relation.id, after.clone()) {
                 return Err(abort(layers, &actions, e));
             }
-            actions.push(UndoableAction::SetRelationMembers {
-                layer: layer_id,
-                relation_id: relation.id,
+            actions.push(UndoableAction::set_relation_members(
+                layer_id,
+                relation.id,
                 before,
                 after,
-            });
+            ));
         }
     }
     for node_id in deletion.dropped_nodes() {
@@ -2286,10 +2271,7 @@ fn apply_delete_segment(
             continue;
         }
         match editable.delete_feature(FeatureKind::Node, node_id) {
-            Ok(snapshot) => actions.push(UndoableAction::DeleteFeature {
-                layer: layer_id,
-                snapshot,
-            }),
+            Ok(snapshot) => actions.push(UndoableAction::delete_feature(layer_id, snapshot)),
             Err(e) => return Err(abort(layers, &actions, e)),
         }
     }
@@ -2400,12 +2382,12 @@ pub(crate) fn apply_merge(
         if let Err(e) = editable.set_way_nodes(edit.way_id, edit.after.clone()) {
             return Err(abort(layers, &actions, e));
         }
-        actions.push(UndoableAction::SetWayNodes {
-            layer: layer_id,
-            way_id: edit.way_id,
-            before: edit.before,
-            after: edit.after,
-        });
+        actions.push(UndoableAction::set_way_nodes(
+            layer_id,
+            edit.way_id,
+            edit.before,
+            edit.after,
+        ));
     }
     let mut relation_ids: Vec<i64> = plan
         .remove
@@ -2424,20 +2406,17 @@ pub(crate) fn apply_merge(
             if let Err(e) = editable.set_relation_members(relation_id, after.clone()) {
                 return Err(abort(layers, &actions, e));
             }
-            actions.push(UndoableAction::SetRelationMembers {
-                layer: layer_id,
+            actions.push(UndoableAction::set_relation_members(
+                layer_id,
                 relation_id,
-                before: relation.members,
+                relation.members,
                 after,
-            });
+            ));
         }
     }
     for id in &plan.remove {
         match editable.delete_feature(FeatureKind::Node, *id) {
-            Ok(snapshot) => actions.push(UndoableAction::DeleteFeature {
-                layer: layer_id,
-                snapshot,
-            }),
+            Ok(snapshot) => actions.push(UndoableAction::delete_feature(layer_id, snapshot)),
             Err(e) => return Err(abort(layers, &actions, e)),
         }
     }
@@ -2558,12 +2537,7 @@ pub(crate) fn join_node_into_way(
         }
         return Err(refused(e));
     }
-    actions.push(UndoableAction::SetWayNodes {
-        layer: layer_id,
-        way_id: way,
-        before,
-        after,
-    });
+    actions.push(UndoableAction::set_way_nodes(layer_id, way, before, after));
     Ok(actions)
 }
 
@@ -2695,10 +2669,10 @@ fn apply_new_relation(
         .ok_or_else(|| tr!("action.new_relation.hint").to_string())?;
     let index = editable.relation_ids().len().saturating_sub(1);
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::CreateRelation {
-            layer: layer_id,
-            snapshot: osm_gpui::selection::DeletedRelationSnapshot { relation, index },
-        }),
+        undo: Some(UndoableAction::create_relation(
+            layer_id,
+            osm_gpui::selection::DeletedRelationSnapshot { relation, index },
+        )),
         status: tr!(
             "action.new_relation.done",
             members = tr_count!("action.feature_count", count)
@@ -2881,10 +2855,10 @@ fn apply_create_multipolygon(
         .relation(id)
         .ok_or_else(|| tr!("action.create_multipolygon.hint").to_string())?;
     let index = editable.relation_ids().len().saturating_sub(1);
-    let create = UndoableAction::CreateRelation {
-        layer: layer_id,
-        snapshot: osm_gpui::selection::DeletedRelationSnapshot { relation, index },
-    };
+    let create = UndoableAction::create_relation(
+        layer_id,
+        osm_gpui::selection::DeletedRelationSnapshot { relation, index },
+    );
     let mut status = tr!(
         "action.create_multipolygon.done",
         members = tr_count!("action.feature_count", count),
@@ -2951,12 +2925,12 @@ pub(crate) fn add_to_relation(
         .set_relation_members(relation_id, after.clone())
         .map_err(|_| tr!("action.add_to_relation.hint").to_string())?;
     Ok(ActionOutcome {
-        undo: Some(UndoableAction::SetRelationMembers {
-            layer: layer_id,
+        undo: Some(UndoableAction::set_relation_members(
+            layer_id,
             relation_id,
             before,
             after,
-        }),
+        )),
         status: tr!(
             "action.add_to_relation.done",
             features = tr_count!("action.feature_count", added),
@@ -3023,12 +2997,12 @@ fn apply_member_edits(
         editable
             .set_relation_members(relation_id, after.clone())
             .map_err(refused)?;
-        actions.push(UndoableAction::SetRelationMembers {
-            layer: layer_id,
+        actions.push(UndoableAction::set_relation_members(
+            layer_id,
             relation_id,
             before,
             after,
-        });
+        ));
         if !changed_relations.contains(&(layer_id, relation_id)) {
             changed_relations.push((layer_id, relation_id));
         }
@@ -3055,10 +3029,7 @@ fn delete_way_and_orphans(
         return Ok(false);
     };
     let way_nodes = snapshot.way_nodes.clone();
-    actions.push(UndoableAction::DeleteFeature {
-        layer: layer_id,
-        snapshot,
-    });
+    actions.push(UndoableAction::delete_feature(layer_id, snapshot));
     apply_member_edits(editable, layer_id, edits, actions, changed_relations)?;
     let mut seen = Vec::new();
     for node_id in way_nodes {
@@ -3084,10 +3055,7 @@ fn delete_way_and_orphans(
         let snapshot = editable
             .delete_feature(FeatureKind::Node, node_id)
             .map_err(refused)?;
-        actions.push(UndoableAction::DeleteFeature {
-            layer: layer_id,
-            snapshot,
-        });
+        actions.push(UndoableAction::delete_feature(layer_id, snapshot));
     }
     Ok(true)
 }
@@ -3158,12 +3126,9 @@ fn delete_vertex(
                 editable
                     .set_way_nodes(way_id, after.clone())
                     .map_err(refused)?;
-                actions.push(UndoableAction::SetWayNodes {
-                    layer: layer_id,
-                    way_id,
-                    before,
-                    after,
-                });
+                actions.push(UndoableAction::set_way_nodes(
+                    layer_id, way_id, before, after,
+                ));
             }
             WayFate::Delete => {
                 delete_way_and_orphans(
@@ -3181,10 +3146,7 @@ fn delete_vertex(
     let snapshot = editable
         .delete_feature(FeatureKind::Node, node_id)
         .map_err(refused)?;
-    actions.push(UndoableAction::DeleteFeature {
-        layer: layer_id,
-        snapshot,
-    });
+    actions.push(UndoableAction::delete_feature(layer_id, snapshot));
     apply_member_edits(editable, layer_id, node_edits, actions, changed_relations)?;
     Ok(true)
 }
@@ -3226,10 +3188,7 @@ fn apply_delete(
             match editable.delete_relation(feature.id) {
                 Ok(snapshot) => {
                     deleted_relations += 1;
-                    actions.push(UndoableAction::DeleteRelation {
-                        layer: feature.layer_id,
-                        snapshot,
-                    });
+                    actions.push(UndoableAction::delete_relation(feature.layer_id, snapshot));
                     false
                 }
                 // Gone already: nothing to do. Otherwise another relation
@@ -3661,21 +3620,16 @@ pub(crate) fn create_parallel_ways(
         let mut node_ids = Vec::with_capacity(line.len());
         for &(lat, lon) in &line[..distinct] {
             let id = editable.add_node(lat, lon);
-            actions.push(UndoableAction::CreateNode {
-                layer: layer_id,
-                id,
-                lat,
-                lon,
-            });
+            actions.push(UndoableAction::create_node(layer_id, id, lat, lon));
             node_ids.push(id);
         }
         if closed {
             node_ids.push(node_ids[0]);
         }
         let way_id = editable.add_way(node_ids.clone(), tags.clone());
-        actions.push(UndoableAction::CreateWay {
-            layer: layer_id,
-            snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+        actions.push(UndoableAction::create_way(
+            layer_id,
+            osm_gpui::selection::DeletedFeatureSnapshot {
                 kind: FeatureKind::Way,
                 id: way_id,
                 tags,
@@ -3683,7 +3637,7 @@ pub(crate) fn create_parallel_ways(
                 node_lat_lon: None,
                 version: 0,
             },
-        });
+        ));
         new_ways.push(FeatureRef {
             layer_id,
             kind: FeatureKind::Way,
@@ -3918,8 +3872,17 @@ mod tests {
         ];
         let out =
             (find("new_relation").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
-        let Some(UndoableAction::CreateRelation { layer, snapshot }) = out.undo else {
-            panic!("expected CreateRelation");
+        let Some(UndoableAction::Edit {
+            layer,
+            label: EditLabel::CreatedRelation,
+            ops,
+            ..
+        }) = out.undo
+        else {
+            panic!("expected a created relation");
+        };
+        let [EditOp::PutRelation { snapshot }] = &ops[..] else {
+            panic!("expected one PutRelation op");
         };
         assert_eq!(layer, f.layer_id);
         assert!(snapshot.relation.id < 0);
@@ -3964,7 +3927,7 @@ mod tests {
         assert!(editable.restore_relation(snapshot.clone()).is_ok());
         assert_eq!(
             editable.relation(snapshot.relation.id),
-            Some(snapshot.relation)
+            Some(snapshot.relation.clone())
         );
     }
 
@@ -4057,10 +4020,16 @@ mod tests {
         let out =
             (find("reverse").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert_eq!(out.status, "Reversed 2 ways");
-        let UndoableAction::ReverseWays { way_ids, .. } = out.undo.as_ref().unwrap() else {
-            panic!("expected ReverseWays");
+        let UndoableAction::Edit {
+            label: EditLabel::Reversed(2),
+            ops,
+            ..
+        } = out.undo.as_ref().unwrap()
+        else {
+            panic!("expected a step reversing two ways");
         };
-        assert_eq!(way_ids.len(), 2);
+        assert!(ops.iter().all(|op| matches!(op, EditOp::ReverseWay { .. })));
+        assert_eq!(ops.len(), 2);
         let layer = f.layers.find_layer(f.layer_id).unwrap();
         let nodes = layer.as_editable().unwrap().way_node_ids(f.rect).unwrap();
         assert_eq!(nodes.first(), Some(&f.rect_nodes[0]));
@@ -4075,7 +4044,10 @@ mod tests {
             (find("reverse").unwrap().apply())(&mut f.layers, &sel, Some(f.layer_id)).unwrap();
         assert!(matches!(
             out.undo.as_ref().unwrap(),
-            UndoableAction::ReverseWays { .. }
+            UndoableAction::Edit {
+                label: EditLabel::Reversed(_),
+                ..
+            }
         ));
     }
 
@@ -4116,13 +4088,20 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [
-                UndoableAction::DeleteFeature { .. },
-                UndoableAction::SetRelationMembers {
-                    relation_id: 900,
+                UndoableAction::Edit {
+                    label: EditLabel::Deleted(_),
                     ..
                 },
-                UndoableAction::DeleteFeature { .. }
-            ]
+                UndoableAction::Edit {
+                    label: EditLabel::ChangedRelationMembers,
+                    ops: members_ops,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::Deleted(_),
+                    ..
+                }
+            ] if matches!(members_ops[..], [EditOp::SetRelationMembers { id: 900, .. }])
         ));
 
         // A node that is on no way works the same.
@@ -4223,9 +4202,13 @@ mod tests {
         let UndoableAction::Batch { actions, .. } = out.undo.as_ref().unwrap() else {
             panic!("expected one Batch step");
         };
-        assert!(actions
-            .iter()
-            .all(|a| matches!(a, UndoableAction::DeleteFeature { .. })));
+        assert!(actions.iter().all(|a| matches!(
+            a,
+            UndoableAction::Edit {
+                label: EditLabel::Deleted(_),
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -4424,9 +4407,15 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [
-                UndoableAction::SetWayNodes { .. },
+                UndoableAction::Edit {
+                    label: EditLabel::ChangedWayNodes,
+                    ..
+                },
                 UndoableAction::SetTags { .. },
-                UndoableAction::DeleteFeature { .. }
+                UndoableAction::Edit {
+                    label: EditLabel::Deleted(_),
+                    ..
+                }
             ]
         ));
     }
@@ -4466,16 +4455,23 @@ mod tests {
             panic!("expected one Batch step");
         };
         assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::SetWayNodes { .. },
-                UndoableAction::SetRelationMembers {
-                    relation_id: 900,
-                    ..
-                },
-                UndoableAction::DeleteFeature { .. }
-            ]
-        ));
+                   actions.as_slice(),
+                   [
+                       UndoableAction::Edit {
+        label: EditLabel::ChangedWayNodes,
+        ..
+        },
+                       UndoableAction::Edit {
+                           label: EditLabel::ChangedRelationMembers,
+                           ops: members_ops,
+                           ..
+                       },
+                       UndoableAction::Edit {
+                           label: EditLabel::Deleted(_),
+                           ..
+                       }
+                   ] if matches!(members_ops[..], [EditOp::SetRelationMembers { id: 900, .. }])
+               ));
         // Selected the other way round, the member way survives untouched.
         let mut n = net();
         assert!(n.run("join", &n.ways(&[102, 101])).is_ok());
@@ -4573,8 +4569,14 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [
-                UndoableAction::CreateNode { .. },
-                UndoableAction::SetWayNodes { .. }
+                UndoableAction::Edit {
+                    label: EditLabel::CreatedNode,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::ChangedWayNodes,
+                    ..
+                }
             ]
         ));
 
@@ -4679,7 +4681,10 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [
-                UndoableAction::CreateNode { .. },
+                UndoableAction::Edit {
+                    label: EditLabel::CreatedNode,
+                    ..
+                },
                 UndoableAction::SetTags { .. }
             ]
         ));
@@ -4706,12 +4711,15 @@ mod tests {
             panic!("expected one Batch step");
         };
         assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::ReverseWays { .. },
-                UndoableAction::SetTags { entries }
-            ] if entries.len() == 3
-        ));
+                   actions.as_slice(),
+                   [
+                       UndoableAction::Edit {
+        label: EditLabel::Reversed(_),
+        ..
+        },
+                       UndoableAction::SetTags { entries }
+                   ] if entries.len() == 3
+               ));
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 0));
     }
 
@@ -4987,10 +4995,22 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [
-                UndoableAction::CreateWay { .. },
-                UndoableAction::SetWayNodes { .. },
-                UndoableAction::CreateWay { .. },
-                UndoableAction::SetWayNodes { .. }
+                UndoableAction::Edit {
+                    label: EditLabel::CreatedWay,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::ChangedWayNodes,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::CreatedWay,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::ChangedWayNodes,
+                    ..
+                }
             ]
         ));
     }
@@ -5139,13 +5159,27 @@ mod tests {
             panic!("expected one Batch step");
         };
         assert!(matches!(
-            actions.as_slice(),
-            [
-                UndoableAction::CreateWay { .. },
-                UndoableAction::SetWayNodes { .. },
-                UndoableAction::SetRelationMembers { relation_id: 900, before, after, .. }
-            ] if before.len() == 3 && after.len() == 4
-        ));
+                   actions.as_slice(),
+                   [
+                       UndoableAction::Edit {
+        label: EditLabel::CreatedWay,
+        ..
+        },
+                       UndoableAction::Edit {
+        label: EditLabel::ChangedWayNodes,
+        ..
+        },
+                       UndoableAction::Edit {
+                           label: EditLabel::ChangedRelationMembers,
+                           ops: members_ops,
+                           ..
+                       }
+                   ] if matches!(
+                       &members_ops[..],
+                       [EditOp::SetRelationMembers { id: 900, before, after }]
+                           if before.len() == 3 && after.len() == 4
+                   )
+               ));
     }
 
     #[test]
@@ -5331,9 +5365,18 @@ mod tests {
             actions.as_slice(),
             [
                 UndoableAction::SetTags { .. },
-                UndoableAction::SetWayNodes { .. },
-                UndoableAction::SetWayNodes { .. },
-                UndoableAction::DeleteFeature { .. }
+                UndoableAction::Edit {
+                    label: EditLabel::ChangedWayNodes,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::ChangedWayNodes,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::Deleted(_),
+                    ..
+                }
             ]
         ));
     }
@@ -5411,9 +5454,20 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [
-                UndoableAction::SetRelationMembers { relation_id: 900, before, after, .. },
-                UndoableAction::DeleteFeature { .. }
-            ] if before.len() == 2 && after.len() == 2
+                UndoableAction::Edit {
+                    label: EditLabel::ChangedRelationMembers,
+                    ops: members_ops,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::Deleted(_),
+                    ..
+                }
+            ] if matches!(
+                &members_ops[..],
+                [EditOp::SetRelationMembers { id: 900, before, after }]
+                    if before.len() == 2 && after.len() == 2
+            )
         ));
         // Selected the other way round, the member survives unchanged.
         let mut n = net();
@@ -5753,10 +5807,22 @@ mod tests {
         assert!(matches!(
             actions.as_slice(),
             [
-                UndoableAction::CreateNode { .. },
-                UndoableAction::CreateNode { .. },
-                UndoableAction::CreateNode { .. },
-                UndoableAction::CreateWay { .. },
+                UndoableAction::Edit {
+                    label: EditLabel::CreatedNode,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::CreatedNode,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::CreatedNode,
+                    ..
+                },
+                UndoableAction::Edit {
+                    label: EditLabel::CreatedWay,
+                    ..
+                },
             ]
         ));
         // 5 m to the right of the first segment, in metres on the ground.

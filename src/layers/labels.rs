@@ -25,6 +25,7 @@
 //! tests use.
 
 use crate::layers::area_labels::AreaCaches;
+use crate::layers::line_labels::{parse_bench, BenchKnobs};
 use crate::presets;
 use crate::style::{TextPosition, TextStyle};
 use gpui::{
@@ -39,6 +40,13 @@ use std::time::{Duration, Instant};
 pub const LABEL_MIN_ZOOM: f64 = 16.0;
 /// POI icons are drawn from this zoom up.
 pub const ICON_MIN_ZOOM: f64 = 17.0;
+/// Below this zoom no kind of label is drawn, so the label pass does nothing:
+/// the smallest of the kinds' own minimums (point and area text
+/// [`LABEL_MIN_ZOOM`], street names [`crate::layers::line_labels::MIN_ZOOM`],
+/// icons [`ICON_MIN_ZOOM`]).
+pub const ANY_LABEL_MIN_ZOOM: f64 = LABEL_MIN_ZOOM
+    .min(crate::layers::line_labels::MIN_ZOOM)
+    .min(ICON_MIN_ZOOM);
 /// Candidates considered per placement (top by priority).
 pub const MAX_CANDIDATES: usize = 400;
 /// Labels placed per frame at most.
@@ -49,17 +57,10 @@ pub const SETTLE: Duration = Duration::from_millis(120);
 pub const GRID_CELL: f32 = 64.0;
 /// Shaped lines kept.
 pub const SHAPE_CACHE_CAP: usize = 2000;
-/// Default font size in pixels.
-pub const DEFAULT_FONT_PX: f32 = 12.0;
-pub const DEFAULT_TEXT_COLOR: u32 = 0xFFFFFF;
-pub const DEFAULT_HALO_COLOR: u32 = 0x000000;
-pub const DEFAULT_HALO_RADIUS: f32 = 1.5;
 /// Glyph size of an icon without `icon-width`.
 pub const DEFAULT_ICON_PX: f32 = 12.0;
 /// Extra backing circle diameter around the glyph.
 pub const ICON_BACKING_EXTRA: f32 = 6.0;
-/// Halo opacity when `text-halo-color` carries no alpha of its own.
-pub const DEFAULT_HALO_ALPHA: f32 = 0.9;
 /// Length of the fade-in of newly placed labels.
 pub const FADE: Duration = Duration::from_millis(140);
 /// While zooming, the previous placement stays on screen (re-projected from
@@ -70,6 +71,52 @@ const MAX_TEXT_CHARS: usize = 32;
 /// A previously placed label gets this much extra priority so a pan or a
 /// small zoom does not swap which of two overlapping labels wins.
 pub const HYSTERESIS_BONUS: i32 = 40;
+
+/// How a label's text is drawn, whatever kind of label it is: the size, the
+/// fill colour and the halo (`0xRRGGBB` colours).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextLook {
+    pub font_px: f32,
+    pub color: u32,
+    pub halo_color: u32,
+    /// Halo thickness outside the glyphs, in pixels.
+    pub halo_radius: f32,
+    /// Halo opacity (`text-halo-color` alpha or `text-halo-opacity`).
+    pub halo_alpha: f32,
+}
+
+impl TextLook {
+    /// Defaults per kind of label, for what the stylesheet leaves unset.
+    /// Point labels sit on the dark base map, street names on the light road
+    /// fill, areas on the tinted area fill.
+    pub const POINT: TextLook = TextLook {
+        font_px: 12.0,
+        color: 0xFFFFFF,
+        halo_color: 0x000000,
+        halo_radius: 1.5,
+        halo_alpha: 0.9,
+    };
+    pub const AREA: TextLook = TextLook {
+        color: 0xE8E8E8,
+        ..Self::POINT
+    };
+    pub const LINE: TextLook = TextLook {
+        color: 0x1f2937,
+        halo_color: 0xffffff,
+        ..Self::POINT
+    };
+
+    /// The look a MapCSS style asks for, `defaults` where it is silent.
+    pub fn resolve(style: &TextStyle, defaults: TextLook) -> TextLook {
+        TextLook {
+            font_px: style.font_size.unwrap_or(defaults.font_px),
+            color: style.color.unwrap_or(defaults.color),
+            halo_color: style.halo_color.unwrap_or(defaults.halo_color),
+            halo_radius: style.halo_radius.unwrap_or(defaults.halo_radius),
+            halo_alpha: style.halo_opacity.unwrap_or(defaults.halo_alpha),
+        }
+    }
+}
 
 /// An axis-aligned screen rectangle (`x0 <= x1`, `y0 <= y1`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -266,6 +313,23 @@ pub struct Item {
     pub forced: bool,
 }
 
+/// Clear distance between a marker or icon and its text, in pixels.
+pub const TEXT_GAP: f32 = 3.0;
+
+impl Item {
+    /// Where the text goes when the item is forced and nothing else is in
+    /// the way: its first-choice anchor, clear of the marker. This is what
+    /// [`place`] gives a lone forced item, without building a grid; the
+    /// per-frame fallback for a selected label that placement dropped uses it.
+    pub fn forced_text_rect(&self) -> Option<(Anchor, Rect)> {
+        let (w, h, pref) = self.text?;
+        Some((
+            pref,
+            label_rect(pref, self.center, self.marker_r, TEXT_GAP, w, h),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Config {
     /// The visible area; text must lie inside it inset by `edge_pad`.
@@ -285,7 +349,7 @@ impl Config {
         Self {
             view: Rect::new(0.0, 0.0, w, h),
             edge_pad: 2.0,
-            gap: 3.0,
+            gap: TEXT_GAP,
             text_pad: 2.0,
             icon_pad: 1.0,
             max_text: MAX_PLACED,
@@ -428,11 +492,7 @@ impl IconChoice {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeLabel {
     pub text: Option<SharedString>,
-    pub font_px: f32,
-    pub color: u32,
-    pub halo_color: u32,
-    pub halo_radius: f32,
-    pub halo_alpha: f32,
+    pub look: TextLook,
     pub pref: Anchor,
     pub icon: Option<IconChoice>,
     pub priority: i32,
@@ -587,11 +647,7 @@ pub fn resolve_node_label(
     Some(NodeLabel {
         priority: node_priority(tags, icon.is_some(), named),
         text: text.map(SharedString::from),
-        font_px: style.font_size.unwrap_or(DEFAULT_FONT_PX),
-        color: style.color.unwrap_or(DEFAULT_TEXT_COLOR),
-        halo_color: style.halo_color.unwrap_or(DEFAULT_HALO_COLOR),
-        halo_radius: style.halo_radius.unwrap_or(DEFAULT_HALO_RADIUS),
-        halo_alpha: style.halo_opacity.unwrap_or(DEFAULT_HALO_ALPHA),
+        look: TextLook::resolve(style, TextLook::POINT),
         pref: Anchor::from_position(style.position),
         icon,
     })
@@ -660,10 +716,20 @@ pub struct PlacedText {
     /// Top-left of the text box relative to the feature's screen position.
     pub dx: f32,
     pub dy: f32,
-    pub color: u32,
-    pub halo_color: u32,
-    pub halo_radius: f32,
-    pub halo_alpha: f32,
+    pub look: TextLook,
+}
+
+impl PlacedText {
+    /// Every placed text is built here: `line` with its box's top-left `(dx,
+    /// dy)` from the feature's screen position.
+    pub fn new(line: Arc<ShapedLine>, dx: f32, dy: f32, look: TextLook) -> Self {
+        Self { line, dx, dy, look }
+    }
+
+    /// `line` in the box `rect`, for a feature drawn at `center`.
+    pub fn in_rect(line: Arc<ShapedLine>, rect: &Rect, center: (f32, f32), look: TextLook) -> Self {
+        Self::new(line, rect.x0 - center.0, rect.y0 - center.1, look)
+    }
 }
 
 #[derive(Clone)]
@@ -738,6 +804,62 @@ pub fn fade_alpha(born: Option<Instant>, now: Instant) -> f32 {
     }
 }
 
+/// Which labels the last placement showed, so a new placement fades in only
+/// the labels that were not already on screen. `K` identifies a label across
+/// placements (a feature key for point labels, `(way, slot)` for street
+/// names).
+#[derive(Debug, Clone)]
+pub struct FadeSet<K> {
+    /// Zoom of the last placement.
+    zoom: f64,
+    shown: HashSet<K>,
+}
+
+impl<K> Default for FadeSet<K> {
+    fn default() -> Self {
+        Self {
+            zoom: 0.0,
+            shown: HashSet::new(),
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq> FadeSet<K> {
+    /// Record `items` as the labels now shown, placed at `zoom`. An item
+    /// that was shown at a zoom within `keep` levels of this one gets
+    /// `set_born(item, None)` (it stays opaque); every other gets
+    /// `set_born(item, Some(now))` and fades in over `fade`. Returns when
+    /// the last fade-in finishes, `None` if nothing is new.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace<T>(
+        &mut self,
+        items: &mut [T],
+        zoom: f64,
+        keep: f64,
+        now: Instant,
+        fade: Duration,
+        key: impl Fn(&T) -> K,
+        set_born: impl Fn(&mut T, Option<Instant>),
+    ) -> Option<Instant> {
+        let carry = (self.zoom - zoom).abs() <= keep;
+        let mut shown = HashSet::with_capacity(items.len());
+        let mut any = false;
+        for item in items {
+            let k = key(item);
+            if carry && self.shown.contains(&k) {
+                set_born(item, None);
+            } else {
+                set_born(item, Some(now));
+                any = true;
+            }
+            shown.insert(k);
+        }
+        self.shown = shown;
+        self.zoom = zoom;
+        any.then(|| now + fade)
+    }
+}
+
 /// Identifies what a [`Placement`] was computed for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CameraSig {
@@ -759,8 +881,39 @@ pub struct Placement {
     pub by_id: HashMap<i64, usize>,
     /// When the last fade-in finishes; frames are requested until then.
     pub fade_end: Option<Instant>,
-    /// How this placement's text halos are drawn (see [`halo_for`]).
+    /// How this placement's text halos are drawn (see
+    /// [`LabelTuning::halo_for`]).
     pub halo: HaloMode,
+}
+
+impl Placement {
+    /// The screen rectangles the placed icons and texts occupy, for a later
+    /// pass (street names) to avoid. `to_screen` maps a label's Mercator
+    /// anchor to screen pixels.
+    pub fn occupied(&self, to_screen: impl Fn(f64, f64) -> (f32, f32)) -> Vec<Rect> {
+        let mut out = Vec::new();
+        for l in &self.labels {
+            let (cx, cy) = to_screen(l.mx, l.my);
+            if let Some(icon) = &l.icon {
+                // The icon backing plus the padding placement keeps clear.
+                let r = icon.choice.backing() / 2.0 + 1.0;
+                out.push(Rect::around(cx, cy, r, r));
+            }
+            if let Some(t) = &l.text {
+                let (w, h) = (
+                    f32::from(t.line.width),
+                    f32::from(t.line.ascent + t.line.descent),
+                );
+                out.push(Rect::new(
+                    cx + t.dx,
+                    cy + t.dy,
+                    cx + t.dx + w,
+                    cy + t.dy + h,
+                ));
+            }
+        }
+        out
+    }
 }
 
 /// Whether to ask for another frame: while waiting for the camera to settle
@@ -794,8 +947,11 @@ pub struct LabelCache {
     pub nodes: HashMap<i64, Option<Arc<NodeLabel>>>,
     /// Area labels and their cached label points; see [`area_labels`].
     pub areas: AreaCaches,
+    /// This layer's overrides (environment and script knobs).
+    pub tuning: LabelTuning,
     built_for: Option<(u64, usize, i32)>,
     pub placement: Option<Placement>,
+    fade: FadeSet<Key>,
     last_cam: Option<CameraSig>,
     last_change: Instant,
 }
@@ -807,8 +963,10 @@ impl Default for LabelCache {
             icons: IconCache::new(),
             nodes: HashMap::new(),
             areas: AreaCaches::default(),
+            tuning: LabelTuning::from_env(),
             built_for: None,
             placement: None,
+            fade: FadeSet::default(),
             last_cam: None,
             last_change: Instant::now(),
         }
@@ -879,24 +1037,16 @@ impl LabelCache {
     /// Keep a new placement. Labels that were on screen in the previous one
     /// (at a comparable zoom) stay opaque; the others fade in from `now`.
     pub fn store(&mut self, mut p: Placement, now: Instant) {
-        let kept: Option<&Placement> = self
-            .placement
-            .as_ref()
-            .filter(|o| (o.cam.zoom - p.cam.zoom).abs() <= ZOOM_KEEP);
         // By (kind, id): area ids may equal node ids.
-        let kept_keys: Option<HashSet<Key>> =
-            kept.map(|o| o.labels.iter().map(|l| (l.kind, l.id)).collect());
-        let mut any = false;
-        for l in &mut p.labels {
-            if kept_keys
-                .as_ref()
-                .is_none_or(|k| !k.contains(&(l.kind, l.id)))
-            {
-                l.born = Some(now);
-                any = true;
-            }
-        }
-        p.fade_end = any.then(|| now + FADE);
+        p.fade_end = self.fade.replace(
+            &mut p.labels,
+            p.cam.zoom,
+            ZOOM_KEEP,
+            now,
+            FADE,
+            |l| (l.kind, l.id),
+            |l, born| l.born = born,
+        );
         self.placement = Some(p);
     }
 
@@ -960,32 +1110,101 @@ pub enum HaloMode {
     Off,
 }
 
-/// The halo mode forced by `OSM_GPUI_LABEL_HALO` (`offsets` | `shadow` |
-/// `quad` | `off`), read once; `None` to choose by label count.
-pub fn forced_halo_mode() -> Option<HaloMode> {
-    static MODE: OnceLock<Option<HaloMode>> = OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("OSM_GPUI_LABEL_HALO").as_deref() {
-        Ok("offsets") => Some(HaloMode::Offsets),
-        Ok("shadow") => Some(HaloMode::Shadow),
-        Ok("quad") => Some(HaloMode::Quad),
-        Ok("off") => Some(HaloMode::Off),
-        _ => None,
-    })
+impl HaloMode {
+    /// The mode `OSM_GPUI_LABEL_HALO` names.
+    pub fn from_name(name: &str) -> Option<HaloMode> {
+        match name {
+            "offsets" => Some(HaloMode::Offsets),
+            "shadow" => Some(HaloMode::Shadow),
+            "quad" => Some(HaloMode::Quad),
+            "off" => Some(HaloMode::Off),
+            _ => None,
+        }
+    }
 }
+
+/// Environment variable forcing the halo of point and area labels
+/// (`offsets` | `shadow` | `quad` | `off`).
+pub const HALO_ENV: &str = "OSM_GPUI_LABEL_HALO";
 
 /// The outline (`Offsets`) is the most legible but paints every glyph several
 /// times, so it is used only while there are few labels; with more than
 /// [`OUTLINE_MAX_LABELS`] placed, the much cheaper backing quad takes over.
 pub const OUTLINE_MAX_LABELS: usize = 40;
 
-/// The halo for a placement with `n_text` text labels, unless overridden by
-/// `OSM_GPUI_LABEL_HALO`.
-pub fn halo_for(n_text: usize) -> HaloMode {
-    forced_halo_mode().unwrap_or(if n_text <= OUTLINE_MAX_LABELS {
-        HaloMode::Offsets
-    } else {
-        HaloMode::Quad
-    })
+/// What a layer's labels are tuned with: overrides for measuring, never
+/// changed by normal use. Owned by the layer's [`LabelCache`] and passed
+/// wherever placement or painting needs it, so two layers never share a knob.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LabelTuning {
+    /// Forces how point and area labels draw their halo; `None` picks by
+    /// label count (see [`LabelTuning::halo_for`]).
+    pub halo_override: Option<HaloMode>,
+    /// Text labels up to which the outline halo is used.
+    pub outline_max_labels: usize,
+    /// Street-name benchmark knobs, set by the `LabelBench` script action.
+    pub bench: BenchKnobs,
+}
+
+impl Default for LabelTuning {
+    fn default() -> Self {
+        Self {
+            halo_override: None,
+            outline_max_labels: OUTLINE_MAX_LABELS,
+            bench: BenchKnobs::default(),
+        }
+    }
+}
+
+impl LabelTuning {
+    /// The defaults with `OSM_GPUI_LABEL_HALO` applied; read once, when the
+    /// layer's label cache is made.
+    pub fn from_env() -> Self {
+        Self {
+            halo_override: std::env::var(HALO_ENV)
+                .ok()
+                .and_then(|v| HaloMode::from_name(&v)),
+            ..Self::default()
+        }
+    }
+
+    /// The halo for a placement with `n_text` text labels.
+    pub fn halo_for(&self, n_text: usize) -> HaloMode {
+        self.halo_override
+            .unwrap_or(if n_text <= self.outline_max_labels {
+                HaloMode::Offsets
+            } else {
+                HaloMode::Quad
+            })
+    }
+
+    /// The knobs street names are placed and painted with. Street names do
+    /// not follow `halo_override` or `outline_max_labels` (their halo is a
+    /// cached mesh, see [`crate::layers::line_labels::MeshHalo`]); to make them follow, map those here.
+    pub fn line_knobs(&self) -> BenchKnobs {
+        self.bench
+    }
+
+    /// Apply a `LabelBench` spec (see [`parse_bench`]).
+    pub fn set_bench(&mut self, spec: &str) -> Result<(), String> {
+        let mut k = parse_bench(spec)?;
+        k.repeat = k.repeat.clamp(1, 255);
+        self.bench = k;
+        Ok(())
+    }
+
+    /// Differs between any two settings, so a placement keyed on it is
+    /// redone when a knob changes. Cheap enough to compute every frame.
+    pub fn stamp(&self) -> usize {
+        let halo = match self.halo_override {
+            None => 0,
+            Some(m) => m as u64 + 1,
+        };
+        let h = (self.bench.stamp() as u64)
+            ^ halo.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (self.outline_max_labels as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        (h as usize) << 3
+    }
 }
 
 /// Offsets (in pixels) at which the halo is painted for radius `r`: the four
@@ -1013,11 +1232,12 @@ pub fn paint_text(
     mode: HaloMode,
 ) {
     let baseline = point(top_left.x, top_left.y + t.line.ascent);
-    if t.halo_radius > 0.0 {
-        let halo = rgb_hsla(t.halo_color, t.halo_alpha * alpha);
+    let look = &t.look;
+    if look.halo_radius > 0.0 {
+        let halo = rgb_hsla(look.halo_color, look.halo_alpha * alpha);
         match mode {
             HaloMode::Offsets => {
-                for (ox, oy) in halo_offsets(t.halo_radius) {
+                for (ox, oy) in halo_offsets(look.halo_radius) {
                     paint_glyphs(
                         window,
                         &t.line,
@@ -1027,7 +1247,7 @@ pub fn paint_text(
                 }
             }
             HaloMode::Shadow => {
-                let d = t.halo_radius * std::f32::consts::FRAC_1_SQRT_2;
+                let d = look.halo_radius * std::f32::consts::FRAC_1_SQRT_2;
                 paint_glyphs(
                     window,
                     &t.line,
@@ -1036,7 +1256,7 @@ pub fn paint_text(
                 );
             }
             HaloMode::Quad => {
-                let pad = t.halo_radius + 1.0;
+                let pad = look.halo_radius + 1.0;
                 let b = Bounds {
                     origin: point(top_left.x - px(pad), top_left.y),
                     size: size(t.line.width + px(2.0 * pad), t.line.ascent + t.line.descent),
@@ -1048,7 +1268,7 @@ pub fn paint_text(
             HaloMode::Off => {}
         }
     }
-    paint_glyphs(window, &t.line, baseline, rgb_hsla(t.color, alpha));
+    paint_glyphs(window, &t.line, baseline, rgb_hsla(look.color, alpha));
 }
 
 /// Paint an icon centred on `center`: a round backing in `fill` with a dark
@@ -1687,12 +1907,249 @@ mod tests {
         assert!(!wants_frame(Step::Recompute, None, t0));
     }
 
+    /// The zoom at which each kind of label first appears, found by asking
+    /// the code that gates it on a half-zoom grid.
+    #[test]
+    fn effective_minimum_zoom_per_kind() {
+        use crate::layers::{area_labels, line_labels};
+        let first_zoom = |shown: &mut dyn FnMut(f64) -> bool| {
+            (28..=40)
+                .map(|z| z as f64 / 2.0)
+                .find(|&z| shown(z))
+                .unwrap()
+        };
+        let t = tags(&[("amenity", "cafe"), ("name", "Joe")]);
+        let st = style(
+            "node[amenity] { text: name; icon-image: preset; }",
+            &t,
+            20.0,
+        );
+        let node = |z: f64| {
+            resolve_node_label(&st, &t, &mut IconCache::new(), z)
+                .map(|l| (l.text.is_some(), l.icon.is_some()))
+        };
+        assert_eq!(first_zoom(&mut |z| node(z).is_some_and(|l| l.0)), 16.0);
+        assert_eq!(first_zoom(&mut |z| node(z).is_some_and(|l| l.1)), 17.0);
+        let area_style = TextStyle {
+            text: Some("name".into()),
+            ..TextStyle::default()
+        };
+        let area = |z: f64| area_labels::resolve_area_label(&area_style, &t, z).is_some();
+        assert_eq!(first_zoom(&mut |z| area(z)), 16.0);
+        let way = [(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)];
+        let cand = line_labels::Candidate {
+            way_id: 1,
+            text: "Elm Street".into(),
+            verts: &way,
+            style: line_labels::LabelStyle::default(),
+            priority: 50,
+        };
+        let mut cache = line_labels::LineLabelCache::default();
+        let mut street = |z: f64| {
+            !cache
+                .place(
+                    std::slice::from_ref(&cand),
+                    z,
+                    &BenchKnobs::default(),
+                    |x, y| (x as f32 * 1.5 + 100.0, -(y as f32) * 1.5 + 100.0),
+                    (800.0, 600.0),
+                    &[],
+                    &HashSet::new(),
+                )
+                .0
+                .is_empty()
+        };
+        assert_eq!(first_zoom(&mut street), 16.0);
+        // The label pass skips everything below the earliest of them.
+        assert_eq!(ANY_LABEL_MIN_ZOOM, 16.0);
+    }
+
+    #[test]
+    fn a_forced_text_rect_is_where_place_puts_a_lone_forced_item() {
+        for (pref, marker_r) in [
+            (Anchor::Right, 4.0),
+            (Anchor::Above, 7.5),
+            (Anchor::Left, 0.0),
+            (Anchor::Center, 0.0),
+        ] {
+            let it = Item {
+                key: (KIND_NODE, 1),
+                center: (200.0, 150.0),
+                marker_r,
+                icon_r: None,
+                text: Some((60.0, 12.0, pref)),
+                priority: 400,
+                forced: true,
+            };
+            let placed = place(std::slice::from_ref(&it), &[], &HashMap::new(), &cfg());
+            assert_eq!(placed[0].text, it.forced_text_rect(), "{pref:?}");
+        }
+        let mut none = item(1, 0.0, 0.0, 10.0, 1);
+        none.text = None;
+        assert_eq!(none.forced_text_rect(), None);
+    }
+
+    #[test]
+    fn occupied_lists_each_icon_and_text_box_of_a_placement() {
+        let icon = PlacedIcon {
+            choice: IconChoice {
+                path: "x.svg".into(),
+                size: 12.0,
+            },
+            fill: 0,
+        };
+        let mut p = placement(17.0, &[1, 2]);
+        p.labels[0].icon = Some(icon);
+        let at = |mx: f64, my: f64| (mx as f32 * 2.0, my as f32 * 2.0);
+        let boxes = p.occupied(at);
+        // The icon's backing (12 + 6) / 2 plus a pixel of padding, around its anchor.
+        assert_eq!(boxes.len(), 1);
+        let (cx, cy) = at(p.labels[0].mx, p.labels[0].my);
+        assert_eq!(boxes[0], Rect::around(cx, cy, 10.0, 10.0));
+    }
+
+    /// `(id, born)` pairs, born starting `None`.
+    fn fade_items(ids: &[u32]) -> Vec<(u32, Option<Instant>)> {
+        ids.iter().map(|&i| (i, None)).collect()
+    }
+
+    fn fade_replace(
+        set: &mut FadeSet<u32>,
+        items: &mut [(u32, Option<Instant>)],
+        zoom: f64,
+        now: Instant,
+    ) -> Option<Instant> {
+        set.replace(items, zoom, 1.0, now, FADE, |i| i.0, |i, b| i.1 = b)
+    }
+
+    #[test]
+    fn a_fade_set_fades_in_only_what_was_not_shown() {
+        let (t0, t1) = (Instant::now(), Instant::now() + Duration::from_secs(1));
+        let mut set = FadeSet::default();
+        let mut first = fade_items(&[1, 2]);
+        assert_eq!(
+            fade_replace(&mut set, &mut first, 17.0, t0),
+            Some(t0 + FADE)
+        );
+        assert!(first.iter().all(|i| i.1 == Some(t0)), "everything is new");
+        let mut second = fade_items(&[1, 3]);
+        assert_eq!(
+            fade_replace(&mut set, &mut second, 17.4, t1),
+            Some(t1 + FADE)
+        );
+        assert_eq!(second[0].1, None, "1 was on screen");
+        assert_eq!(second[1].1, Some(t1), "3 is new");
+        let mut same = fade_items(&[3, 1]);
+        assert_eq!(fade_replace(&mut set, &mut same, 17.4, t1), None);
+        assert!(same.iter().all(|i| i.1.is_none()));
+    }
+
+    #[test]
+    fn a_fade_set_forgets_labels_across_a_far_zoom_or_a_gap() {
+        let t0 = Instant::now();
+        let mut set = FadeSet::default();
+        fade_replace(&mut set, &mut fade_items(&[1, 2]), 15.0, t0);
+        let mut far = fade_items(&[1, 2]);
+        assert!(fade_replace(&mut set, &mut far, 18.0, t0).is_some());
+        assert!(far.iter().all(|i| i.1.is_some()), "a far zoom fades all in");
+        // Exactly the keep distance still counts as comparable.
+        let mut edge = fade_items(&[1, 2]);
+        assert_eq!(fade_replace(&mut set, &mut edge, 19.0, t0), None);
+        // A label missing from one placement is new when it returns.
+        fade_replace(&mut set, &mut fade_items(&[1]), 19.0, t0);
+        let mut back = fade_items(&[1, 2]);
+        fade_replace(&mut set, &mut back, 19.0, t0);
+        assert_eq!((back[0].1, back[1].1), (None, Some(t0)));
+    }
+
+    #[test]
+    fn a_fade_set_keys_by_whatever_the_caller_says() {
+        // Point labels key on (kind, id): equal ids of different kinds differ.
+        let t0 = Instant::now();
+        let mut set: FadeSet<(u8, i64)> = FadeSet::default();
+        let mut items = [((KIND_NODE, 5), None), ((KIND_WAY, 5), None)];
+        let go = |set: &mut FadeSet<(u8, i64)>, items: &mut [((u8, i64), Option<Instant>)]| {
+            set.replace(items, 17.0, 1.0, t0, FADE, |i| i.0, |i, b| i.1 = b)
+        };
+        go(&mut set, &mut items);
+        let mut next = [((KIND_WAY, 5), None), ((KIND_REL, 5), None)];
+        go(&mut set, &mut next);
+        assert_eq!((next[0].1, next[1].1), (None, Some(t0)));
+    }
+
     #[test]
     fn the_cheap_halo_takes_over_past_the_outline_budget() {
-        if forced_halo_mode().is_none() {
-            assert_eq!(halo_for(OUTLINE_MAX_LABELS), HaloMode::Offsets);
-            assert_eq!(halo_for(OUTLINE_MAX_LABELS + 1), HaloMode::Quad);
+        let t = LabelTuning::default();
+        assert_eq!(t.halo_for(OUTLINE_MAX_LABELS), HaloMode::Offsets);
+        assert_eq!(t.halo_for(OUTLINE_MAX_LABELS + 1), HaloMode::Quad);
+        let tight = LabelTuning {
+            outline_max_labels: 3,
+            ..t
+        };
+        assert_eq!(tight.halo_for(3), HaloMode::Offsets);
+        assert_eq!(tight.halo_for(4), HaloMode::Quad);
+    }
+
+    #[test]
+    fn a_halo_override_wins_over_the_label_count() {
+        let t = LabelTuning {
+            halo_override: HaloMode::from_name("shadow"),
+            ..LabelTuning::default()
+        };
+        assert_eq!(t.halo_for(0), HaloMode::Shadow);
+        assert_eq!(t.halo_for(10_000), HaloMode::Shadow);
+        assert_eq!(HaloMode::from_name("off"), Some(HaloMode::Off));
+        assert_eq!(HaloMode::from_name("wat"), None);
+    }
+
+    #[test]
+    fn the_tuning_stamp_changes_with_every_knob() {
+        let base = LabelTuning::default();
+        let mut seen = vec![base.stamp()];
+        let mut check = |t: LabelTuning| {
+            let s = t.stamp();
+            assert!(!seen.contains(&s), "stamp {s} repeated for {t:?}");
+            seen.push(s);
+        };
+        for spec in [
+            "off",
+            "halo=none",
+            "halo=stroke",
+            "halo=offset4",
+            "repeat=4",
+            "offset=0",
+            "offset=9",
+        ] {
+            let mut t = base;
+            t.set_bench(spec).unwrap();
+            check(t);
         }
+        check(LabelTuning {
+            halo_override: Some(HaloMode::Quad),
+            ..base
+        });
+        check(LabelTuning {
+            halo_override: Some(HaloMode::Off),
+            ..base
+        });
+        check(LabelTuning {
+            outline_max_labels: 5,
+            ..base
+        });
+        // Setting the defaults explicitly is not a change.
+        let mut same = base;
+        same.set_bench("on halo=coarse repeat=1").unwrap();
+        assert_eq!(same.stamp(), base.stamp());
+        assert!(LabelTuning::default().set_bench("halo=wat").is_err());
+    }
+
+    #[test]
+    fn bench_repeat_is_kept_within_what_the_stamp_can_tell_apart() {
+        let mut t = LabelTuning::default();
+        t.set_bench("repeat=0").unwrap();
+        assert_eq!(t.bench.repeat, 1);
+        t.set_bench("repeat=1000").unwrap();
+        assert_eq!(t.bench.repeat, 255);
     }
 
     #[test]
@@ -1779,6 +2236,36 @@ mod tests {
         sel.forced = true;
         let out = place(&[big, sel], &[], &HashMap::new(), &cfg());
         assert!(out.iter().any(|p| p.item == 1 && p.text.is_some()));
+    }
+
+    #[test]
+    fn node_label_look_resolves_defaults_and_every_property() {
+        let t = tags(&[("name", "X")]);
+        let bare = TextStyle {
+            text: Some("name".into()),
+            ..TextStyle::default()
+        };
+        let l = resolve_node_label(&bare, &t, &mut IconCache::new(), 18.0).unwrap();
+        assert_eq!(
+            (l.look.font_px, l.look.color, l.look.halo_color),
+            (12.0, 0xFFFFFF, 0x000000)
+        );
+        assert_eq!((l.look.halo_radius, l.look.halo_alpha), (1.5, 0.9));
+        let all = TextStyle {
+            text: Some("name".into()),
+            font_size: Some(15.0),
+            color: Some(0x112233),
+            halo_color: Some(0x445566),
+            halo_radius: Some(2.5),
+            halo_opacity: Some(0.4),
+            ..TextStyle::default()
+        };
+        let l = resolve_node_label(&all, &t, &mut IconCache::new(), 18.0).unwrap();
+        assert_eq!(
+            (l.look.font_px, l.look.color, l.look.halo_color),
+            (15.0, 0x112233, 0x445566)
+        );
+        assert_eq!((l.look.halo_radius, l.look.halo_alpha), (2.5, 0.4));
     }
 
     #[test]
