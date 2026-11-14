@@ -1168,9 +1168,10 @@ impl MapViewer {
             Ok(entries) => {
                 eprintln!("imagery: loaded {} ELI entries", entries.len());
                 if let Some(index) = IMAGERY_INDEX.get() {
-                    if let Ok(mut guard) = index.lock() {
-                        *guard = entries;
-                    }
+                    // Poison is recovered: the index is replaced whole, so a
+                    // panic elsewhere cannot have left it half-written, and
+                    // skipping this would leave the Imagery menu empty.
+                    *index.lock().unwrap_or_else(|e| e.into_inner()) = entries;
                 }
                 ImageryLoadState::Ready
             }

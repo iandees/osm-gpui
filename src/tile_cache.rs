@@ -200,23 +200,23 @@ impl TileStore {
         self.cancelled.lock().unwrap().insert(key);
     }
 
+    /// The error log is a bounded cache of display strings that is only ever
+    /// shown to the user, so poison from a panic elsewhere is recovered rather
+    /// than silently dropping every later tile error.
+    fn errors(&self) -> std::sync::MutexGuard<'_, TileErrors> {
+        self.errors.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn record_error(&self, url: &str, reason: String) {
-        if let Ok(mut errors) = self.errors.lock() {
-            errors.insert(url, reason);
-        }
+        self.errors().insert(url, reason);
     }
 
     fn clear_error(&self, url: &str) {
-        if let Ok(mut errors) = self.errors.lock() {
-            errors.remove(url);
-        }
+        self.errors().remove(url);
     }
 
     fn last_error(&self, url: &str) -> Option<String> {
-        self.errors
-            .lock()
-            .ok()
-            .and_then(|e| e.reasons.get(url).cloned())
+        self.errors().reasons.get(url).cloned()
     }
 
     /// Count a tile load as active until the returned guard is dropped.
