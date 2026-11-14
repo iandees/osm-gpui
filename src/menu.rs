@@ -415,28 +415,46 @@ pub(crate) fn rebuild_menus_for_live_viewer(cx: &mut App) {
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
     // the startup call to `rebuild_menus` in `main.rs`).
-    let (lat, lon, state, show_downloaded_area, can_upload) = crate::MAP_VIEWER_HANDLE
+    let (lat, lon, state, toggles) = crate::MAP_VIEWER_HANDLE
         .get()
         .and_then(|h| h.upgrade())
         .map(|view| {
             let view = view.read(cx);
             let (lat, lon, state) = view.imagery_menu_context();
-            (
-                lat,
-                lon,
-                state,
-                view.shows_downloaded_area(),
-                view.has_uploadable_changes(),
-            )
+            (lat, lon, state, view.menu_toggles())
         })
         .unwrap_or((
             40.7128,
             -74.0060,
             crate::ImageryLoadState::Loading,
-            true,
-            false,
+            MenuToggles::default(),
         ));
-    rebuild_menus(cx, lat, lon, state, show_downloaded_area, can_upload);
+    rebuild_menus(cx, lat, lon, state, toggles);
+}
+
+/// What the viewer's state decides about the menus: the View menu's
+/// checkmarks and whether Upload is enabled. Built by
+/// `MapViewer::menu_toggles` and passed down to every rebuild, so the menus
+/// never keep a copy of window state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MenuToggles {
+    pub(crate) show_downloaded_area: bool,
+    pub(crate) show_notes: bool,
+    /// Indexed by `Provider::index`.
+    pub(crate) show_imagery: [bool; 3],
+    pub(crate) can_upload: bool,
+}
+
+impl Default for MenuToggles {
+    /// Before any viewer exists: the downloaded-area wash is on by default.
+    fn default() -> Self {
+        Self {
+            show_downloaded_area: true,
+            show_notes: false,
+            show_imagery: [false; 3],
+            can_upload: false,
+        }
+    }
 }
 
 /// Build and install the menu bar, using the current viewport center to filter
@@ -452,16 +470,14 @@ pub(crate) fn rebuild_menus(
     center_lat: f64,
     center_lon: f64,
     state: ImageryLoadState,
-    show_downloaded_area: bool,
-    can_upload: bool,
+    toggles: MenuToggles,
 ) {
     cx.set_menus(build_menus(
         cfg!(target_os = "macos"),
         center_lat,
         center_lon,
         state,
-        show_downloaded_area,
-        can_upload,
+        toggles,
     ));
     if in_window_menu_enabled() {
         // `Menu` is not `Clone`, so build the (cheap) list a second time for
@@ -471,8 +487,7 @@ pub(crate) fn rebuild_menus(
             center_lat,
             center_lon,
             state,
-            show_downloaded_area,
-            can_upload,
+            toggles,
         )
         .into_iter()
         .map(|menu| fit_owned_menu(menu.owned()))
@@ -726,9 +741,9 @@ fn build_menus(
     center_lat: f64,
     center_lon: f64,
     state: ImageryLoadState,
-    show_downloaded_area: bool,
-    can_upload: bool,
+    toggles: MenuToggles,
 ) -> Vec<Menu> {
+    use osm_gpui::street_imagery::Provider;
     let custom = custom_imagery_snapshot();
     let mut custom_items: Vec<MenuItem> = vec![MenuItem::action(
         tr!("menu.imagery.custom_add"),
@@ -813,7 +828,7 @@ fn build_menus(
         MenuItem::separator(),
         MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
         MenuItem::action(tr!("gps_traces.menu.download"), DownloadGpsTraces),
-        MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!can_upload),
+        MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!toggles.can_upload),
     ];
     let mut edit_tail = vec![];
     let mut help_items = vec![
@@ -933,26 +948,16 @@ fn build_menus(
                 MenuItem::action(tr!("menu.view.zoom_to_selection"), ZoomToSelection),
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.view.show_downloaded_area"), ToggleDownloadedArea)
-                    .checked(show_downloaded_area),
-                MenuItem::action(tr!("notes.menu.show"), ToggleNotes)
-                    .checked(osm_gpui::notes::menu_shows_notes()),
+                    .checked(toggles.show_downloaded_area),
+                MenuItem::action(tr!("notes.menu.show"), ToggleNotes).checked(toggles.show_notes),
                 MenuItem::action(tr!("notes.menu.refresh"), RefreshNotes),
                 MenuItem::separator(),
-                MenuItem::action(tr!("street_imagery.menu.mapillary"), ToggleMapillary).checked(
-                    osm_gpui::street_imagery::menu_shows(
-                        osm_gpui::street_imagery::Provider::Mapillary,
-                    ),
-                ),
-                MenuItem::action(tr!("street_imagery.menu.fotoshi"), ToggleFotoshi).checked(
-                    osm_gpui::street_imagery::menu_shows(
-                        osm_gpui::street_imagery::Provider::Fotoshi,
-                    ),
-                ),
-                MenuItem::action(tr!("street_imagery.menu.panoramax"), TogglePanoramax).checked(
-                    osm_gpui::street_imagery::menu_shows(
-                        osm_gpui::street_imagery::Provider::Panoramax,
-                    ),
-                ),
+                MenuItem::action(tr!("street_imagery.menu.mapillary"), ToggleMapillary)
+                    .checked(toggles.show_imagery[Provider::Mapillary.index()]),
+                MenuItem::action(tr!("street_imagery.menu.fotoshi"), ToggleFotoshi)
+                    .checked(toggles.show_imagery[Provider::Fotoshi.index()]),
+                MenuItem::action(tr!("street_imagery.menu.panoramax"), TogglePanoramax)
+                    .checked(toggles.show_imagery[Provider::Panoramax.index()]),
                 MenuItem::action(tr!("street_imagery.menu.refresh"), RefreshStreetImagery),
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
@@ -1067,10 +1072,71 @@ mod tests {
     }
 
     fn menus_for(is_macos: bool) -> Vec<gpui::OwnedMenu> {
-        build_menus(is_macos, 40.0, -74.0, ImageryLoadState::Loading, true, true)
+        build_menus(
+            is_macos,
+            40.0,
+            -74.0,
+            ImageryLoadState::Loading,
+            uploadable_toggles(),
+        )
+        .into_iter()
+        .map(Menu::owned)
+        .collect()
+    }
+
+    fn uploadable_toggles() -> MenuToggles {
+        MenuToggles {
+            can_upload: true,
+            ..MenuToggles::default()
+        }
+    }
+
+    /// The `checked` flags of the View menu's entries, by label.
+    fn view_checks(toggles: MenuToggles) -> Vec<(String, bool)> {
+        let menus = build_menus(true, 40.0, -74.0, ImageryLoadState::Loading, toggles);
+        let view = menus
             .into_iter()
             .map(Menu::owned)
+            .find(|m| m.name == tr!("menu.view.title"))
+            .expect("a View menu");
+        view.items
+            .into_iter()
+            .filter_map(|item| match item {
+                gpui::OwnedMenuItem::Action { name, checked, .. } => Some((name, checked)),
+                _ => None,
+            })
             .collect()
+    }
+
+    #[test]
+    fn the_view_menu_checkmarks_come_from_the_toggles_passed_in() {
+        let on = view_checks(MenuToggles {
+            show_notes: true,
+            show_imagery: [false, true, false],
+            ..MenuToggles::default()
+        });
+        let off = view_checks(MenuToggles::default());
+        let checked = |v: &[(String, bool)], label: String| {
+            v.iter().find(|(n, _)| *n == label).map(|(_, c)| *c)
+        };
+        assert_eq!(checked(&on, tr!("notes.menu.show").to_string()), Some(true));
+        assert_eq!(
+            checked(&off, tr!("notes.menu.show").to_string()),
+            Some(false)
+        );
+        assert_eq!(
+            checked(&on, tr!("street_imagery.menu.fotoshi").to_string()),
+            Some(true)
+        );
+        assert_eq!(
+            checked(&on, tr!("street_imagery.menu.mapillary").to_string()),
+            Some(false)
+        );
+        // Building one menu leaves no state behind for the next.
+        assert_eq!(
+            checked(&off, tr!("street_imagery.menu.fotoshi").to_string()),
+            Some(false)
+        );
     }
 
     /// Every action and system-menu entry in the menus, submenus included.
@@ -1186,10 +1252,16 @@ mod tests {
                 attribution: None,
             })
             .collect();
-        build_menus(is_macos, 40.0, -74.0, ImageryLoadState::Ready, true, true)
-            .into_iter()
-            .map(|m| fit_owned_menu(m.owned()))
-            .collect()
+        build_menus(
+            is_macos,
+            40.0,
+            -74.0,
+            ImageryLoadState::Ready,
+            uploadable_toggles(),
+        )
+        .into_iter()
+        .map(|m| fit_owned_menu(m.owned()))
+        .collect()
     }
 
     #[test]

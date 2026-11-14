@@ -111,16 +111,8 @@ impl MapViewer {
     }
 
     fn refresh_menus_for_notes(&mut self, cx: &mut Context<Self>) {
-        osm_gpui::notes::set_menu_shows_notes(self.shows_notes());
         let (lat, lon, state) = self.imagery_menu_context();
-        crate::menu::rebuild_menus(
-            &mut *cx,
-            lat,
-            lon,
-            state,
-            self.show_downloaded_area,
-            self.has_uploadable_changes(),
-        );
+        crate::menu::rebuild_menus(&mut *cx, lat, lon, state, self.menu_toggles());
     }
 
     /// Turn the Notes layer on or off. Turning it on fetches the notes.

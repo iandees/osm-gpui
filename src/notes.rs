@@ -16,7 +16,6 @@
 //! The XML form is used throughout: every one of these answers with
 //! `<osm><note ...>...</note></osm>`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -593,18 +592,6 @@ impl NoteStore {
             s.selected = None;
         });
     }
-}
-
-/// Whether View > Show Notes is on, for the menu's checkmark (the menus are
-/// built outside the window, which owns the real state).
-static MENU_SHOWS_NOTES: AtomicBool = AtomicBool::new(false);
-
-pub fn set_menu_shows_notes(on: bool) {
-    MENU_SHOWS_NOTES.store(on, Ordering::Relaxed);
-}
-
-pub fn menu_shows_notes() -> bool {
-    MENU_SHOWS_NOTES.load(Ordering::Relaxed)
 }
 
 /// Load notes from a local file holding an API response (script mode only; the
