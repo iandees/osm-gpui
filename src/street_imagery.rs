@@ -22,7 +22,7 @@ use crate::coordinates::GeoBounds;
 use crate::http::{
     fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, RetryPolicy,
 };
-use crate::street_imagery_tiles::TileId;
+use crate::tiles::TileCoord;
 
 /// Fotoshi photos per search: anonymous callers get at most 20 a page.
 pub const FOTOSHI_ANON_LIMIT: usize = 20;
@@ -463,7 +463,7 @@ pub struct PhotoStoreInner {
     /// Every photo of every loaded tile, for drawing and hit-testing.
     pub photos: Vec<StreetPhoto>,
     /// The photos of each loaded tile.
-    pub tiles: HashMap<TileId, Vec<StreetPhoto>>,
+    pub tiles: HashMap<TileCoord, Vec<StreetPhoto>>,
     /// The photo open in the viewer, drawn highlighted: (provider, id).
     pub selected: Option<(Provider, String)>,
 }
@@ -496,14 +496,14 @@ impl PhotoStore {
 
     /// Set the photos of tile `t`. A photo on a tile's edge can come from two
     /// tiles; it is kept once.
-    pub fn insert_tile(&self, t: TileId, photos: Vec<StreetPhoto>) {
+    pub fn insert_tile(&self, t: TileCoord, photos: Vec<StreetPhoto>) {
         self.with(|s| {
             s.tiles.insert(t, photos);
             s.rebuild();
         });
     }
 
-    pub fn has_tile(&self, t: TileId) -> bool {
+    pub fn has_tile(&self, t: TileCoord) -> bool {
         self.with(|s| s.tiles.contains_key(&t))
     }
 
@@ -512,7 +512,7 @@ impl PhotoStore {
     }
 
     /// Drop the tiles for which `keep` is false.
-    pub fn retain_tiles(&self, keep: impl Fn(&TileId) -> bool) {
+    pub fn retain_tiles(&self, keep: impl Fn(&TileCoord) -> bool) {
         self.with(|s| {
             s.tiles.retain(|t, _| keep(t));
             s.rebuild();
@@ -740,7 +740,10 @@ mod tests {
     fn store_keeps_tiles_and_dedupes_edge_photos() {
         let store = PhotoStore::default();
         let all = parse_fotoshi(FOTOSHI).unwrap();
-        let (a, b) = (TileId { z: 15, x: 1, y: 1 }, TileId { z: 15, x: 2, y: 1 });
+        let (a, b) = (
+            TileCoord { z: 15, x: 1, y: 1 },
+            TileCoord { z: 15, x: 2, y: 1 },
+        );
         store.insert_tile(a, all.clone());
         // The second tile repeats p1, which sits on the edge.
         store.insert_tile(b, vec![all[0].clone()]);
