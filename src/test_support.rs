@@ -3,7 +3,7 @@
 //! wrapper with the inspection helpers the edge-case tests use.
 
 use crate::{EditMode, MapViewer};
-use gpui::{px, size, Context, TestAppContext, Window};
+use gpui::{px, size, Context, TestAppContext, Window, WindowHandle};
 use osm_gpui::layers::diff::LayerDiff;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::{EditableLayer, LayerId};
@@ -153,14 +153,59 @@ pub(crate) fn with_view(
     cx: &mut TestAppContext,
     f: impl FnOnce(&mut MapViewer, &mut Window, &mut Context<MapViewer>) + 'static,
 ) {
+    let window = new_window(cx);
+    window
+        .update(cx, |view, window, cx| f(view, window, cx))
+        .unwrap();
+}
+
+/// The viewport every fixture uses: centred on (`LAT`, `LON`) at zoom 18,
+/// 800x600.
+pub(crate) fn centered_viewport() -> Viewport {
+    Viewport::new(LAT, LON, 18.0, size(px(800.0), px(600.0)))
+}
+
+/// A fresh headless window with `centered_viewport` and no layers, for tests
+/// that keep the handle and update it several times.
+pub(crate) fn new_window(cx: &mut TestAppContext) -> WindowHandle<MapViewer> {
     cx.update(gpui_component::init);
     let window = cx.add_window(MapViewer::new);
     window
-        .update(cx, |view, window, cx| {
-            view.viewport = Viewport::new(LAT, LON, 18.0, size(px(800.0), px(600.0)));
-            f(view, window, cx);
+        .update(cx, |view, _window, _cx| {
+            view.viewport = centered_viewport();
         })
         .unwrap();
+    window
+}
+
+/// Add an OSM layer holding `data`, make it the active layer and enter edit
+/// mode `mode`.
+pub(crate) fn activate_osm_layer(
+    view: &mut MapViewer,
+    name: &str,
+    data: OsmData,
+    mode: EditMode,
+) -> LayerId {
+    let layer = add_osm_layer(view, name, data);
+    view.active_layer = Some(layer);
+    view.enter_mode(mode);
+    layer
+}
+
+/// `new_window` with `activate_osm_layer` already applied, returning the handle.
+pub(crate) fn osm_window(
+    cx: &mut TestAppContext,
+    name: &'static str,
+    data: OsmData,
+    mode: EditMode,
+) -> WindowHandle<MapViewer> {
+    let window = new_window(cx);
+    window
+        .update(cx, |view, _window, _cx| {
+            activate_osm_layer(view, name, data, mode);
+        })
+        .unwrap();
+    window
 }
 
 /// Add an OSM layer holding `data` as its server baseline. It is not made
@@ -190,9 +235,7 @@ pub(crate) fn with_osm(
     f: impl FnOnce(&mut MapViewer, &mut Window, &mut Context<MapViewer>, LayerId) + 'static,
 ) {
     with_view(cx, move |view, window, cx| {
-        let layer = add_osm_layer(view, "Net", data);
-        view.active_layer = Some(layer);
-        view.enter_mode(mode);
+        let layer = activate_osm_layer(view, "Net", data, mode);
         f(view, window, cx, layer);
     });
 }
@@ -228,6 +271,91 @@ pub(crate) fn editable_layer(view: &MapViewer, layer: LayerId) -> &dyn EditableL
         .unwrap()
 }
 
+/// The editable layer `layer` of `view`, mutably.
+pub(crate) fn editable_layer_mut(view: &mut MapViewer, layer: LayerId) -> &mut dyn EditableLayer {
+    view.layer_manager
+        .find_layer_mut(layer)
+        .unwrap()
+        .as_editable_mut()
+        .unwrap()
+}
+
+/// The tags of `kind` `id` in `layer`, sorted; `None` when it is not there.
+pub(crate) fn sorted_tags(
+    view: &MapViewer,
+    layer: LayerId,
+    kind: FeatureKind,
+    id: i64,
+) -> Option<Vec<(String, String)>> {
+    let mut tags = editable_layer(view, layer).feature_tags(&FeatureRef {
+        layer_id: layer,
+        kind,
+        id,
+    })?;
+    tags.sort();
+    Some(tags)
+}
+
+/// The ids of the ways in `layer` that use node `node`.
+pub(crate) fn ways_using_node(view: &MapViewer, layer: LayerId, node: i64) -> Vec<i64> {
+    editable_layer(view, layer).ways_using_node(node)
+}
+
+/// The `(reference, role)` pairs of relation `relation` in `layer`, in order.
+pub(crate) fn relation_member_list(
+    view: &MapViewer,
+    layer: LayerId,
+    relation: i64,
+) -> Vec<(i64, String)> {
+    editable_layer(view, layer)
+        .relation(relation)
+        .unwrap()
+        .members
+        .iter()
+        .map(|m| (m.reference, m.role.clone()))
+        .collect()
+}
+
+/// What `layer` would upload now.
+pub(crate) fn layer_diff(view: &MapViewer, layer: LayerId) -> LayerDiff {
+    view.layer_manager
+        .find_layer(layer)
+        .unwrap()
+        .as_osm()
+        .unwrap()
+        .diff_for_upload()
+}
+
+/// Make exactly `items` of `layer` the selection.
+pub(crate) fn select_features(view: &mut MapViewer, layer: LayerId, items: &[(FeatureKind, i64)]) {
+    let list = items
+        .iter()
+        .map(|&(kind, id)| FeatureRef {
+            layer_id: layer,
+            kind,
+            id,
+        })
+        .collect();
+    view.set_selection(list);
+}
+
+/// The text of the status bar message, if any.
+pub(crate) fn status_message(view: &MapViewer) -> Option<&str> {
+    view.status_message.as_ref().map(|(m, _)| m.as_str())
+}
+
+/// Undo the newest step the way the Undo action does.
+pub(crate) fn undo_step(view: &mut MapViewer) {
+    let action = view.undo_stack.undo().expect("something to undo");
+    view.apply_undo_action(&action, false);
+}
+
+/// Redo the newest undone step the way the Redo action does.
+pub(crate) fn redo_step(view: &mut MapViewer) {
+    let action = view.undo_stack.redo().expect("something to redo");
+    view.apply_undo_action(&action, true);
+}
+
 /// The node ids of way `way` in `layer`.
 pub(crate) fn way_node_ids(view: &MapViewer, layer: LayerId, way: i64) -> Option<Vec<i64>> {
     editable_layer(view, layer).way_node_ids(way)
@@ -248,20 +376,10 @@ pub(crate) fn osm_counts(view: &MapViewer, layer: LayerId) -> (usize, usize) {
 
 impl Session<'_, '_> {
     pub(crate) fn editable(&self) -> &dyn EditableLayer {
-        self.view
-            .layer_manager
-            .find_layer(self.layer)
-            .unwrap()
-            .as_editable()
-            .unwrap()
+        editable_layer(self.view, self.layer)
     }
     pub(crate) fn editable_mut(&mut self) -> &mut dyn EditableLayer {
-        self.view
-            .layer_manager
-            .find_layer_mut(self.layer)
-            .unwrap()
-            .as_editable_mut()
-            .unwrap()
+        editable_layer_mut(self.view, self.layer)
     }
     pub(crate) fn feature(&self, kind: FeatureKind, id: i64) -> FeatureRef {
         FeatureRef {
@@ -271,8 +389,7 @@ impl Session<'_, '_> {
         }
     }
     pub(crate) fn select(&mut self, items: &[(FeatureKind, i64)]) {
-        let list = items.iter().map(|&(k, id)| self.feature(k, id)).collect();
-        self.view.set_selection(list);
+        select_features(self.view, self.layer, items);
     }
     /// Run a selection action the way the toolbar / shortcut does. Returns
     /// whether it recorded an undo step.
@@ -282,19 +399,15 @@ impl Session<'_, '_> {
         self.view.undo_stack.revision != before
     }
     pub(crate) fn status(&self) -> String {
-        self.view
-            .status_message
-            .as_ref()
-            .map(|(m, _)| m.to_string())
+        status_message(self.view)
+            .map(str::to_string)
             .unwrap_or_default()
     }
     pub(crate) fn undo(&mut self) {
-        let action = self.view.undo_stack.undo().expect("something to undo");
-        self.view.apply_undo_action(&action, false);
+        undo_step(self.view);
     }
     pub(crate) fn redo(&mut self) {
-        let action = self.view.undo_stack.redo().expect("something to redo");
-        self.view.apply_undo_action(&action, true);
+        redo_step(self.view);
     }
     pub(crate) fn steps(&self) -> usize {
         self.view.undo_stack.actions.len()
@@ -344,12 +457,7 @@ impl Session<'_, '_> {
         self.editable().way_node_ids(id)
     }
     pub(crate) fn tags(&self, kind: FeatureKind, id: i64) -> Vec<(String, String)> {
-        let mut t = self
-            .editable()
-            .feature_tags(&self.feature(kind, id))
-            .unwrap_or_default();
-        t.sort();
-        t
+        sorted_tags(self.view, self.layer, kind, id).unwrap_or_default()
     }
     pub(crate) fn has_way(&self, id: i64) -> bool {
         self.editable().way_node_ids(id).is_some()
@@ -358,13 +466,7 @@ impl Session<'_, '_> {
         self.editable().node_lat_lon(id).is_some()
     }
     pub(crate) fn members(&self, relation: i64) -> Vec<(i64, String)> {
-        self.editable()
-            .relation(relation)
-            .unwrap()
-            .members
-            .iter()
-            .map(|m| (m.reference, m.role.clone()))
-            .collect()
+        relation_member_list(self.view, self.layer, relation)
     }
     pub(crate) fn typed_members(&self, relation: i64) -> Vec<(MemberType, i64, String)> {
         self.editable()
@@ -376,13 +478,7 @@ impl Session<'_, '_> {
             .collect()
     }
     pub(crate) fn diff(&self) -> LayerDiff {
-        self.view
-            .layer_manager
-            .find_layer(self.layer)
-            .unwrap()
-            .as_osm()
-            .unwrap()
-            .diff_for_upload()
+        layer_diff(self.view, self.layer)
     }
     pub(crate) fn counts(&self) -> (usize, usize, usize) {
         self.diff().counts()

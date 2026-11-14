@@ -1,7 +1,7 @@
 //! Split, merge, join, rotate, extrude, align, straighten and other geometry edits.
 
 use super::{
-    long_way_nodes, node_position, pending, redo_step, select, setup, setup_network, tag_pairs,
+    long_way_nodes, node_position, pairs, pending, redo_step, select, setup, setup_network,
     tags_of, undo_step, way_nodes, ways_at_node,
 };
 use crate::{ExtrudeDrag, ExtrudeStyle, MapViewer};
@@ -66,10 +66,7 @@ fn merge_nodes_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
             assert_eq!(way_nodes(view, layer_id, 101), vec![3, 8, 5]);
             assert_eq!(way_nodes(view, layer_id, 103), vec![8, 9]);
             assert_eq!(pending(view), (0, 3, 1));
-            assert_eq!(
-                tags_of(view, Node, 8),
-                tag_pairs(&[("highway", "crossing")])
-            );
+            assert_eq!(tags_of(view, Node, 8), pairs(&[("highway", "crossing")]));
             assert_eq!(view.selected.len(), 1);
             assert_eq!(view.selected[0].id, 8);
 
@@ -77,10 +74,7 @@ fn merge_nodes_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
             assert_eq!(way_nodes(view, layer_id, 101), vec![3, 4, 5]);
             assert_eq!(way_nodes(view, layer_id, 103), vec![8, 4, 9]);
             assert_eq!(pending(view), (0, 0, 0));
-            assert_eq!(
-                tags_of(view, Node, 4),
-                tag_pairs(&[("highway", "crossing")])
-            );
+            assert_eq!(tags_of(view, Node, 4), pairs(&[("highway", "crossing")]));
             assert!(tags_of(view, Node, 8).is_empty());
 
             redo_step(view);

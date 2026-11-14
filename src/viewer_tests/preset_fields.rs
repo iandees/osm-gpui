@@ -1,6 +1,6 @@
 //! Preset field edits and reversing a way from the panel.
 
-use super::{redo_step, select, setup, setup_network, tag_pairs, tags_of, undo_step, way_nodes};
+use super::{pairs, redo_step, select, setup, setup_network, tags_of, undo_step, way_nodes};
 use crate::MapViewer;
 use gpui::TestAppContext;
 
@@ -120,7 +120,7 @@ fn reverse_flips_direction_tags_as_one_undoable_step(cx: &mut TestAppContext) {
             view.run_selection_action("reverse", cx);
             assert_eq!(view.undo_stack.actions.len(), 1);
             assert_eq!(way_nodes(view, layer_id, 100), vec![3, 2, 1]);
-            let flipped = tag_pairs(&[
+            let flipped = pairs(&[
                 ("cycleway:right", "lane"),
                 ("highway", "residential"),
                 ("incline", "-5%"),
