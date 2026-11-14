@@ -196,11 +196,10 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
 }
 
 impl MapViewer {
-    /// Commit an Extrude drag: compute the far 2 corners via
+    /// Commit a NewWay extrude drag: compute the far 2 corners via
     /// `rectangle_from_geo_edge` (using `up_pos` for the perpendicular
-    /// offset), create 2 new nodes + a closed way with no tags (extrude
-    /// works on any way segment, not just buildings, so it must not assume
-    /// `building=yes`), push one `ExtrudeWay` undo action.
+    /// offset), create 2 new nodes and a closed way as one undo action. The
+    /// way has no tags: extrude works on any way segment, not just buildings.
     pub(crate) fn commit_extrude(&mut self, drag: &ExtrudeDrag, up_pos: gpui::Point<gpui::Pixels>) {
         if self.refuse_edit_during_upload() {
             return;
@@ -319,9 +318,9 @@ impl MapViewer {
         Some(ExtrudeResult { plan, outline })
     }
 
-    /// Commit a Reshape/Move extrude drag as one undo step: new nodes
-    /// (`CreateNode`), the way's rewritten node list (`SetWayNodes`) and the
-    /// moved nodes (`MoveNodes`), in that order so undo runs them backwards.
+    /// Commit a Reshape/Move extrude drag as one undo step: new nodes, the
+    /// way's rewritten node list (`SetWayNodes`) and the moved nodes
+    /// (`MoveNodes`), recorded in that order so undo runs them backwards.
     pub(crate) fn commit_extrude_reshape(
         &mut self,
         drag: &ExtrudeDrag,
@@ -453,8 +452,6 @@ impl MapViewer {
                 px((a.y.to_f64() + t * dy) as f32),
             ))
         };
-        // The segment's start index within the way's node list: `node_a`'s
-        // position (the segment is node_a -> node_b, consecutive).
         let Some(node_ids) = editable.way_node_ids(drag.way_id) else {
             return;
         };

@@ -6,6 +6,12 @@
 //! `is_drawing` on its state. The `impl MapViewer` block below dispatches each
 //! hook with a `match` on `ModeState` that names every variant, so a new mode
 //! does not compile until every dispatch has an arm for it.
+//!
+//! To add a mode: add a variant to `EditMode` (`src/edit_mode.rs`, which also
+//! holds its script key, shortcut id, icon and labels, and lists it in `ALL`),
+//! add a module here with its state type and hooks, add a `ModeState` variant,
+//! and extend `ModeState::fresh`, `mode`, `reset_progress`, `is_drawing`,
+//! `cursor` and each `match` in the `impl MapViewer` blocks below.
 
 pub(crate) mod add;
 pub(crate) mod arc;

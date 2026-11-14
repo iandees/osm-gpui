@@ -50,8 +50,8 @@ impl ArcState {
 }
 
 /// Click 1 sets the arc's start, click 2 its end, click 3 a point the arc
-/// passes through and commits it. Each click snaps onto a nearby way (unless
-/// Ctrl/Alt is held).
+/// passes through and commits it. Each click snaps onto a nearby node or way
+/// unless `no_snap` (a snapping-off modifier) is set.
 pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, no_snap: bool) {
     let Some(layer_id) = view.active_layer else {
         return;
@@ -136,8 +136,8 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
 }
 
 impl MapViewer {
-    /// The geo position for an Arc-mode click at `screen_pt`: snapped onto the
-    /// nearest way in `layer_id` when one is within tolerance.
+    /// The point for an Arc-mode click at `screen_pt`: snapped onto a node or
+    /// the nearest way in `layer_id` when one is within tolerance.
     pub(crate) fn arc_point_at(
         &self,
         layer_id: LayerId,
