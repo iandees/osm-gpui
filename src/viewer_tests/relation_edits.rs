@@ -89,12 +89,7 @@ fn set_relation_members_undoes_and_redoes_and_is_labelled(cx: &mut TestAppContex
                 .unwrap()
                 .set_relation_members(900, after.clone())
                 .unwrap();
-            let action = UndoableAction::SetRelationMembers {
-                layer: layer_id,
-                relation_id: 900,
-                before,
-                after,
-            };
+            let action = UndoableAction::set_relation_members(layer_id, 900, before, after);
             assert_eq!(action.description(), "Changed the members of a relation");
             view.undo_stack.push(action);
             assert_eq!(relation_members(view, 900).len(), 3);
@@ -142,10 +137,7 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
                 relation: editable(view).relation(new_id).unwrap(),
                 index: editable(view).relations().len() - 1,
             };
-            let create = UndoableAction::CreateRelation {
-                layer: layer_id,
-                snapshot,
-            };
+            let create = UndoableAction::create_relation(layer_id, snapshot);
             assert_eq!(create.description(), "Created a relation");
             view.undo_stack.push(create);
             assert_eq!(pending(view), (1, 0, 0));
@@ -172,26 +164,20 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
             let delete = UndoableAction::Batch {
                 label: "Deleted relations".to_string(),
                 actions: vec![
-                    UndoableAction::DeleteRelation {
-                        layer: layer_id,
-                        snapshot: created,
-                    },
-                    UndoableAction::DeleteRelation {
-                        layer: layer_id,
-                        snapshot: removed,
-                    },
+                    UndoableAction::delete_relation(layer_id, created),
+                    UndoableAction::delete_relation(layer_id, removed),
                 ],
             };
             view.undo_stack.push(delete);
             assert_eq!(pending(view), (0, 0, 1));
             assert_eq!(
-                UndoableAction::DeleteRelation {
-                    layer: layer_id,
-                    snapshot: DeletedRelationSnapshot {
+                UndoableAction::delete_relation(
+                    layer_id,
+                    DeletedRelationSnapshot {
                         relation: original_900.clone(),
                         index: 0
                     }
-                }
+                )
                 .description(),
                 "Deleted a relation"
             );
