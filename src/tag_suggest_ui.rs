@@ -21,7 +21,9 @@ use osm_gpui::presets::Geometry;
 use osm_gpui::selection::FeatureKind;
 use osm_gpui::selection::FeatureRef;
 use osm_gpui::settings_store;
-use osm_gpui::tag_suggest::{suggest_keys, suggest_values, DataIndex, SchemaIndex, Source};
+use osm_gpui::tag_suggest::{
+    suggest_keys, suggest_values, DataIndex, SchemaIndex, Source, SuggestInput,
+};
 use osm_gpui::taginfo::{self, Lookup, ObjectType, TaginfoItem, TaginfoState, Target};
 use osm_gpui::ui::style::muted_text_size;
 use osm_gpui::ui::tag_edit::TagEditField;
@@ -40,12 +42,7 @@ const INPUT_INSET: f32 = 8.0;
 /// The bundled schema's keys and values, built once on first use.
 fn schema() -> &'static SchemaIndex {
     static SCHEMA: OnceLock<SchemaIndex> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        SchemaIndex::build(
-            osm_gpui::presets::preset_index(),
-            osm_gpui::fields::field_index(),
-        )
-    })
+    SCHEMA.get_or_init(|| osm_gpui::catalogue::Catalogue::bundled().schema_index())
 }
 
 /// Whether taginfo may be asked right now: the setting is on, and this is
@@ -374,15 +371,13 @@ impl MapViewer {
                 if key_text.is_empty() {
                     Vec::new()
                 } else {
-                    suggest_values(
-                        &key_text,
-                        &typed,
-                        &selection_values,
-                        &refs,
-                        schema(),
-                        &edit.suggest.taginfo,
-                        LIST_LIMIT,
-                    )
+                    suggest_values(SuggestInput {
+                        key: &key_text,
+                        selection: &selection_values,
+                        data: &refs,
+                        taginfo: &edit.suggest.taginfo,
+                        ..SuggestInput::new(&typed, schema(), LIST_LIMIT)
+                    })
                 }
             }
             _ => {
@@ -399,25 +394,20 @@ impl MapViewer {
                     if typed.trim().is_empty() {
                         // Nothing typed: only taginfo's keys that go with
                         // the feature's main tag, never the whole local list.
-                        suggest_keys(
-                            "",
-                            &[],
-                            schema(),
-                            &edit.suggest.taginfo,
-                            &exclude,
-                            &geometries,
-                            LIST_LIMIT,
-                        )
+                        suggest_keys(SuggestInput {
+                            taginfo: &edit.suggest.taginfo,
+                            exclude: &exclude,
+                            features: &geometries,
+                            ..SuggestInput::new("", schema(), LIST_LIMIT)
+                        })
                     } else {
-                        suggest_keys(
-                            &typed,
-                            &refs,
-                            schema(),
-                            &edit.suggest.taginfo,
-                            &exclude,
-                            &geometries,
-                            LIST_LIMIT,
-                        )
+                        suggest_keys(SuggestInput {
+                            data: &refs,
+                            taginfo: &edit.suggest.taginfo,
+                            exclude: &exclude,
+                            features: &geometries,
+                            ..SuggestInput::new(&typed, schema(), LIST_LIMIT)
+                        })
                     }
                 }
             }
@@ -773,13 +763,13 @@ impl MapViewer {
             theme.border,
             theme.popover,
         );
-        let translations = osm_gpui::preset_translations::active();
+        let catalogue = osm_gpui::catalogue::Catalogue::bundled();
 
         let rows = dd.items.iter().enumerate().map(|(i, item)| {
             let label = item.label.as_ref().map(|english| {
                 item.field_id
                     .as_deref()
-                    .and_then(|f| translations.and_then(|t| t.option_label(f, &item.text)))
+                    .and_then(|f| catalogue.translated_option_label(f, &item.text))
                     .unwrap_or(english)
                     .to_string()
             });
