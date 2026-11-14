@@ -1,6 +1,7 @@
 //! Undo/redo model for committed data mutations.
 
-use osm_gpui::layers::{EditError, EditableLayer, LayerId, LayerManager};
+use osm_gpui::edit_ops::{replay, EditOp, Recording};
+use osm_gpui::layers::{EditError, LayerId, LayerManager};
 use osm_gpui::selection::FeatureRef;
 
 /// Undo `done`, newest first, for an action that stopped part way. Anything
@@ -11,6 +12,13 @@ pub(crate) fn roll_back(layers: &mut LayerManager, done: &[UndoableAction]) {
         action.apply(layers, false, &mut failures);
     }
     for failure in failures {
+        eprintln!("rolling back a half-done edit was refused: {failure}");
+    }
+}
+
+/// Undo what `rec` has recorded so far, for an action that stopped part way.
+pub(crate) fn roll_back_recording(rec: Recording<'_>) {
+    for failure in rec.roll_back() {
         eprintln!("rolling back a half-done edit was refused: {failure}");
     }
 }
@@ -56,41 +64,59 @@ pub(crate) type NodeMoveUndoEntry = (i64, (f64, f64), (f64, f64));
 /// Per layer: node id -> (before (lat, lon), after (lat, lon)).
 pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<NodeMoveUndoEntry>)>;
 
-/// A node a step created, with what redo needs to recreate it under the same id.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct NewNode {
-    pub(crate) id: i64,
-    pub(crate) lat: f64,
-    pub(crate) lon: f64,
+/// What the History panel calls an `Edit` step, with whatever its text
+/// counts.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum EditLabel {
+    CreatedNode,
+    CreatedWay,
+    /// A node or way deleted; the kind picks the text.
+    Deleted(osm_gpui::selection::FeatureKind),
+    ExtendedWay,
+    CreatedBuilding,
+    CreatedArc,
+    ExtrudedWay,
+    InsertedNode,
+    SnappedNode,
+    /// Ways reversed, counted.
+    Reversed(usize),
+    ChangedWayNodes,
+    ChangedRelationMembers,
+    CreatedRelation,
+    /// A label the caller words itself (a multi-part action's name).
+    Text(String),
 }
 
-/// A way a step created together with the nodes created for it. `way` is the
-/// way exactly as it was committed (id, node list, tags), so redo can restore
-/// it; `new_nodes` excludes any nodes the way merely reuses, which undo must
-/// leave alone.
-#[derive(Clone, Debug)]
-pub(crate) struct CreatedWay {
-    pub(crate) way: osm_gpui::selection::DeletedFeatureSnapshot,
-    pub(crate) new_nodes: Vec<NewNode>,
-}
-
-impl CreatedWay {
-    pub(crate) fn new(
-        way_id: i64,
-        way_nodes: Vec<i64>,
-        tags: Vec<(String, String)>,
-        new_nodes: Vec<NewNode>,
-    ) -> Self {
-        CreatedWay {
-            way: osm_gpui::selection::DeletedFeatureSnapshot {
-                kind: osm_gpui::selection::FeatureKind::Way,
-                id: way_id,
-                tags,
-                way_nodes,
-                node_lat_lon: None,
-                version: 0,
-            },
-            new_nodes,
+impl EditLabel {
+    fn text(&self) -> String {
+        use osm_gpui::selection::FeatureKind;
+        match self {
+            EditLabel::CreatedNode => osm_gpui::tr!("history.created_node").to_string(),
+            EditLabel::CreatedWay => osm_gpui::tr!("history.created_way").to_string(),
+            EditLabel::Deleted(FeatureKind::Node) => {
+                osm_gpui::tr!("history.deleted_node").to_string()
+            }
+            EditLabel::Deleted(FeatureKind::Way) => {
+                osm_gpui::tr!("history.deleted_way").to_string()
+            }
+            EditLabel::Deleted(FeatureKind::Relation) => {
+                osm_gpui::tr!("history.deleted_relation").to_string()
+            }
+            EditLabel::ExtendedWay => osm_gpui::tr!("history.extended_way").to_string(),
+            EditLabel::CreatedBuilding => osm_gpui::tr!("history.created_building").to_string(),
+            EditLabel::CreatedArc => osm_gpui::tr!("history.created_arc").to_string(),
+            EditLabel::ExtrudedWay => osm_gpui::tr!("history.extruded_way").to_string(),
+            EditLabel::InsertedNode => osm_gpui::tr!("history.inserted_node").to_string(),
+            EditLabel::SnappedNode => osm_gpui::tr!("history.snapped_node").to_string(),
+            EditLabel::Reversed(count) => {
+                osm_gpui::tr_count!("action.reverse.done", *count).to_string()
+            }
+            EditLabel::ChangedWayNodes => osm_gpui::tr!("history.changed_way_nodes").to_string(),
+            EditLabel::ChangedRelationMembers => {
+                osm_gpui::tr!("history.changed_relation_members").to_string()
+            }
+            EditLabel::CreatedRelation => osm_gpui::tr!("history.created_relation").to_string(),
+            EditLabel::Text(text) => text.clone(),
         }
     }
 }
@@ -98,6 +124,18 @@ impl CreatedWay {
 /// A single reversible data mutation, recorded on the global undo stack.
 #[derive(Clone)]
 pub(crate) enum UndoableAction {
+    /// Primitive edits to one layer, captured as they were made (see
+    /// `osm_gpui::edit_ops`): redo replays `ops` in order, undo replays their
+    /// inverses newest first, so the step needs no inverse code of its own.
+    Edit {
+        layer: LayerId,
+        label: EditLabel,
+        ops: Vec<EditOp>,
+        /// What to select after undoing or redoing, when that should differ
+        /// from "everything the ops touch, in order" (a drawn building
+        /// selects its way, not its corner nodes).
+        select: Option<Vec<osm_gpui::selection::FeatureRef>>,
+    },
     MoveNodes {
         per_layer: NodeMoveUndoEntries,
         /// What to select after undoing or redoing this step, when it should
@@ -138,78 +176,6 @@ pub(crate) enum UndoableAction {
     CreateWay {
         layer: LayerId,
         snapshot: osm_gpui::selection::DeletedFeatureSnapshot,
-    },
-    /// Add mode's 2nd+ click: a node (new or pre-existing) appended to a
-    /// way (creating the way first if `way_created`). The two booleans are
-    /// independent: `way_created` says whether this click created `way_id`
-    /// (vs. extending an already-existing way), and `node_created` says
-    /// whether this click created `node_id` (vs. connecting to a node the
-    /// user already had, via the "connect to existing node" gesture). Undo
-    /// always detaches `node_id` from the way — either by deleting the
-    /// whole way (if `way_created`) or by removing just that node from the
-    /// way's node list (if not) — and only deletes `node_id` itself when
-    /// `node_created` is true, since a pre-existing node may be shared with
-    /// other ways or carry its own tags. Redo recreates exactly what undo
-    /// removed, under the same ids.
-    ExtendWay {
-        layer: LayerId,
-        way_id: i64,
-        node_id: i64,
-        /// Where `node_id` is, for recreating it on redo.
-        node_lat_lon: (f64, f64),
-        /// The node the way was started from; a created way's node list is
-        /// `[prev_node_id, node_id]`.
-        prev_node_id: i64,
-        way_created: bool,
-        node_created: bool,
-        /// True if the node was prepended (continuing a way from its first
-        /// node) rather than appended.
-        at_start: bool,
-    },
-    /// Building mode's 3rd click: 4 new nodes + one closed `building=yes`
-    /// way, committed atomically. Undo deletes the way then all 4 nodes.
-    CreateBuilding { layer: LayerId, created: CreatedWay },
-    /// Arc mode's 3rd click: the arc's new nodes + one open, untagged way
-    /// through them (and through any nodes the arc reused), committed
-    /// atomically. Undo deletes the way then every new node.
-    CreateArc { layer: LayerId, created: CreatedWay },
-    /// Extrude mode's drag commit: 2 new nodes + one closed, untagged way
-    /// off an existing segment. The segment's own 2 nodes are untouched.
-    /// Undo deletes the way then the 2 new nodes.
-    ExtrudeWay { layer: LayerId, created: CreatedWay },
-    /// Extrude mode's double-click: one new node spliced into an existing
-    /// way at `index`. Undo removes it from the way, then deletes it.
-    InsertNodeIntoWay {
-        layer: LayerId,
-        way_id: i64,
-        index: usize,
-        node_id: i64,
-        /// Where `node_id` is, for recreating it on redo.
-        node_lat_lon: (f64, f64),
-    },
-    /// Add mode's 2nd+ click when it snaps onto an existing way: a node
-    /// spliced into `snap_way_id` at `snap_index` (like `InsertNodeIntoWay`),
-    /// then that same node folded into the way being drawn — `way_id`,
-    /// created fresh if `way_created`, otherwise extended (like `ExtendWay`
-    /// with `node_created: true`). Undo reverses both, in the order that
-    /// matches how they were applied: detach from the drawn way first
-    /// (deleting it if `way_created`, without deleting the node — it is
-    /// still referenced by `snap_way_id`), then remove the node from
-    /// `snap_way_id` and delete it.
-    SnapExtendWay {
-        layer: LayerId,
-        way_id: i64,
-        way_created: bool,
-        snap_way_id: i64,
-        snap_index: usize,
-        node_id: i64,
-        /// Where `node_id` is, for recreating it on redo.
-        node_lat_lon: (f64, f64),
-        /// The node the way was started from; a created way's node list is
-        /// `[prev_node_id, node_id]`.
-        prev_node_id: i64,
-        /// True if the node was prepended to the drawn way, not appended.
-        at_start: bool,
     },
     /// Selection action "Reverse": the listed ways had their node order
     /// reversed. Reversing is its own inverse, so undo and redo both just
@@ -272,6 +238,24 @@ pub(crate) enum UndoableAction {
 }
 
 impl UndoableAction {
+    /// A step made of `ops`, recorded on `layer`.
+    pub(crate) fn edit(layer: LayerId, label: EditLabel, ops: Vec<EditOp>) -> Self {
+        UndoableAction::Edit {
+            layer,
+            label,
+            ops,
+            select: None,
+        }
+    }
+
+    /// This step, selecting `features` after an undo or redo.
+    pub(crate) fn selecting(mut self, features: Vec<osm_gpui::selection::FeatureRef>) -> Self {
+        if let UndoableAction::Edit { select, .. } = &mut self {
+            *select = Some(features);
+        }
+        self
+    }
+
     /// The features this step touched, whichever direction it is applied in.
     /// After an undo or redo the caller selects the ones that still exist
     /// (an undone create or a redone delete names features that are gone, so
@@ -291,6 +275,12 @@ impl UndoableAction {
         };
         let mut out: Vec<FeatureRef> = Vec::new();
         match self {
+            UndoableAction::Edit {
+                layer, ops, select, ..
+            } => match select {
+                Some(select) => out.extend(select.iter().copied()),
+                None => out.extend(ops.iter().flat_map(|op| op.touches(*layer))),
+            },
             UndoableAction::MoveNodes { per_layer, select } => {
                 if let Some(select) = select {
                     out.extend(select.iter().copied());
@@ -310,42 +300,6 @@ impl UndoableAction {
                 kind: snapshot.kind,
                 id: snapshot.id,
             }),
-            UndoableAction::ExtendWay {
-                layer,
-                way_id,
-                node_id,
-                ..
-            } => {
-                out.push(way(*layer, *way_id));
-                out.push(node(*layer, *node_id));
-            }
-            // The helper nodes of a building / extrusion are an
-            // implementation detail; the way is what the user made.
-            UndoableAction::CreateBuilding { layer, created }
-            | UndoableAction::CreateArc { layer, created }
-            | UndoableAction::ExtrudeWay { layer, created } => {
-                out.push(way(*layer, created.way.id))
-            }
-            UndoableAction::InsertNodeIntoWay {
-                layer,
-                way_id,
-                node_id,
-                ..
-            } => {
-                out.push(way(*layer, *way_id));
-                out.push(node(*layer, *node_id));
-            }
-            UndoableAction::SnapExtendWay {
-                layer,
-                way_id,
-                snap_way_id,
-                node_id,
-                ..
-            } => {
-                out.push(way(*layer, *way_id));
-                out.push(way(*layer, *snap_way_id));
-                out.push(node(*layer, *node_id));
-            }
             UndoableAction::ReverseWays { layer, way_ids } => {
                 out.extend(way_ids.iter().map(|&id| way(*layer, id)));
             }
@@ -397,6 +351,7 @@ impl UndoableAction {
             }
         };
         match self {
+            UndoableAction::Edit { layer, .. } => add(*layer),
             UndoableAction::MoveNodes { per_layer, .. } => {
                 for (layer, _) in per_layer {
                     add(*layer);
@@ -410,12 +365,6 @@ impl UndoableAction {
             UndoableAction::CreateNode { layer, .. }
             | UndoableAction::DeleteFeature { layer, .. }
             | UndoableAction::CreateWay { layer, .. }
-            | UndoableAction::ExtendWay { layer, .. }
-            | UndoableAction::CreateBuilding { layer, .. }
-            | UndoableAction::CreateArc { layer, .. }
-            | UndoableAction::ExtrudeWay { layer, .. }
-            | UndoableAction::InsertNodeIntoWay { layer, .. }
-            | UndoableAction::SnapExtendWay { layer, .. }
             | UndoableAction::ReverseWays { layer, .. }
             | UndoableAction::SetWayNodes { layer, .. }
             | UndoableAction::SetRelationMembers { layer, .. }
@@ -441,6 +390,14 @@ impl UndoableAction {
     ) {
         let action = self;
         match action {
+            UndoableAction::Edit { layer, ops, .. } => {
+                if let Some(editable) = layers
+                    .find_layer_mut(*layer)
+                    .and_then(|layer| layer.as_editable_mut())
+                {
+                    replay(ops, forward, editable, failures);
+                }
+            }
             UndoableAction::MoveNodes { per_layer, .. } => {
                 for (layer_id, entries) in per_layer {
                     let moves: Vec<(i64, f64, f64)> = entries
@@ -530,148 +487,6 @@ impl UndoableAction {
                         failures,
                         editable.delete_feature(snapshot.kind, snapshot.id),
                     );
-                }
-            }
-            UndoableAction::ExtendWay {
-                layer,
-                way_id,
-                node_id,
-                node_lat_lon,
-                prev_node_id,
-                way_created,
-                node_created,
-                at_start,
-            } => {
-                let Some(layer) = layers.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    if *node_created {
-                        keep_going(
-                            failures,
-                            editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id)),
-                        );
-                    }
-                    attach_to_drawn_way(
-                        editable,
-                        *way_id,
-                        *prev_node_id,
-                        *node_id,
-                        *way_created,
-                        *at_start,
-                        failures,
-                    );
-                } else {
-                    if *way_created {
-                        keep_going(failures, editable.remove_way(*way_id));
-                    } else {
-                        detach_end_node(editable, *way_id, *node_id, *at_start, failures);
-                    }
-                    // A pre-existing node may be shared or tagged: leave it.
-                    if *node_created {
-                        keep_going(failures, editable.remove_node(*node_id));
-                    }
-                }
-            }
-            UndoableAction::CreateBuilding { layer, created }
-            | UndoableAction::CreateArc { layer, created }
-            | UndoableAction::ExtrudeWay { layer, created } => {
-                let Some(layer) = layers.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    for node in &created.new_nodes {
-                        keep_going(
-                            failures,
-                            editable.create_node(node.lat, node.lon, Some(node.id)),
-                        );
-                    }
-                    keep_going(failures, editable.restore_feature(created.way.clone()));
-                } else {
-                    keep_going(failures, editable.remove_way(created.way.id));
-                    for node in &created.new_nodes {
-                        keep_going(failures, editable.remove_node(node.id));
-                    }
-                }
-            }
-            UndoableAction::InsertNodeIntoWay {
-                layer,
-                way_id,
-                index,
-                node_id,
-                node_lat_lon,
-            } => {
-                let Some(layer) = layers.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    keep_going(
-                        failures,
-                        editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id)),
-                    );
-                    splice_node_into_way(editable, *way_id, *index, *node_id, failures);
-                } else {
-                    keep_going(failures, editable.remove_node_from_way(*way_id, *index));
-                    keep_going(failures, editable.remove_node(*node_id));
-                }
-            }
-            UndoableAction::SnapExtendWay {
-                layer,
-                way_id,
-                way_created,
-                snap_way_id,
-                snap_index,
-                node_id,
-                node_lat_lon,
-                prev_node_id,
-                at_start,
-            } => {
-                let Some(layer) = layers.find_layer_mut(*layer) else {
-                    return;
-                };
-                let Some(editable) = layer.as_editable_mut() else {
-                    return;
-                };
-                if forward {
-                    keep_going(
-                        failures,
-                        editable.create_node(node_lat_lon.0, node_lat_lon.1, Some(*node_id)),
-                    );
-                    splice_node_into_way(editable, *snap_way_id, *snap_index, *node_id, failures);
-                    attach_to_drawn_way(
-                        editable,
-                        *way_id,
-                        *prev_node_id,
-                        *node_id,
-                        *way_created,
-                        *at_start,
-                        failures,
-                    );
-                } else {
-                    // Detach from the drawn way first (deleting it if this
-                    // click created it), without deleting the node — it's
-                    // still referenced by `snap_way_id` until the next step.
-                    if *way_created {
-                        keep_going(failures, editable.remove_way(*way_id));
-                    } else {
-                        detach_end_node(editable, *way_id, *node_id, *at_start, failures);
-                    }
-                    // Then remove it from the way it was snapped onto, and
-                    // delete the node itself.
-                    keep_going(
-                        failures,
-                        editable.remove_node_from_way(*snap_way_id, *snap_index),
-                    );
-                    keep_going(failures, editable.remove_node(*node_id));
                 }
             }
             UndoableAction::ReverseWays { layer, way_ids } => {
@@ -784,6 +599,7 @@ impl UndoableAction {
     /// Human-readable label for the history list, e.g. "Moved 3 nodes".
     pub(crate) fn description(&self) -> String {
         match self {
+            UndoableAction::Edit { label, .. } => label.text(),
             UndoableAction::MoveNodes { per_layer, .. } => {
                 let count: usize = per_layer.iter().map(|(_, entries)| entries.len()).sum();
                 osm_gpui::tr_count!("history.moved_nodes", count).to_string()
@@ -804,18 +620,6 @@ impl UndoableAction {
                 }
             },
             UndoableAction::CreateWay { .. } => osm_gpui::tr!("history.created_way").to_string(),
-            UndoableAction::ExtendWay { .. } => osm_gpui::tr!("history.extended_way").to_string(),
-            UndoableAction::CreateBuilding { .. } => {
-                osm_gpui::tr!("history.created_building").to_string()
-            }
-            UndoableAction::CreateArc { .. } => osm_gpui::tr!("history.created_arc").to_string(),
-            UndoableAction::ExtrudeWay { .. } => osm_gpui::tr!("history.extruded_way").to_string(),
-            UndoableAction::InsertNodeIntoWay { .. } => {
-                osm_gpui::tr!("history.inserted_node").to_string()
-            }
-            UndoableAction::SnapExtendWay { .. } => {
-                osm_gpui::tr!("history.snapped_node").to_string()
-            }
             UndoableAction::ReverseWays { way_ids, .. } => {
                 osm_gpui::tr_count!("action.reverse.done", way_ids.len()).to_string()
             }
@@ -952,85 +756,10 @@ fn keep_going<T>(failures: &mut Vec<EditError>, result: Result<T, EditError>) {
     }
 }
 
-/// Undo of a node attached to an existing way's end: pull `node_id` out of
-/// `way_id`, from the front if it was prepended, else from the back.
-fn detach_end_node(
-    editable: &mut dyn EditableLayer,
-    way_id: i64,
-    node_id: i64,
-    at_start: bool,
-    failures: &mut Vec<EditError>,
-) {
-    let node_ids = editable.way_node_ids(way_id).unwrap_or_default();
-    let idx = if at_start {
-        node_ids.iter().position(|id| *id == node_id)
-    } else {
-        node_ids.iter().rposition(|id| *id == node_id)
-    };
-    match idx {
-        Some(idx) => keep_going(failures, editable.remove_node_from_way(way_id, idx)),
-        None => failures.push(EditError::UnknownNode(node_id)),
-    }
-}
-
-/// Redo of a node spliced into a way: put `node_id` back at `index`.
-fn splice_node_into_way(
-    editable: &mut dyn EditableLayer,
-    way_id: i64,
-    index: usize,
-    node_id: i64,
-    failures: &mut Vec<EditError>,
-) {
-    let Some(mut node_ids) = editable.way_node_ids(way_id) else {
-        failures.push(EditError::UnknownWay(way_id));
-        return;
-    };
-    if index > node_ids.len() {
-        failures.push(EditError::IndexOutOfRange {
-            way_id,
-            index,
-            len: node_ids.len(),
-        });
-        return;
-    }
-    node_ids.insert(index, node_id);
-    keep_going(failures, editable.set_way_nodes(way_id, node_ids));
-}
-
-/// Redo of Add mode folding `node_id` into the way being drawn: recreate the
-/// way as `[prev_node_id, node_id]` if the click created it, else attach the
-/// node to the matching end of the existing way.
-fn attach_to_drawn_way(
-    editable: &mut dyn EditableLayer,
-    way_id: i64,
-    prev_node_id: i64,
-    node_id: i64,
-    way_created: bool,
-    at_start: bool,
-    failures: &mut Vec<EditError>,
-) {
-    if way_created {
-        keep_going(
-            failures,
-            editable.restore_feature(osm_gpui::selection::DeletedFeatureSnapshot {
-                kind: osm_gpui::selection::FeatureKind::Way,
-                id: way_id,
-                tags: Vec::new(),
-                way_nodes: vec![prev_node_id, node_id],
-                node_lat_lon: None,
-                version: 0,
-            }),
-        );
-    } else if at_start {
-        splice_node_into_way(editable, way_id, 0, node_id, failures);
-    } else {
-        keep_going(failures, editable.extend_way(way_id, node_id));
-    }
-}
-
 #[cfg(test)]
 mod undo_stack_tests {
-    use super::{LayerId, UndoStack, UndoableAction};
+    use super::{EditLabel, LayerId, UndoStack, UndoableAction};
+    use osm_gpui::edit_ops::EditOp;
     use osm_gpui::selection::{FeatureKind, FeatureRef};
 
     fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
@@ -1370,74 +1099,40 @@ mod undo_stack_tests {
         assert!(stack.redo().is_none());
     }
 
-    #[test]
-    fn create_building_description() {
-        let action = UndoableAction::CreateBuilding {
-            layer: LayerId(1),
-            created: created_way(-1, &[-1, -2, -3, -4]),
-        };
-        assert_eq!(action.description(), "Created a building");
-    }
-
-    #[test]
-    fn extrude_way_description() {
-        let action = UndoableAction::ExtrudeWay {
-            layer: LayerId(1),
-            created: created_way(-1, &[-1, -2]),
-        };
-        assert_eq!(action.description(), "Extruded a way");
-    }
-
-    fn created_way(way_id: i64, node_ids: &[i64]) -> super::CreatedWay {
-        super::CreatedWay::new(
-            way_id,
-            node_ids.to_vec(),
-            Vec::new(),
-            node_ids
-                .iter()
-                .map(|&id| super::NewNode {
-                    id,
-                    lat: 0.0,
-                    lon: 0.0,
-                })
-                .collect(),
-        )
-    }
-
-    fn extend_way(
-        way_id: i64,
-        node_id: i64,
-        way_created: bool,
-        node_created: bool,
-    ) -> UndoableAction {
-        UndoableAction::ExtendWay {
-            layer: LayerId(1),
-            way_id,
-            node_id,
-            node_lat_lon: (0.0, 0.0),
-            prev_node_id: 1,
-            way_created,
-            node_created,
-            at_start: false,
+    fn put_node(id: i64) -> EditOp {
+        EditOp::PutFeature {
+            snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+                kind: FeatureKind::Node,
+                id,
+                tags: Vec::new(),
+                way_nodes: Vec::new(),
+                node_lat_lon: Some((0.0, 0.0)),
+                version: 0,
+            },
         }
     }
 
     #[test]
-    fn extend_way_description() {
-        for way_created in [false, true] {
-            for node_created in [false, true] {
-                let action = extend_way(-1, -2, way_created, node_created);
-                assert_eq!(action.description(), "Extended a way");
-            }
+    fn drawing_labels_describe_the_step() {
+        for (label, text) in [
+            (EditLabel::CreatedBuilding, "Created a building"),
+            (EditLabel::ExtrudedWay, "Extruded a way"),
+            (EditLabel::ExtendedWay, "Extended a way"),
+            (EditLabel::CreatedArc, "Created an arc"),
+        ] {
+            let action = UndoableAction::edit(LayerId(1), label, vec![put_node(-1)]);
+            assert_eq!(action.description(), text);
         }
     }
 
     #[test]
-    fn extend_way_undo_redo_round_trips_new_way_new_node() {
-        // The "continue clicking" path's first extension: a brand-new way
-        // and a brand-new node (way_created: true, node_created: true).
+    fn edit_undo_redo_round_trips_through_the_stack() {
         let mut stack = UndoStack::default();
-        stack.push(extend_way(-10, -11, true, true));
+        stack.push(UndoableAction::edit(
+            LayerId(1),
+            EditLabel::ExtendedWay,
+            vec![put_node(-11)],
+        ));
 
         let undone = stack.undo().expect("should have one action to undo");
         assert_eq!(undone.description(), "Extended a way");
@@ -1446,59 +1141,6 @@ mod undo_stack_tests {
         let redone = stack.redo().expect("should be able to redo after undo");
         assert_eq!(redone.description(), "Extended a way");
         assert!(stack.redo().is_none());
-    }
-
-    #[test]
-    fn extend_way_undo_redo_round_trips_existing_way_existing_node() {
-        // way_created: false, node_created: false: undo must detach the
-        // node from the way but never delete it.
-        let mut stack = UndoStack::default();
-        stack.push(extend_way(10, 5, false, false));
-
-        let undone = stack.undo().expect("should have one action to undo");
-        assert_eq!(undone.description(), "Extended a way");
-        if let UndoableAction::ExtendWay {
-            way_created,
-            node_created,
-            ..
-        } = undone
-        {
-            assert!(!way_created);
-            assert!(!node_created);
-        } else {
-            panic!("expected ExtendWay");
-        }
-        assert!(stack.undo().is_none());
-
-        let redone = stack.redo().expect("should be able to redo after undo");
-        assert_eq!(redone.description(), "Extended a way");
-        assert!(stack.redo().is_none());
-    }
-
-    #[test]
-    fn extend_way_undo_redo_round_trips_new_way_existing_node() {
-        // A brand-new 2-node way whose *second* node was an existing node
-        // the user clicked to connect (way_created: true, node_created:
-        // false) — undo must delete the new way but must not delete the
-        // pre-existing node.
-        let mut stack = UndoStack::default();
-        stack.push(extend_way(-20, 7, true, false));
-
-        let undone = stack.undo().expect("should have one action to undo");
-        if let UndoableAction::ExtendWay {
-            way_created,
-            node_created,
-            node_id,
-            ..
-        } = undone
-        {
-            assert!(way_created);
-            assert!(!node_created);
-            assert_eq!(node_id, 7);
-        } else {
-            panic!("expected ExtendWay");
-        }
-        assert!(stack.undo().is_none());
     }
 
     fn fref(kind: FeatureKind, id: i64) -> FeatureRef {
@@ -1643,33 +1285,35 @@ mod undo_stack_tests {
         };
         assert_eq!(members.affected_features(), vec![fref(Relation, 900)]);
 
-        let extend = extend_way(-20, 7, true, true);
+        // An `Edit` names what its ops touch, in order, unless it says what
+        // to select.
+        let ops = vec![
+            put_node(-5),
+            EditOp::SetWayNodes {
+                id: 8,
+                before: vec![],
+                after: vec![-5],
+            },
+            EditOp::PutFeature {
+                snapshot: osm_gpui::selection::DeletedFeatureSnapshot {
+                    kind: Way,
+                    id: -40,
+                    tags: Vec::new(),
+                    way_nodes: vec![-6, -5],
+                    node_lat_lon: None,
+                    version: 0,
+                },
+            },
+        ];
+        let derived = UndoableAction::edit(layer, EditLabel::SnappedNode, ops.clone());
         assert_eq!(
-            extend.affected_features(),
-            vec![fref(Way, -20), fref(Node, 7)]
+            derived.affected_features(),
+            vec![fref(Node, -5), fref(Way, 8), fref(Way, -40)]
         );
-
-        let building = UndoableAction::CreateBuilding {
-            layer,
-            created: created_way(-30, &[-1, -2, -3, -4]),
-        };
-        assert_eq!(building.affected_features(), vec![fref(Way, -30)]);
-
-        let snap = UndoableAction::SnapExtendWay {
-            layer,
-            way_id: -40,
-            way_created: true,
-            snap_way_id: 8,
-            snap_index: 1,
-            node_id: -5,
-            node_lat_lon: (0.0, 0.0),
-            prev_node_id: -6,
-            at_start: false,
-        };
-        assert_eq!(
-            snap.affected_features(),
-            vec![fref(Way, -40), fref(Way, 8), fref(Node, -5)]
-        );
+        let chosen = UndoableAction::edit(layer, EditLabel::SnappedNode, ops)
+            .selecting(vec![fref(Way, -40)]);
+        assert_eq!(chosen.affected_features(), vec![fref(Way, -40)]);
+        assert_eq!(chosen.layers(), vec![layer]);
     }
 
     #[test]
