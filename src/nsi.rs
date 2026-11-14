@@ -257,16 +257,20 @@ pub fn init_store() {
 /// parse completes).
 pub fn set_index(index: NsiIndex) {
     if let Some(store) = NSI_INDEX.get() {
-        if let Ok(mut guard) = store.lock() {
-            *guard = Some(Arc::new(index));
-        }
+        // Poison is recovered: the slot holds one whole `Option<Arc<_>>` that is
+        // replaced in a single assignment, so no panic can leave it half-written.
+        *store.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(index));
     }
 }
 
 /// The current index, if the background fetch has completed. `None` means
 /// still loading (or `init_store` was never called).
 pub fn current() -> Option<Arc<NsiIndex>> {
-    NSI_INDEX.get()?.lock().ok()?.clone()
+    NSI_INDEX
+        .get()?
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 #[cfg(test)]

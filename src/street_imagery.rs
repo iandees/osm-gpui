@@ -127,9 +127,31 @@ pub enum ImageryError {
     Parse(String),
 }
 
+/// `message` with the value of every `access_token=` query parameter replaced, so
+/// an error that quotes a Mapillary request URL (transport errors often do) never
+/// carries the token to the status bar, a dialog or the log. Applies to any value
+/// whatever it contains, so no list of known tokens is needed.
+pub fn redact_access_tokens(message: &str) -> String {
+    const KEY: &str = "access_token=";
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(at) = rest.find(KEY) {
+        let value_start = at + KEY.len();
+        out.push_str(&rest[..value_start]);
+        out.push_str("[redacted]");
+        let value = &rest[value_start..];
+        let end = value
+            .find(|c: char| c.is_whitespace() || matches!(c, '&' | '"' | '\'' | ')' | '>' | '#'))
+            .unwrap_or(value.len());
+        rest = &value[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 impl From<HttpError> for ImageryError {
     fn from(e: HttpError) -> Self {
-        let text = e.to_string();
+        let text = redact_access_tokens(&e.to_string());
         match HttpFailure::from(e) {
             HttpFailure::Status {
                 status: 401 | 403, ..

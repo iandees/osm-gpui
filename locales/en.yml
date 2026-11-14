@@ -1242,6 +1242,14 @@ error:
     expired: "Login expired and can't be refreshed; please sign in again"
     # `%{detail}` is the system's reason (e.g. "access denied").
     keychain_read: "Couldn't read your saved login from the system keychain (%{detail}). Your login and edits are kept; try again and allow access when asked."
+  # A write of saved state failed; `%{what}` is one of the `save_what` names, `%{detail}` the system's reason.
+  save_failed: "Couldn't save %{what}: %{detail}"
+  save_what:
+    settings: "settings"
+    custom_imagery: "custom imagery"
+    imagery_offsets: "imagery offsets"
+    login: "your login"
+    secrets: "API keys"
 
 # The validator: problems found in the objects about to be uploaded.
 validator:

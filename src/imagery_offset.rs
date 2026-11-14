@@ -314,15 +314,15 @@ pub fn lookup(imagery_id: &str, lat: f64, lon: f64) -> Option<ImageryOffset> {
 /// Remember `offset` for `imagery_id` as made around `(lat, lon)`, for this
 /// session and (unless persistence is off) future launches.
 pub fn remember(imagery_id: &str, offset: ImageryOffset, lat: f64, lon: f64) {
-    let Some(snapshot) = STORE.update("imagery_offset_store", |s| {
-        s.remember(imagery_id, offset, lat, lon)
-    }) else {
-        return;
-    };
-    let Some(path) = default_path() else { return };
-    if let Err(e) = save_to(&path, &snapshot) {
-        eprintln!("imagery_offset_store: save {path:?} failed: {e}");
-    }
+    STORE.update_and_save(
+        "imagery_offset_store",
+        |s| s.remember(imagery_id, offset, lat, lon),
+        |snapshot| {
+            persist::save_reporting("imagery_offset_store", default_path().as_deref(), |p| {
+                save_to(p, snapshot)
+            });
+        },
+    );
 }
 
 #[cfg(test)]
