@@ -25,7 +25,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::layers::area_labels::Fingerprint;
-use crate::layers::labels::{CollisionGrid, Rect, TextLook, GRID_CELL, HYSTERESIS_BONUS, NO_OWNER};
+use crate::layers::labels::{
+    CollisionGrid, FadeSet, Rect, TextLook, GRID_CELL, HYSTERESIS_BONUS, NO_OWNER,
+};
 use crate::layers::way_stroke::{Polyline, Shape};
 use crate::style::TextStyle;
 
@@ -771,10 +773,10 @@ pub struct LinePlaced {
 #[derive(Debug, Default)]
 pub struct LineState {
     pub placed: Vec<LinePlaced>,
-    /// The zoom they were placed at.
-    pub zoom: f64,
     /// When the last fade-in finishes.
     pub fade_end: Option<Instant>,
+    /// By `(way, slot)`.
+    fade: FadeSet<(i64, usize)>,
 }
 
 impl LineState {
@@ -789,23 +791,16 @@ impl LineState {
         keep: f64,
         fade: std::time::Duration,
     ) {
-        let kept: HashSet<(i64, usize)> = if (self.zoom - zoom).abs() <= keep {
-            self.placed.iter().map(|p| (p.way_id, p.slot)).collect()
-        } else {
-            HashSet::new()
-        };
-        let mut any = false;
-        for p in &mut placed {
-            if kept.contains(&(p.way_id, p.slot)) {
-                p.born = None;
-            } else {
-                p.born = Some(now);
-                any = true;
-            }
-        }
+        self.fade_end = self.fade.replace(
+            &mut placed,
+            zoom,
+            keep,
+            now,
+            fade,
+            |p| (p.way_id, p.slot),
+            |p, born| p.born = born,
+        );
         self.placed = placed;
-        self.zoom = zoom;
-        self.fade_end = any.then(|| now + fade);
     }
 }
 

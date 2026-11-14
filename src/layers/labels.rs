@@ -780,6 +780,62 @@ pub fn fade_alpha(born: Option<Instant>, now: Instant) -> f32 {
     }
 }
 
+/// Which labels the last placement showed, so a new placement fades in only
+/// the labels that were not already on screen. `K` identifies a label across
+/// placements (a feature key for point labels, `(way, slot)` for street
+/// names).
+#[derive(Debug, Clone)]
+pub struct FadeSet<K> {
+    /// Zoom of the last placement.
+    zoom: f64,
+    shown: HashSet<K>,
+}
+
+impl<K> Default for FadeSet<K> {
+    fn default() -> Self {
+        Self {
+            zoom: 0.0,
+            shown: HashSet::new(),
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq> FadeSet<K> {
+    /// Record `items` as the labels now shown, placed at `zoom`. An item
+    /// that was shown at a zoom within `keep` levels of this one gets
+    /// `set_born(item, None)` (it stays opaque); every other gets
+    /// `set_born(item, Some(now))` and fades in over `fade`. Returns when
+    /// the last fade-in finishes, `None` if nothing is new.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace<T>(
+        &mut self,
+        items: &mut [T],
+        zoom: f64,
+        keep: f64,
+        now: Instant,
+        fade: Duration,
+        key: impl Fn(&T) -> K,
+        set_born: impl Fn(&mut T, Option<Instant>),
+    ) -> Option<Instant> {
+        let carry = (self.zoom - zoom).abs() <= keep;
+        let mut shown = HashSet::with_capacity(items.len());
+        let mut any = false;
+        for item in items {
+            let k = key(item);
+            if carry && self.shown.contains(&k) {
+                set_born(item, None);
+            } else {
+                set_born(item, Some(now));
+                any = true;
+            }
+            shown.insert(k);
+        }
+        self.shown = shown;
+        self.zoom = zoom;
+        any.then(|| now + fade)
+    }
+}
+
 /// Identifies what a [`Placement`] was computed for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CameraSig {
@@ -840,6 +896,7 @@ pub struct LabelCache {
     pub tuning: LabelTuning,
     built_for: Option<(u64, usize, i32)>,
     pub placement: Option<Placement>,
+    fade: FadeSet<Key>,
     last_cam: Option<CameraSig>,
     last_change: Instant,
 }
@@ -854,6 +911,7 @@ impl Default for LabelCache {
             tuning: LabelTuning::from_env(),
             built_for: None,
             placement: None,
+            fade: FadeSet::default(),
             last_cam: None,
             last_change: Instant::now(),
         }
@@ -924,24 +982,16 @@ impl LabelCache {
     /// Keep a new placement. Labels that were on screen in the previous one
     /// (at a comparable zoom) stay opaque; the others fade in from `now`.
     pub fn store(&mut self, mut p: Placement, now: Instant) {
-        let kept: Option<&Placement> = self
-            .placement
-            .as_ref()
-            .filter(|o| (o.cam.zoom - p.cam.zoom).abs() <= ZOOM_KEEP);
         // By (kind, id): area ids may equal node ids.
-        let kept_keys: Option<HashSet<Key>> =
-            kept.map(|o| o.labels.iter().map(|l| (l.kind, l.id)).collect());
-        let mut any = false;
-        for l in &mut p.labels {
-            if kept_keys
-                .as_ref()
-                .is_none_or(|k| !k.contains(&(l.kind, l.id)))
-            {
-                l.born = Some(now);
-                any = true;
-            }
-        }
-        p.fade_end = any.then(|| now + FADE);
+        p.fade_end = self.fade.replace(
+            &mut p.labels,
+            p.cam.zoom,
+            ZOOM_KEEP,
+            now,
+            FADE,
+            |l| (l.kind, l.id),
+            |l, born| l.born = born,
+        );
         self.placement = Some(p);
     }
 
@@ -1800,6 +1850,75 @@ mod tests {
         assert!(wants_frame(Step::DrawAndWait, None, t0), "settling");
         assert!(wants_frame(Step::HideAndWait, None, t0));
         assert!(!wants_frame(Step::Recompute, None, t0));
+    }
+
+    /// `(id, born)` pairs, born starting `None`.
+    fn fade_items(ids: &[u32]) -> Vec<(u32, Option<Instant>)> {
+        ids.iter().map(|&i| (i, None)).collect()
+    }
+
+    fn fade_replace(
+        set: &mut FadeSet<u32>,
+        items: &mut [(u32, Option<Instant>)],
+        zoom: f64,
+        now: Instant,
+    ) -> Option<Instant> {
+        set.replace(items, zoom, 1.0, now, FADE, |i| i.0, |i, b| i.1 = b)
+    }
+
+    #[test]
+    fn a_fade_set_fades_in_only_what_was_not_shown() {
+        let (t0, t1) = (Instant::now(), Instant::now() + Duration::from_secs(1));
+        let mut set = FadeSet::default();
+        let mut first = fade_items(&[1, 2]);
+        assert_eq!(
+            fade_replace(&mut set, &mut first, 17.0, t0),
+            Some(t0 + FADE)
+        );
+        assert!(first.iter().all(|i| i.1 == Some(t0)), "everything is new");
+        let mut second = fade_items(&[1, 3]);
+        assert_eq!(
+            fade_replace(&mut set, &mut second, 17.4, t1),
+            Some(t1 + FADE)
+        );
+        assert_eq!(second[0].1, None, "1 was on screen");
+        assert_eq!(second[1].1, Some(t1), "3 is new");
+        let mut same = fade_items(&[3, 1]);
+        assert_eq!(fade_replace(&mut set, &mut same, 17.4, t1), None);
+        assert!(same.iter().all(|i| i.1.is_none()));
+    }
+
+    #[test]
+    fn a_fade_set_forgets_labels_across_a_far_zoom_or_a_gap() {
+        let t0 = Instant::now();
+        let mut set = FadeSet::default();
+        fade_replace(&mut set, &mut fade_items(&[1, 2]), 15.0, t0);
+        let mut far = fade_items(&[1, 2]);
+        assert!(fade_replace(&mut set, &mut far, 18.0, t0).is_some());
+        assert!(far.iter().all(|i| i.1.is_some()), "a far zoom fades all in");
+        // Exactly the keep distance still counts as comparable.
+        let mut edge = fade_items(&[1, 2]);
+        assert_eq!(fade_replace(&mut set, &mut edge, 19.0, t0), None);
+        // A label missing from one placement is new when it returns.
+        fade_replace(&mut set, &mut fade_items(&[1]), 19.0, t0);
+        let mut back = fade_items(&[1, 2]);
+        fade_replace(&mut set, &mut back, 19.0, t0);
+        assert_eq!((back[0].1, back[1].1), (None, Some(t0)));
+    }
+
+    #[test]
+    fn a_fade_set_keys_by_whatever_the_caller_says() {
+        // Point labels key on (kind, id): equal ids of different kinds differ.
+        let t0 = Instant::now();
+        let mut set: FadeSet<(u8, i64)> = FadeSet::default();
+        let mut items = [((KIND_NODE, 5), None), ((KIND_WAY, 5), None)];
+        let go = |set: &mut FadeSet<(u8, i64)>, items: &mut [((u8, i64), Option<Instant>)]| {
+            set.replace(items, 17.0, 1.0, t0, FADE, |i| i.0, |i, b| i.1 = b)
+        };
+        go(&mut set, &mut items);
+        let mut next = [((KIND_WAY, 5), None), ((KIND_REL, 5), None)];
+        go(&mut set, &mut next);
+        assert_eq!((next[0].1, next[1].1), (None, Some(t0)));
     }
 
     #[test]
