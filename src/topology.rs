@@ -1089,6 +1089,10 @@ pub fn extract_split(tags: &[(String, String)]) -> ExtractSplit {
 }
 
 #[cfg(test)]
+#[path = "topology_planner_tests.rs"]
+mod planner_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
