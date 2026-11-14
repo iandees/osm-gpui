@@ -4,7 +4,7 @@
 use super::fresh_rebuild::{assert_fresh, layer};
 use crate::edit_ops::{replay, EditOp, Recording};
 use crate::layers::osm_layer::OsmLayer;
-use crate::layers::{EditableLayer, LayerId};
+use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember};
 use crate::selection::{DeletedFeatureSnapshot, FeatureKind};
 
@@ -233,6 +233,147 @@ fn a_recording_replays_both_ways_and_rolls_back() {
     let n = rec.add_node(1.0, 2.0);
     rec.insert_node_into_way(100, 0, 3.0, 4.0).unwrap();
     rec.set_tag(FeatureKind::Node, n, "a", "b").unwrap();
+    assert!(rec.roll_back().is_empty());
+    assert_eq!(data(&l), before);
+}
+
+#[test]
+fn purging_and_unpurging_round_trip() {
+    let mut scratch = layer();
+    let purged = scratch.purge_features(&[8], &[105], &[202]);
+    assert!(!purged.is_empty());
+    let purge = EditOp::Purge {
+        purged: purged.clone(),
+    };
+    round_trips(purge.clone());
+    assert_eq!(purge.invert(), EditOp::Unpurge { purged });
+}
+
+#[test]
+fn a_recording_rolls_back_to_a_mark() {
+    let mut l = layer();
+    let start = data(&l);
+    let mut rec = Recording::new(LayerId(1), &mut l);
+    rec.set_tag(FeatureKind::Way, 100, "name", "Kept").unwrap();
+    let mark = rec.mark();
+    let n = rec.add_node(1.0, 2.0);
+    rec.insert_node_into_way(100, 0, 3.0, 4.0).unwrap();
+    rec.set_tag(FeatureKind::Node, n, "a", "b").unwrap();
+    rec.purge_features(&[8], &[], &[]);
+    assert!(rec.roll_back_to(mark).is_empty());
+    assert_eq!(rec.ops().len(), 1, "only what came before the mark stays");
+    let ops = rec.into_ops();
+    assert_ne!(data(&l), start);
+    assert_eq!(
+        l.feature_tags(&crate::selection::FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 100
+        })
+        .unwrap()
+        .into_iter()
+        .find(|(k, _)| k == "name"),
+        Some(("name".to_string(), "Kept".to_string()))
+    );
+    assert_eq!(l.way_node_ids(100), Some(vec![1, 2, 3, 4]));
+    assert!(l.node_lat_lon(8).is_some());
+    let mut failures = Vec::new();
+    replay(&ops, false, &mut l, &mut failures);
+    assert_eq!(data(&l), start);
+}
+
+#[test]
+fn a_way_is_never_edited_down_to_fewer_than_two_nodes() {
+    let mut l = layer();
+    let before = data(&l);
+    let too_short = |len| EditError::WayTooShort { way_id: 105, len };
+    // Way 105 has two nodes: neither removal nor a shorter list is allowed.
+    assert_eq!(l.remove_node_from_way(105, 0), Err(too_short(1)));
+    assert_eq!(l.remove_node_from_way(105, 1), Err(too_short(1)));
+    assert_eq!(l.set_way_nodes(105, vec![4]), Err(too_short(1)));
+    assert_eq!(l.set_way_nodes(105, Vec::new()), Err(too_short(0)));
+    assert_eq!(data(&l), before);
+    assert_fresh(&l, "after the refusals");
+    assert!(!l.is_modified());
+
+    // Down to two is fine, one more is not.
+    l.remove_node_from_way(100, 3).unwrap();
+    l.remove_node_from_way(100, 2).unwrap();
+    assert_eq!(l.way_node_ids(100), Some(vec![1, 2]));
+    assert_eq!(
+        l.remove_node_from_way(100, 0),
+        Err(EditError::WayTooShort {
+            way_id: 100,
+            len: 1
+        })
+    );
+    assert_eq!(l.way_node_ids(100), Some(vec![1, 2]));
+    assert_fresh(&l, "after shortening to two");
+
+    // Same length or longer is never refused.
+    l.set_way_nodes(105, vec![15, 4]).unwrap();
+    l.extend_way(105, 3).unwrap();
+    assert_eq!(l.way_node_ids(105), Some(vec![15, 4, 3]));
+
+    // A recording keeps nothing of a refused edit.
+    let mut rec = Recording::new(LayerId(1), &mut l);
+    assert!(rec.remove_node_from_way(100, 1).is_err());
+    assert!(rec.set_way_nodes(100, vec![1]).is_err());
+    assert!(rec.is_empty());
+}
+
+#[test]
+fn a_node_or_way_a_relation_lists_cannot_be_deleted() {
+    let mut l = layer();
+    let before = data(&l);
+    let in_relation = |kind, id, relation| EditError::InRelation { kind, id, relation };
+    // Way 100 is a member of relations 201 and 202; the first is named.
+    assert_eq!(
+        l.delete_feature(FeatureKind::Way, 100).unwrap_err(),
+        in_relation(FeatureKind::Way, 100, 201)
+    );
+    assert_eq!(
+        l.remove_way(103),
+        Err(in_relation(FeatureKind::Way, 103, 200))
+    );
+    // A loose node becomes a member, then cannot go.
+    let members = {
+        let mut members = l.relation(201).unwrap().members;
+        members.push(OsmMember {
+            member_type: MemberType::Node,
+            reference: 8,
+            role: "stop".into(),
+        });
+        members
+    };
+    l.set_relation_members(201, members).unwrap();
+    assert_eq!(
+        l.remove_node(8),
+        Err(in_relation(FeatureKind::Node, 8, 201))
+    );
+    assert_eq!(
+        l.delete_feature(FeatureKind::Node, 8).unwrap_err(),
+        in_relation(FeatureKind::Node, 8, 201)
+    );
+    // A node in a way still reports the way first.
+    assert_eq!(
+        l.delete_feature(FeatureKind::Node, 3).unwrap_err(),
+        EditError::NodeInWay(3)
+    );
+    assert_fresh(&l, "after the refusals");
+
+    // Once the relation lets go, the node can be deleted and restored.
+    let mut members = l.relation(201).unwrap().members;
+    members.pop();
+    l.set_relation_members(201, members).unwrap();
+    let snapshot = l.delete_feature(FeatureKind::Node, 8).unwrap();
+    l.restore_feature(snapshot).unwrap();
+    assert_eq!(data(&l), before);
+
+    // Undoing a recorded delete restores the member without the check.
+    let mut rec = Recording::new(LayerId(1), &mut l);
+    rec.set_relation_members(200, vec![member(104)]).unwrap();
+    rec.delete_feature(FeatureKind::Way, 103).unwrap();
     assert!(rec.roll_back().is_empty());
     assert_eq!(data(&l), before);
 }

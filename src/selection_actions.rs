@@ -2276,7 +2276,8 @@ pub(crate) fn apply_merge(
             }
         }
         for id in &plan.remove {
-            rec.delete_feature(FeatureKind::Node, *id).map_err(refused)?;
+            rec.delete_feature(FeatureKind::Node, *id)
+                .map_err(refused)?;
         }
         Ok(())
     })?;
@@ -3247,15 +3248,17 @@ fn apply_purge(
         else {
             continue;
         };
-        let purged = editable.purge_features(&nodes, &ways, &relations);
+        let mut rec = Recording::new(layer_id, editable);
+        let purged = rec.purge_features(&nodes, &ways, &relations);
         if purged.is_empty() {
             continue;
         }
         total += purged.nodes.len() + purged.ways.len() + purged.relations.len();
-        actions.push(UndoableAction::Purge {
-            layer: layer_id,
-            purged,
-        });
+        actions.push(UndoableAction::edit(
+            layer_id,
+            EditLabel::Purged,
+            rec.into_ops(),
+        ));
     }
     if actions.is_empty() {
         return Err(tr!("action.purge.hint").to_string());
@@ -3582,6 +3585,8 @@ mod tests {
                 EditOp::SetWayNodes { .. } => "way_nodes",
                 EditOp::SetRelationMembers { .. } => "members",
                 EditOp::ReverseWay { .. } => "reverse",
+                EditOp::Purge { .. } => "purge",
+                EditOp::Unpurge { .. } => "unpurge",
             })
             .collect()
     }
@@ -4964,7 +4969,11 @@ mod tests {
         ));
         let out = n.run("split", &n.at_4_in(101)).unwrap();
         assert_eq!(n.relation_edits(), 0);
-        assert_eq!(shape(edit_of(&out).1), ["put", "way_nodes"], "no relation step");
+        assert_eq!(
+            shape(edit_of(&out).1),
+            ["put", "way_nodes"],
+            "no relation step"
+        );
     }
 
     #[test]

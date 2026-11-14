@@ -94,7 +94,10 @@ fn a_successful_edit_hands_back_what_it_recorded() {
     })
     .unwrap();
     assert!(new_id < 0);
-    assert!(matches!(ops[..], [EditOp::MoveNodes { .. }, EditOp::PutFeature { .. }]));
+    assert!(matches!(
+        ops[..],
+        [EditOp::MoveNodes { .. }, EditOp::PutFeature { .. }]
+    ));
 }
 
 #[test]

@@ -76,6 +76,8 @@ pub(crate) enum EditLabel {
     ChangedWayNodes,
     ChangedRelationMembers,
     CreatedRelation,
+    /// Objects purged from a layer's downloaded data.
+    Purged,
     /// Nodes moved, counted.
     MovedNodes(usize),
     /// Tag entries changed, counted.
@@ -115,6 +117,7 @@ impl EditLabel {
                 osm_gpui::tr!("history.changed_relation_members").to_string()
             }
             EditLabel::CreatedRelation => osm_gpui::tr!("history.created_relation").to_string(),
+            EditLabel::Purged => osm_gpui::tr!("history.purged").to_string(),
             EditLabel::MovedNodes(count) => {
                 osm_gpui::tr_count!("history.moved_nodes", *count).to_string()
             }
@@ -140,12 +143,6 @@ pub(crate) enum UndoableAction {
         /// from "everything the ops touch, in order" (a drawn building
         /// selects its way, not its corner nodes).
         select: Option<Vec<osm_gpui::selection::FeatureRef>>,
-    },
-    /// Purge: objects dropped from `layer`'s downloaded data without being
-    /// deleted. Undo puts them back as downloaded; redo purges them again.
-    Purge {
-        layer: LayerId,
-        purged: osm_gpui::selection::PurgedFeatures,
     },
     /// Paste or Duplicate: a set of new nodes, ways and relations created in
     /// one layer at once. Undo removes all of them (and brings back the
@@ -215,7 +212,10 @@ impl UndoableAction {
                 before,
                 after,
             };
-            match per_layer.iter_mut().find(|(layer, _)| *layer == feature.layer_id) {
+            match per_layer
+                .iter_mut()
+                .find(|(layer, _)| *layer == feature.layer_id)
+            {
                 Some((_, ops)) => ops.push(op),
                 None => per_layer.push((feature.layer_id, vec![op])),
             }
@@ -351,7 +351,6 @@ impl UndoableAction {
                 Some(select) => out.extend(select.iter().copied()),
                 None => out.extend(ops.iter().flat_map(|op| op.touches(*layer))),
             },
-            UndoableAction::Purge { layer, purged } => out.extend(purged.features(*layer)),
             UndoableAction::PasteFeatures { pasted } => out.extend(pasted.created()),
             UndoableAction::Batch { actions, .. } => {
                 for action in actions {
@@ -386,7 +385,6 @@ impl UndoableAction {
         };
         match self {
             UndoableAction::Edit { layer, .. } => add(*layer),
-            UndoableAction::Purge { layer, .. } => add(*layer),
             UndoableAction::PasteFeatures { pasted } => add(pasted.layer),
             UndoableAction::Batch { actions, .. } => {
                 for action in actions {
@@ -412,23 +410,6 @@ impl UndoableAction {
                     .and_then(|layer| layer.as_editable_mut())
                 {
                     replay(ops, forward, editable, failures);
-                }
-            }
-            UndoableAction::Purge { layer, purged } => {
-                let Some(editable) = layers
-                    .find_layer_mut(*layer)
-                    .and_then(|layer| layer.as_editable_mut())
-                else {
-                    return;
-                };
-                if forward {
-                    let ids: Vec<i64> = purged.nodes.iter().map(|n| n.id).collect();
-                    let way_ids: Vec<i64> = purged.ways.iter().map(|w| w.id).collect();
-                    let relation_ids: Vec<i64> =
-                        purged.relations.iter().map(|(r, ..)| r.id).collect();
-                    editable.purge_features(&ids, &way_ids, &relation_ids);
-                } else {
-                    editable.restore_purged(purged.clone());
                 }
             }
             UndoableAction::PasteFeatures { pasted } => {
@@ -462,7 +443,6 @@ impl UndoableAction {
     pub(crate) fn description(&self) -> String {
         match self {
             UndoableAction::Edit { label, .. } => label.text(),
-            UndoableAction::Purge { .. } => osm_gpui::tr!("history.purged").to_string(),
             UndoableAction::PasteFeatures { pasted } => {
                 let key = if pasted.duplicate {
                     "history.duplicated_features"
@@ -733,6 +713,91 @@ mod undo_stack_tests {
     }
 
     #[test]
+    fn a_move_is_one_edit_per_layer_and_each_selects_what_was_asked() {
+        let select = vec![FeatureRef {
+            layer_id: LayerId(1),
+            kind: FeatureKind::Way,
+            id: 7,
+        }];
+        let one = UndoableAction::move_nodes(
+            vec![(LayerId(1), vec![(1, (0.0, 0.0), (1.0, 1.0))])],
+            Some(select.clone()),
+        );
+        let UndoableAction::Edit { layer, ops, .. } = &one else {
+            panic!("one layer is one Edit");
+        };
+        assert_eq!(*layer, LayerId(1));
+        assert_eq!(
+            ops[..],
+            [EditOp::MoveNodes {
+                moves: vec![(1, (0.0, 0.0), (1.0, 1.0))]
+            }]
+        );
+        assert_eq!(one.affected_features(), select);
+
+        let two = UndoableAction::move_nodes(
+            vec![
+                (LayerId(1), vec![(1, (0.0, 0.0), (1.0, 1.0))]),
+                (LayerId(2), vec![(2, (0.0, 0.0), (1.0, 1.0))]),
+            ],
+            Some(select.clone()),
+        );
+        let UndoableAction::Batch { actions, .. } = &two else {
+            panic!("two layers are a Batch");
+        };
+        assert_eq!(actions.len(), 2);
+        assert_eq!(two.layers(), vec![LayerId(1), LayerId(2)]);
+        assert_eq!(two.affected_features(), select);
+        assert_eq!(two.description(), "Moved 2 nodes");
+    }
+
+    #[test]
+    fn tag_entries_become_one_edit_per_layer_in_order() {
+        let at = |layer: u64, id: i64| FeatureRef {
+            layer_id: LayerId(layer),
+            kind: FeatureKind::Node,
+            id,
+        };
+        let entry = |layer: u64, id: i64, key: &str, before: Option<&str>, after: Option<&str>| {
+            (
+                at(layer, id),
+                key.to_string(),
+                before.map(String::from),
+                after.map(String::from),
+            )
+        };
+        let step = UndoableAction::set_tags(vec![
+            entry(1, 5, "a", None, Some("x")),
+            entry(2, 6, "b", Some("y"), None),
+            entry(1, 5, "c", Some("p"), Some("q")),
+        ]);
+        let UndoableAction::Batch { actions, .. } = &step else {
+            panic!("two layers are a Batch");
+        };
+        let ops_of = |action: &UndoableAction| match action {
+            UndoableAction::Edit { layer, ops, .. } => (*layer, ops.clone()),
+            _ => panic!("expected an Edit"),
+        };
+        let (layer, first) = ops_of(&actions[0]);
+        assert_eq!(layer, LayerId(1));
+        assert_eq!(first.len(), 2);
+        assert!(matches!(
+            &first[1],
+            EditOp::SetTag { key, before: Some(b), after: Some(a), .. }
+                if key == "c" && b == "p" && a == "q"
+        ));
+        let (layer, second) = ops_of(&actions[1]);
+        assert_eq!(layer, LayerId(2));
+        assert!(matches!(&second[..], [EditOp::SetTag { after: None, .. }]));
+        assert_eq!(step.description(), "Changed 3 tags");
+        assert_eq!(step.affected_features(), vec![at(1, 5), at(2, 6)]);
+
+        let none = UndoableAction::set_tags(Vec::new());
+        assert_eq!(none.description(), "Changed 0 tags");
+        assert!(none.layers().is_empty());
+    }
+
+    #[test]
     fn undo_redo_at_empty_stack_is_none() {
         let mut stack = UndoStack::default();
         assert!(stack.undo().is_none());
@@ -804,7 +869,8 @@ mod undo_stack_tests {
             id: 1,
         };
 
-        let one = UndoableAction::set_tags(vec![tag_change(f, "highway", None, Some("residential"))]);
+        let one =
+            UndoableAction::set_tags(vec![tag_change(f, "highway", None, Some("residential"))]);
         assert_eq!(one.description(), "Changed 1 tag");
 
         let two = UndoableAction::set_tags(vec![

@@ -399,6 +399,7 @@ fn changing_a_ways_nodes_updates_the_scene() {
     assert!(l.set_way_nodes(10, vec![1, 5]).is_ok());
     assert_same_as_fresh(&l);
     assert!(scene_vertices(&l, 19.0) < before);
+    l.extend_way(10, 3).unwrap();
     l.remove_node_from_way(10, 0).unwrap();
     assert_same_as_fresh(&l);
 }
