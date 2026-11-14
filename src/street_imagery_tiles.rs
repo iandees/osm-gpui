@@ -277,7 +277,7 @@ pub fn fetch_detail_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::fake::{ok, status_err, FakeClient};
+    use crate::http::fake::{ok, status_err, transport_err, FakeClient};
 
     /// A real Panoramax tile (zoom 15) over south Minneapolis.
     const PANORAMAX_TILE: &[u8] = include_bytes!("../tests/fixtures/panoramax_15_7898_11796.mvt");
@@ -486,9 +486,9 @@ mod tests {
         let t = TileCoord { z: 14, x: 3, y: 5 };
         let token = "MLY|1234567|secretvalue";
         let url = mapillary_tile_url(t, token);
-        let c = FakeClient::new(vec![transport_err(&format!(
-            "{url}: Connection Failed: connect error"
-        ))]);
+        let message = format!("{url}: Connection Failed: connect error");
+        // Transport errors are retried, so script enough of them.
+        let c = FakeClient::new((0..8).map(|_| transport_err(&message)).collect());
         let err = fetch_tile_with(&c, Provider::Mapillary, t, Some(token)).unwrap_err();
         let shown = format!("{err} / {err:?}");
         assert!(matches!(err, ImageryError::Network(_)));
@@ -511,9 +511,9 @@ mod tests {
             thumb_url: None,
             large_url: None,
         };
-        let c = FakeClient::new(vec![transport_err(
-            "GET https://graph.mapillary.com/99?fields=id&access_token=MLY%7C1%7Cs3cret (timeout)",
-        )]);
+        let message =
+            "GET https://graph.mapillary.com/99?fields=id&access_token=MLY%7C1%7Cs3cret (timeout)";
+        let c = FakeClient::new((0..8).map(|_| transport_err(message)).collect());
         let err = fetch_detail_with(&c, &photo, Some("MLY|1|s3cret")).unwrap_err();
         assert!(!err.to_string().contains("s3cret"), "{err}");
         assert!(err.to_string().contains("(timeout)"), "{err}");
