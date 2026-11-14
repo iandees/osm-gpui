@@ -49,17 +49,10 @@ pub const SETTLE: Duration = Duration::from_millis(120);
 pub const GRID_CELL: f32 = 64.0;
 /// Shaped lines kept.
 pub const SHAPE_CACHE_CAP: usize = 2000;
-/// Default font size in pixels.
-pub const DEFAULT_FONT_PX: f32 = 12.0;
-pub const DEFAULT_TEXT_COLOR: u32 = 0xFFFFFF;
-pub const DEFAULT_HALO_COLOR: u32 = 0x000000;
-pub const DEFAULT_HALO_RADIUS: f32 = 1.5;
 /// Glyph size of an icon without `icon-width`.
 pub const DEFAULT_ICON_PX: f32 = 12.0;
 /// Extra backing circle diameter around the glyph.
 pub const ICON_BACKING_EXTRA: f32 = 6.0;
-/// Halo opacity when `text-halo-color` carries no alpha of its own.
-pub const DEFAULT_HALO_ALPHA: f32 = 0.9;
 /// Length of the fade-in of newly placed labels.
 pub const FADE: Duration = Duration::from_millis(140);
 /// While zooming, the previous placement stays on screen (re-projected from
@@ -70,6 +63,52 @@ const MAX_TEXT_CHARS: usize = 32;
 /// A previously placed label gets this much extra priority so a pan or a
 /// small zoom does not swap which of two overlapping labels wins.
 pub const HYSTERESIS_BONUS: i32 = 40;
+
+/// How a label's text is drawn, whatever kind of label it is: the size, the
+/// fill colour and the halo (`0xRRGGBB` colours).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextLook {
+    pub font_px: f32,
+    pub color: u32,
+    pub halo_color: u32,
+    /// Halo thickness outside the glyphs, in pixels.
+    pub halo_radius: f32,
+    /// Halo opacity (`text-halo-color` alpha or `text-halo-opacity`).
+    pub halo_alpha: f32,
+}
+
+impl TextLook {
+    /// Defaults per kind of label, for what the stylesheet leaves unset.
+    /// Point labels sit on the dark base map, street names on the light road
+    /// fill, areas on the tinted area fill.
+    pub const POINT: TextLook = TextLook {
+        font_px: 12.0,
+        color: 0xFFFFFF,
+        halo_color: 0x000000,
+        halo_radius: 1.5,
+        halo_alpha: 0.9,
+    };
+    pub const AREA: TextLook = TextLook {
+        color: 0xE8E8E8,
+        ..Self::POINT
+    };
+    pub const LINE: TextLook = TextLook {
+        color: 0x1f2937,
+        halo_color: 0xffffff,
+        ..Self::POINT
+    };
+
+    /// The look a MapCSS style asks for, `defaults` where it is silent.
+    pub fn resolve(style: &TextStyle, defaults: TextLook) -> TextLook {
+        TextLook {
+            font_px: style.font_size.unwrap_or(defaults.font_px),
+            color: style.color.unwrap_or(defaults.color),
+            halo_color: style.halo_color.unwrap_or(defaults.halo_color),
+            halo_radius: style.halo_radius.unwrap_or(defaults.halo_radius),
+            halo_alpha: style.halo_opacity.unwrap_or(defaults.halo_alpha),
+        }
+    }
+}
 
 /// An axis-aligned screen rectangle (`x0 <= x1`, `y0 <= y1`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -428,11 +467,7 @@ impl IconChoice {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeLabel {
     pub text: Option<SharedString>,
-    pub font_px: f32,
-    pub color: u32,
-    pub halo_color: u32,
-    pub halo_radius: f32,
-    pub halo_alpha: f32,
+    pub look: TextLook,
     pub pref: Anchor,
     pub icon: Option<IconChoice>,
     pub priority: i32,
@@ -587,11 +622,7 @@ pub fn resolve_node_label(
     Some(NodeLabel {
         priority: node_priority(tags, icon.is_some(), named),
         text: text.map(SharedString::from),
-        font_px: style.font_size.unwrap_or(DEFAULT_FONT_PX),
-        color: style.color.unwrap_or(DEFAULT_TEXT_COLOR),
-        halo_color: style.halo_color.unwrap_or(DEFAULT_HALO_COLOR),
-        halo_radius: style.halo_radius.unwrap_or(DEFAULT_HALO_RADIUS),
-        halo_alpha: style.halo_opacity.unwrap_or(DEFAULT_HALO_ALPHA),
+        look: TextLook::resolve(style, TextLook::POINT),
         pref: Anchor::from_position(style.position),
         icon,
     })
@@ -660,10 +691,20 @@ pub struct PlacedText {
     /// Top-left of the text box relative to the feature's screen position.
     pub dx: f32,
     pub dy: f32,
-    pub color: u32,
-    pub halo_color: u32,
-    pub halo_radius: f32,
-    pub halo_alpha: f32,
+    pub look: TextLook,
+}
+
+impl PlacedText {
+    /// Every placed text is built here: `line` with its box's top-left `(dx,
+    /// dy)` from the feature's screen position.
+    pub fn new(line: Arc<ShapedLine>, dx: f32, dy: f32, look: TextLook) -> Self {
+        Self { line, dx, dy, look }
+    }
+
+    /// `line` in the box `rect`, for a feature drawn at `center`.
+    pub fn in_rect(line: Arc<ShapedLine>, rect: &Rect, center: (f32, f32), look: TextLook) -> Self {
+        Self::new(line, rect.x0 - center.0, rect.y0 - center.1, look)
+    }
 }
 
 #[derive(Clone)]
@@ -1013,11 +1054,12 @@ pub fn paint_text(
     mode: HaloMode,
 ) {
     let baseline = point(top_left.x, top_left.y + t.line.ascent);
-    if t.halo_radius > 0.0 {
-        let halo = rgb_hsla(t.halo_color, t.halo_alpha * alpha);
+    let look = &t.look;
+    if look.halo_radius > 0.0 {
+        let halo = rgb_hsla(look.halo_color, look.halo_alpha * alpha);
         match mode {
             HaloMode::Offsets => {
-                for (ox, oy) in halo_offsets(t.halo_radius) {
+                for (ox, oy) in halo_offsets(look.halo_radius) {
                     paint_glyphs(
                         window,
                         &t.line,
@@ -1027,7 +1069,7 @@ pub fn paint_text(
                 }
             }
             HaloMode::Shadow => {
-                let d = t.halo_radius * std::f32::consts::FRAC_1_SQRT_2;
+                let d = look.halo_radius * std::f32::consts::FRAC_1_SQRT_2;
                 paint_glyphs(
                     window,
                     &t.line,
@@ -1036,7 +1078,7 @@ pub fn paint_text(
                 );
             }
             HaloMode::Quad => {
-                let pad = t.halo_radius + 1.0;
+                let pad = look.halo_radius + 1.0;
                 let b = Bounds {
                     origin: point(top_left.x - px(pad), top_left.y),
                     size: size(t.line.width + px(2.0 * pad), t.line.ascent + t.line.descent),
@@ -1048,7 +1090,7 @@ pub fn paint_text(
             HaloMode::Off => {}
         }
     }
-    paint_glyphs(window, &t.line, baseline, rgb_hsla(t.color, alpha));
+    paint_glyphs(window, &t.line, baseline, rgb_hsla(look.color, alpha));
 }
 
 /// Paint an icon centred on `center`: a round backing in `fill` with a dark
@@ -1779,6 +1821,36 @@ mod tests {
         sel.forced = true;
         let out = place(&[big, sel], &[], &HashMap::new(), &cfg());
         assert!(out.iter().any(|p| p.item == 1 && p.text.is_some()));
+    }
+
+    #[test]
+    fn node_label_look_resolves_defaults_and_every_property() {
+        let t = tags(&[("name", "X")]);
+        let bare = TextStyle {
+            text: Some("name".into()),
+            ..TextStyle::default()
+        };
+        let l = resolve_node_label(&bare, &t, &mut IconCache::new(), 18.0).unwrap();
+        assert_eq!(
+            (l.look.font_px, l.look.color, l.look.halo_color),
+            (12.0, 0xFFFFFF, 0x000000)
+        );
+        assert_eq!((l.look.halo_radius, l.look.halo_alpha), (1.5, 0.9));
+        let all = TextStyle {
+            text: Some("name".into()),
+            font_size: Some(15.0),
+            color: Some(0x112233),
+            halo_color: Some(0x445566),
+            halo_radius: Some(2.5),
+            halo_opacity: Some(0.4),
+            ..TextStyle::default()
+        };
+        let l = resolve_node_label(&all, &t, &mut IconCache::new(), 18.0).unwrap();
+        assert_eq!(
+            (l.look.font_px, l.look.color, l.look.halo_color),
+            (15.0, 0x112233, 0x445566)
+        );
+        assert_eq!((l.look.halo_radius, l.look.halo_alpha), (2.5, 0.4));
     }
 
     #[test]

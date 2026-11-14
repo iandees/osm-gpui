@@ -136,16 +136,16 @@ impl OsmLayer {
         window: &mut Window,
     ) -> Option<(area_labels::Located, Arc<ShapedLine>)> {
         let geom = self.area_geom_for(cache, key)?;
-        let line = cache.shapes.get(window, &label.text, label.font_px);
+        let line = cache.shapes.get(window, &label.text, label.look.font_px);
         let size = (f32::from(line.width), f32::from(line.ascent + line.descent));
-        let scales = area_labels::font_scales(label.font_px);
+        let scales = area_labels::font_scales(label.look.font_px);
         let at = area_labels::locate(&geom, view, size, &scales, forced, budget)?;
         let line = if at.scale == 1.0 {
             line
         } else {
             cache
                 .shapes
-                .get(window, &label.text, label.font_px * at.scale)
+                .get(window, &label.text, label.look.font_px * at.scale)
         };
         Some((at, line))
     }
@@ -368,7 +368,7 @@ impl OsmLayer {
         for (_, it, l) in cands.iter_mut() {
             match &l.text {
                 Some(t) => {
-                    let line = cache.shapes.get(window, t, l.font_px);
+                    let line = cache.shapes.get(window, t, l.look.font_px);
                     let w = f32::from(line.width);
                     let h = f32::from(line.ascent + line.descent);
                     it.text = Some((w, h, l.pref));
@@ -407,15 +407,12 @@ impl OsmLayer {
                         a.item.key.1,
                         a.mx,
                         a.my,
-                        labels::PlacedText {
-                            line: a.line.clone(),
-                            dx: r.x0 - a.item.center.0,
-                            dy: r.y0 - a.item.center.1,
-                            color: a.label.color,
-                            halo_color: a.label.halo_color,
-                            halo_radius: a.label.halo_radius,
-                            halo_alpha: a.label.halo_alpha,
-                        },
+                        labels::PlacedText::in_rect(
+                            a.line.clone(),
+                            &r,
+                            a.item.center,
+                            a.label.look,
+                        ),
                     ));
                 }
                 continue;
@@ -432,15 +429,7 @@ impl OsmLayer {
             };
             let text = match (p.text, &lines[p.item]) {
                 (Some((anchor, r)), Some(line)) => Some((
-                    labels::PlacedText {
-                        line: line.clone(),
-                        dx: r.x0 - item.center.0,
-                        dy: r.y0 - item.center.1,
-                        color: l.color,
-                        halo_color: l.halo_color,
-                        halo_radius: l.halo_radius,
-                        halo_alpha: l.halo_alpha,
-                    },
+                    labels::PlacedText::in_rect(line.clone(), &r, item.center, l.look),
                     anchor,
                 )),
                 _ => None,
@@ -606,7 +595,7 @@ impl OsmLayer {
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
-            let line = cache.shapes.get(window, text, label.font_px);
+            let line = cache.shapes.get(window, text, label.look.font_px);
             let reach = Self::label_marker_radius(self.derived.node_cache.styles[idx], zoom)
                 .max((self.derived.node_cache.styles[idx].size + 2.0) / 2.0);
             let r = labels::label_rect(
@@ -617,15 +606,7 @@ impl OsmLayer {
                 f32::from(line.width),
                 f32::from(line.ascent + line.descent),
             );
-            let t = labels::PlacedText {
-                line,
-                dx: r.x0,
-                dy: r.y0,
-                color: label.color,
-                halo_color: label.halo_color,
-                halo_radius: label.halo_radius,
-                halo_alpha: label.halo_alpha,
-            };
+            let t = labels::PlacedText::new(line, r.x0, r.y0, label.look);
             let at = point(sp.x + ox, sp.y + oy);
             labels::paint_text(
                 window,
@@ -673,15 +654,9 @@ impl OsmLayer {
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
-            let t = labels::PlacedText {
-                dx: -f32::from(line.width) / 2.0,
-                dy: -f32::from(line.ascent + line.descent) / 2.0,
-                line,
-                color: label.color,
-                halo_color: label.halo_color,
-                halo_radius: label.halo_radius,
-                halo_alpha: label.halo_alpha,
-            };
+            let dx = -f32::from(line.width) / 2.0;
+            let dy = -f32::from(line.ascent + line.descent) / 2.0;
+            let t = labels::PlacedText::new(line, dx, dy, label.look);
             let atp = point(sp.x + ox, sp.y + oy);
             labels::paint_text(
                 window,
@@ -703,13 +678,12 @@ impl OsmLayer {
         viewport: &Viewport,
         zoom: f64,
     ) -> Vec<crate::layers::line_labels::Candidate<'_>> {
-        use crate::layers::line_labels::{clear_offset, Candidate, LabelStyle};
+        use crate::layers::line_labels::{Candidate, LabelStyle};
         let mut cands = Vec::new();
         let Some(data) = self.store.osm_data.as_ref() else {
             return cands;
         };
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
-        let defaults = LabelStyle::default();
         for (i, bbox) in self.derived.way_bboxes.iter().enumerate() {
             let Some(b) = bbox else { continue };
             if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
@@ -733,7 +707,6 @@ impl OsmLayer {
             else {
                 continue;
             };
-            let size_px = st.font_size.unwrap_or(defaults.size_px);
             // The road's half-width on screen (stroke plus casing), so the
             // text clears it even when the stylesheet's offset is small.
             let ws = &self.render.way_styles[i];
@@ -743,23 +716,11 @@ impl OsmLayer {
                 ws.casing_width
             };
             let half_width = ws.width / 2.0 + casing;
-            let offset = clear_offset(
-                st.offset.unwrap_or(0.35 * size_px + 2.0),
-                size_px,
-                half_width,
-            );
             cands.push(Candidate {
                 way_id,
                 text,
                 verts: &self.derived.way_vertices[i],
-                style: LabelStyle {
-                    size_px,
-                    halo_px: st.halo_radius.unwrap_or(defaults.halo_px),
-                    offset_px: offset,
-                    color: st.color.unwrap_or(defaults.color),
-                    halo_color: st.halo_color.unwrap_or(defaults.halo_color),
-                    halo_alpha: st.halo_opacity.unwrap_or(defaults.halo_alpha),
-                },
+                style: LabelStyle::resolve(&st, half_width),
                 priority: highway_label_rank(&way.tags),
             });
         }
