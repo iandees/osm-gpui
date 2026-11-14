@@ -4,14 +4,31 @@ use super::*;
 /// label text and are not considered.
 pub(super) const MIN_AREA_PX: (f32, f32) = (16.0, 11.0);
 
-/// A named area ready for placement: its item plus what painting needs.
-pub(super) struct AreaItem {
+/// What a placed [`labels::Item`] stands for: the data turning its placement
+/// into a [`labels::PlacedLabel`]. One variant per kind of label placed in
+/// the shared grid; the item's `key.0` names the same kind.
+pub(super) enum Subject {
+    Node {
+        /// Index into `derived.node_cache.flat`.
+        idx: usize,
+        label: Arc<labels::NodeLabel>,
+        /// The shaped text, if the label has any.
+        line: Option<Arc<ShapedLine>>,
+    },
+    Area {
+        label: Arc<area_labels::AreaLabel>,
+        line: Arc<ShapedLine>,
+        /// Where the text is centred, Mercator metres.
+        mx: f64,
+        my: f64,
+    },
+}
+
+/// A thing to place and what it stands for; `place` sees only `item`, and
+/// reports results by its index.
+pub(super) struct Candidate {
     pub(super) item: labels::Item,
-    pub(super) label: Arc<area_labels::AreaLabel>,
-    pub(super) line: Arc<ShapedLine>,
-    /// Where the text is centred, Mercator metres.
-    pub(super) mx: f64,
-    pub(super) my: f64,
+    pub(super) subject: Subject,
 }
 
 impl OsmLayer {
@@ -177,7 +194,7 @@ impl OsmLayer {
         forced: &HashSet<labels::Key>,
         node_texts: &HashMap<SharedString, Vec<(f64, f64)>>,
         window: &mut Window,
-    ) -> Vec<AreaItem> {
+    ) -> Vec<Candidate> {
         let zoom = cam.zoom;
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
         let view = area_labels::AreaView::new(vmin_x, vmax_x, vmax_y, cam.w, cam.h);
@@ -264,7 +281,7 @@ impl OsmLayer {
             }
             let sp = viewport.mercator_to_screen(at.mx, at.my);
             let (w, h) = (f32::from(line.width), f32::from(line.ascent + line.descent));
-            out.push(AreaItem {
+            out.push(Candidate {
                 item: labels::Item {
                     key,
                     center: (f32::from(sp.x), f32::from(sp.y)),
@@ -274,10 +291,12 @@ impl OsmLayer {
                     priority: label.priority + area_labels::size_bonus(bpx),
                     forced: is_forced,
                 },
-                label,
-                line,
-                mx: at.mx,
-                my: at.my,
+                subject: Subject::Area {
+                    label,
+                    line,
+                    mx: at.mx,
+                    my: at.my,
+                },
             });
         }
         out
@@ -375,31 +394,28 @@ impl OsmLayer {
             }
         }
         // Shape (cached) to learn each text's size.
-        let mut lines: Vec<Option<Arc<ShapedLine>>> = Vec::with_capacity(cands.len());
-        for (_, it, l) in cands.iter_mut() {
-            match &l.text {
-                Some(t) => {
-                    let line = cache.shapes.get(window, t, l.look.font_px);
+        let mut node_texts: HashMap<SharedString, Vec<(f64, f64)>> = HashMap::new();
+        let mut cands: Vec<Candidate> = cands
+            .into_iter()
+            .map(|(idx, mut item, label)| {
+                let line = label.text.as_ref().map(|t| {
+                    let line = cache.shapes.get(window, t, label.look.font_px);
                     let w = f32::from(line.width);
                     let h = f32::from(line.ascent + line.descent);
-                    it.text = Some((w, h, l.pref));
-                    lines.push(Some(line));
+                    item.text = Some((w, h, label.pref));
+                    let (_, mx, my) = self.derived.node_cache.flat[idx];
+                    node_texts.entry(t.clone()).or_default().push((mx, my));
+                    line
+                });
+                Candidate {
+                    item,
+                    subject: Subject::Node { idx, label, line },
                 }
-                None => lines.push(None),
-            }
-        }
-        let mut items: Vec<labels::Item> = cands.iter().map(|c| c.1.clone()).collect();
-        // Named areas (after the nodes, so their item indices follow).
-        let n_nodes = items.len();
-        let mut node_texts: HashMap<SharedString, Vec<(f64, f64)>> = HashMap::new();
-        for (idx, _, l) in &cands {
-            if let Some(t) = &l.text {
-                let (_, mx, my) = self.derived.node_cache.flat[*idx];
-                node_texts.entry(t.clone()).or_default().push((mx, my));
-            }
-        }
-        let areas = self.area_items(cache, viewport, cam, forced_areas, &node_texts, window);
-        items.extend(areas.iter().map(|a| a.item.clone()));
+            })
+            .collect();
+        // Named areas follow the nodes in the one list placed together.
+        cands.extend(self.area_items(cache, viewport, cam, forced_areas, &node_texts, window));
+        let items: Vec<labels::Item> = cands.iter().map(|c| c.item.clone()).collect();
         let prev = cache.prev_state();
         let out = labels::place(
             &items,
@@ -410,43 +426,45 @@ impl OsmLayer {
         let mut placed = Vec::with_capacity(out.len());
         let mut by_id = HashMap::with_capacity(out.len());
         for p in out {
-            if p.item >= n_nodes {
-                let a = &areas[p.item - n_nodes];
-                if let Some((_, r)) = p.text {
-                    placed.push(labels::PlacedLabel::new_area(
-                        a.item.key.0,
-                        a.item.key.1,
-                        a.mx,
-                        a.my,
-                        labels::PlacedText::in_rect(
-                            a.line.clone(),
-                            &r,
-                            a.item.center,
-                            a.label.look,
-                        ),
-                    ));
+            let Candidate { item, subject } = &cands[p.item];
+            match subject {
+                Subject::Area {
+                    label,
+                    line,
+                    mx,
+                    my,
+                } => {
+                    if let Some((_, r)) = p.text {
+                        placed.push(labels::PlacedLabel::new_area(
+                            item.key.0,
+                            item.key.1,
+                            *mx,
+                            *my,
+                            labels::PlacedText::in_rect(line.clone(), &r, item.center, label.look),
+                        ));
+                    }
                 }
-                continue;
+                Subject::Node { idx, label, line } => {
+                    let (id, mx, my) = self.derived.node_cache.flat[*idx];
+                    let icon = if p.icon {
+                        label.icon.clone().map(|choice| labels::PlacedIcon {
+                            choice,
+                            fill: self.derived.node_cache.styles[*idx].color,
+                        })
+                    } else {
+                        None
+                    };
+                    let text = match (p.text, line) {
+                        (Some((anchor, r)), Some(line)) => Some((
+                            labels::PlacedText::in_rect(line.clone(), &r, item.center, label.look),
+                            anchor,
+                        )),
+                        _ => None,
+                    };
+                    by_id.insert(id, placed.len());
+                    placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
+                }
             }
-            let (idx, item, l) = &cands[p.item];
-            let (id, mx, my) = self.derived.node_cache.flat[*idx];
-            let icon = if p.icon {
-                l.icon.clone().map(|choice| labels::PlacedIcon {
-                    choice,
-                    fill: self.derived.node_cache.styles[*idx].color,
-                })
-            } else {
-                None
-            };
-            let text = match (p.text, &lines[p.item]) {
-                (Some((anchor, r)), Some(line)) => Some((
-                    labels::PlacedText::in_rect(line.clone(), &r, item.center, l.look),
-                    anchor,
-                )),
-                _ => None,
-            };
-            by_id.insert(id, placed.len());
-            placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
         }
         let n_text = placed.iter().filter(|l| l.text.is_some()).count();
         crate::frame_stats::lap("labels.place", fs);
@@ -615,23 +633,14 @@ impl OsmLayer {
             let line = cache.shapes.get(window, text, label.look.font_px);
             let reach = Self::label_marker_radius(self.derived.node_cache.styles[idx], zoom)
                 .max((self.derived.node_cache.styles[idx].size + 2.0) / 2.0);
-            let r = labels::label_rect(
-                label.pref,
-                (0.0, 0.0),
+            let item = forced_item(
+                (labels::KIND_NODE, f.id),
                 reach,
-                3.0,
-                f32::from(line.width),
-                f32::from(line.ascent + line.descent),
+                &line,
+                label.pref,
+                label.priority,
             );
-            let t = labels::PlacedText::new(line, r.x0, r.y0, label.look);
-            let at = point(sp.x + ox, sp.y + oy);
-            labels::paint_text(
-                window,
-                &t,
-                point(at.x + px(t.dx), at.y + px(t.dy)),
-                1.0,
-                labels::HaloMode::Offsets,
-            );
+            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
         }
         // Likewise a selected or hovered area whose label was not placed
         // (the selection changed since): shown at its label point, fitted or
@@ -671,17 +680,8 @@ impl OsmLayer {
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
-            let dx = -f32::from(line.width) / 2.0;
-            let dy = -f32::from(line.ascent + line.descent) / 2.0;
-            let t = labels::PlacedText::new(line, dx, dy, label.look);
-            let atp = point(sp.x + ox, sp.y + oy);
-            labels::paint_text(
-                window,
-                &t,
-                point(atp.x + px(t.dx), atp.y + px(t.dy)),
-                1.0,
-                labels::HaloMode::Offsets,
-            );
+            let item = forced_item(key, 0.0, &line, labels::Anchor::Center, label.priority);
+            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
         }
         cache.placement = Some(placement);
         crate::frame_stats::lap("labels.paint", fs);
@@ -756,27 +756,10 @@ impl OsmLayer {
         now: std::time::Instant,
     ) {
         let fs = crate::frame_stats::start();
-        let mut obstacles: Vec<labels::Rect> = Vec::new();
-        for l in &points.labels {
-            let sp = viewport.mercator_to_screen(l.mx, l.my);
-            let (cx, cy) = (f32::from(sp.x), f32::from(sp.y));
-            if let Some(icon) = &l.icon {
-                let r = icon.choice.backing() / 2.0 + 1.0;
-                obstacles.push(labels::Rect::around(cx, cy, r, r));
-            }
-            if let Some(t) = &l.text {
-                let (w, h) = (
-                    f32::from(t.line.width),
-                    f32::from(t.line.ascent + t.line.descent),
-                );
-                obstacles.push(labels::Rect::new(
-                    cx + t.dx,
-                    cy + t.dy,
-                    cx + t.dx + w,
-                    cy + t.dy + h,
-                ));
-            }
-        }
+        let obstacles = points.occupied(|mx, my| {
+            let sp = viewport.mercator_to_screen(mx, my);
+            (f32::from(sp.x), f32::from(sp.y))
+        });
         let cands = self.line_label_candidates(viewport, cam.zoom);
         let mut placed_slot = self
             .render
@@ -918,6 +901,53 @@ impl OsmLayer {
         }
         out
     }
+}
+
+/// The [`labels::Item`] of a selected or hovered feature whose text placement
+/// dropped, centred on the origin so its text box is an offset from wherever
+/// the feature is drawn (see [`paint_forced`]). `marker_r` is the radius of the
+/// marker drawn there.
+fn forced_item(
+    key: labels::Key,
+    marker_r: f32,
+    line: &ShapedLine,
+    anchor: labels::Anchor,
+    priority: i32,
+) -> labels::Item {
+    labels::Item {
+        key,
+        center: (0.0, 0.0),
+        marker_r,
+        icon_r: None,
+        text: Some((
+            f32::from(line.width),
+            f32::from(line.ascent + line.descent),
+            anchor,
+        )),
+        priority,
+        forced: true,
+    }
+}
+
+/// Paint a forced item's text at `at`, collision ignored.
+fn paint_forced(
+    window: &mut Window,
+    at: Point<Pixels>,
+    item: &labels::Item,
+    line: Arc<ShapedLine>,
+    look: labels::TextLook,
+) {
+    let Some((_, r)) = item.forced_text_rect() else {
+        return;
+    };
+    let t = labels::PlacedText::new(line, r.x0, r.y0, look);
+    labels::paint_text(
+        window,
+        &t,
+        point(at.x + px(t.dx), at.y + px(t.dy)),
+        1.0,
+        labels::HaloMode::Offsets,
+    );
 }
 
 /// Order among street names: bigger roads first.

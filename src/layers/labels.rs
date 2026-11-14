@@ -306,6 +306,23 @@ pub struct Item {
     pub forced: bool,
 }
 
+/// Clear distance between a marker or icon and its text, in pixels.
+pub const TEXT_GAP: f32 = 3.0;
+
+impl Item {
+    /// Where the text goes when the item is forced and nothing else is in
+    /// the way: its first-choice anchor, clear of the marker. This is what
+    /// [`place`] gives a lone forced item, without building a grid; the
+    /// per-frame fallback for a selected label that placement dropped uses it.
+    pub fn forced_text_rect(&self) -> Option<(Anchor, Rect)> {
+        let (w, h, pref) = self.text?;
+        Some((
+            pref,
+            label_rect(pref, self.center, self.marker_r, TEXT_GAP, w, h),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Config {
     /// The visible area; text must lie inside it inset by `edge_pad`.
@@ -325,7 +342,7 @@ impl Config {
         Self {
             view: Rect::new(0.0, 0.0, w, h),
             edge_pad: 2.0,
-            gap: 3.0,
+            gap: TEXT_GAP,
             text_pad: 2.0,
             icon_pad: 1.0,
             max_text: MAX_PLACED,
@@ -857,8 +874,39 @@ pub struct Placement {
     pub by_id: HashMap<i64, usize>,
     /// When the last fade-in finishes; frames are requested until then.
     pub fade_end: Option<Instant>,
-    /// How this placement's text halos are drawn (see [`halo_for`]).
+    /// How this placement's text halos are drawn (see
+    /// [`LabelTuning::halo_for`]).
     pub halo: HaloMode,
+}
+
+impl Placement {
+    /// The screen rectangles the placed icons and texts occupy, for a later
+    /// pass (street names) to avoid. `to_screen` maps a label's Mercator
+    /// anchor to screen pixels.
+    pub fn occupied(&self, to_screen: impl Fn(f64, f64) -> (f32, f32)) -> Vec<Rect> {
+        let mut out = Vec::new();
+        for l in &self.labels {
+            let (cx, cy) = to_screen(l.mx, l.my);
+            if let Some(icon) = &l.icon {
+                // The icon backing plus the padding placement keeps clear.
+                let r = icon.choice.backing() / 2.0 + 1.0;
+                out.push(Rect::around(cx, cy, r, r));
+            }
+            if let Some(t) = &l.text {
+                let (w, h) = (
+                    f32::from(t.line.width),
+                    f32::from(t.line.ascent + t.line.descent),
+                );
+                out.push(Rect::new(
+                    cx + t.dx,
+                    cy + t.dy,
+                    cx + t.dx + w,
+                    cy + t.dy + h,
+                ));
+            }
+        }
+        out
+    }
 }
 
 /// Whether to ask for another frame: while waiting for the camera to settle
@@ -1850,6 +1898,50 @@ mod tests {
         assert!(wants_frame(Step::DrawAndWait, None, t0), "settling");
         assert!(wants_frame(Step::HideAndWait, None, t0));
         assert!(!wants_frame(Step::Recompute, None, t0));
+    }
+
+    #[test]
+    fn a_forced_text_rect_is_where_place_puts_a_lone_forced_item() {
+        for (pref, marker_r) in [
+            (Anchor::Right, 4.0),
+            (Anchor::Above, 7.5),
+            (Anchor::Left, 0.0),
+            (Anchor::Center, 0.0),
+        ] {
+            let it = Item {
+                key: (KIND_NODE, 1),
+                center: (200.0, 150.0),
+                marker_r,
+                icon_r: None,
+                text: Some((60.0, 12.0, pref)),
+                priority: 400,
+                forced: true,
+            };
+            let placed = place(&[it.clone()], &[], &HashMap::new(), &cfg());
+            assert_eq!(placed[0].text, it.forced_text_rect(), "{pref:?}");
+        }
+        let mut none = item(1, 0.0, 0.0, 10.0, 1);
+        none.text = None;
+        assert_eq!(none.forced_text_rect(), None);
+    }
+
+    #[test]
+    fn occupied_lists_each_icon_and_text_box_of_a_placement() {
+        let icon = PlacedIcon {
+            choice: IconChoice {
+                path: "x.svg".into(),
+                size: 12.0,
+            },
+            fill: 0,
+        };
+        let mut p = placement(17.0, &[1, 2]);
+        p.labels[0].icon = Some(icon);
+        let at = |mx: f64, my: f64| (mx as f32 * 2.0, my as f32 * 2.0);
+        let boxes = p.occupied(at);
+        // The icon's backing (12 + 6) / 2 plus a pixel of padding, around its anchor.
+        assert_eq!(boxes.len(), 1);
+        let (cx, cy) = at(p.labels[0].mx, p.labels[0].my);
+        assert_eq!(boxes[0], Rect::around(cx, cy, 10.0, 10.0));
     }
 
     /// `(id, born)` pairs, born starting `None`.
