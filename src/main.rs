@@ -5939,7 +5939,7 @@ impl MapViewer {
             .round()
             .clamp(0.0, osm_gpui::coordinates::MAX_MAP_ZOOM) as u32;
         let bounds_geo = self.viewport.visible_bounds();
-        let visible_tiles = tiles::tiles_covering_geo_unclamped(&bounds_geo, tile_zoom);
+        let visible_tiles = tiles::tiles_covering_geo(&bounds_geo, tile_zoom);
         let total_tiles = visible_tiles.len();
 
         (total_tiles, cached_files, osm_nodes + osm_ways)
