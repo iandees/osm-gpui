@@ -3,6 +3,7 @@
 use super::{setup, CENTER_LAT, CENTER_LON};
 use crate::{EditMode, MapViewer};
 use gpui::{point, px, size, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 
 /// Window position of the fixture way's centre (map-local `(400, 300)`).
 fn on_the_way() -> gpui::Point<gpui::Pixels> {
@@ -45,7 +46,9 @@ fn right_click_events_open_the_menu(cx: &mut TestAppContext) {
     );
     let pos = window
         .update(vcx, |view, _, _| {
-            let p = view.viewport.geo_to_screen(CENTER_LAT, CENTER_LON);
+            let p = view
+                .viewport
+                .geo_to_screen(LatLon::new(CENTER_LAT, CENTER_LON));
             point(p.x + px(MapViewer::MODE_PANEL_WIDTH), p.y)
         })
         .unwrap();

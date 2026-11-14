@@ -607,6 +607,7 @@ pub fn load_notes_file(path: &std::path::Path) -> Result<Vec<Note>, NotesError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinates::{LatLon, Mercator};
     use crate::http::fake::{ok, status_err, transport_err, FakeClient};
 
     const BASE: &str = "https://api.openstreetmap.org";
@@ -1044,8 +1045,10 @@ second line</text>
 
     #[test]
     fn mercator_rectangles_convert_back_to_degrees() {
-        let (x0, y0) = crate::coordinates::lat_lon_to_mercator(40.0, -74.0);
-        let (x1, y1) = crate::coordinates::lat_lon_to_mercator(41.0, -73.0);
+        let Mercator { x: x0, y: y0 } =
+            crate::coordinates::lat_lon_to_mercator(LatLon::new(40.0, -74.0));
+        let Mercator { x: x1, y: y1 } =
+            crate::coordinates::lat_lon_to_mercator(LatLon::new(41.0, -73.0));
         let g = merc_to_geo(&crate::download_bounds::MercRect::new(x0, x1, y0, y1));
         assert!((g.min_lat - 40.0).abs() < 1e-6 && (g.max_lat - 41.0).abs() < 1e-6);
         assert!((g.min_lon + 74.0).abs() < 1e-6 && (g.max_lon + 73.0).abs() < 1e-6);

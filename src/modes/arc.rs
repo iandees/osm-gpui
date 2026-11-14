@@ -108,7 +108,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     // The cursor, snapped onto a way as a click would be.
     let cursor_geo = view.last_mouse_pos.map(|p| match view.active_layer {
         Some(layer_id) => view.arc_point_at(layer_id, p, false).geo,
-        None => frame.viewport.screen_to_geo(p),
+        None => frame.viewport.screen_to_geo(p).to_pair(),
     });
     let path_points: Vec<(f64, f64)> = match (progress.end, cursor_geo) {
         (None, Some(cursor)) => vec![progress.start.geo, cursor],

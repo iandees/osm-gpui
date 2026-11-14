@@ -1,4 +1,4 @@
-use crate::coordinates::CoordinateTransform;
+use crate::coordinates::{CoordinateTransform, LatLon, Mercator};
 use gpui::{Pixels, Point, Size};
 
 /// Wheel lines per pixel of precise scroll, for scaling a trackpad scroll
@@ -17,13 +17,8 @@ pub struct Viewport {
 }
 
 impl Viewport {
-    pub fn new(
-        center_lat: f64,
-        center_lon: f64,
-        zoom_level: f64,
-        screen_size: Size<Pixels>,
-    ) -> Self {
-        let transform = CoordinateTransform::new(center_lat, center_lon, zoom_level, screen_size);
+    pub fn new(center: LatLon, zoom_level: f64, screen_size: Size<Pixels>) -> Self {
+        let transform = CoordinateTransform::new(center, zoom_level, screen_size);
 
         Self {
             transform,
@@ -131,56 +126,47 @@ impl Viewport {
 
     /// Update viewport size when window is resized
     pub fn update_size(&mut self, new_size: Size<Pixels>) {
-        self.transform = CoordinateTransform::new(
-            self.transform.center_lat,
-            self.transform.center_lon,
-            self.transform.zoom_level,
-            new_size,
-        );
+        self.transform =
+            CoordinateTransform::new(self.transform.center(), self.transform.zoom_level, new_size);
     }
 
     pub fn set_zoom(&mut self, zoom_level: f64) {
         self.transform = CoordinateTransform::new(
-            self.transform.center_lat,
-            self.transform.center_lon,
+            self.transform.center(),
             zoom_level,
             self.transform.screen_size,
         );
     }
 
     /// Pan to a specific geographic location
-    pub fn pan_to(&mut self, lat: f64, lon: f64) {
-        self.transform = CoordinateTransform::new(
-            lat,
-            lon,
-            self.transform.zoom_level,
-            self.transform.screen_size,
-        );
+    pub fn pan_to(&mut self, at: LatLon) {
+        self.transform =
+            CoordinateTransform::new(at, self.transform.zoom_level, self.transform.screen_size);
     }
 
     pub fn zoom_level(&self) -> f64 {
         self.transform.zoom_level
     }
 
-    pub fn center(&self) -> (f64, f64) {
-        (self.transform.center_lat, self.transform.center_lon)
+    pub fn center(&self) -> LatLon {
+        self.transform.center()
     }
 
-    pub fn is_visible(&self, lat: f64, lon: f64) -> bool {
-        self.transform.is_visible(lat, lon)
+    pub fn is_visible(&self, at: LatLon) -> bool {
+        self.transform.is_visible(at)
     }
 
     /// Convert geographic coordinates to screen coordinates
-    pub fn geo_to_screen(&self, lat: f64, lon: f64) -> Point<Pixels> {
-        self.transform.geo_to_screen(lat, lon)
+    pub fn geo_to_screen(&self, at: LatLon) -> Point<Pixels> {
+        self.transform.geo_to_screen(at)
     }
 
     /// Project a point given in Web Mercator meters directly to screen pixels
     /// (no trig). Prefer this in hot render paths where source coordinates
     /// have already been projected to Mercator and cached.
     #[inline]
-    pub fn mercator_to_screen(&self, mx: f64, my: f64) -> Point<Pixels> {
-        self.transform.mercator_to_screen(mx, my)
+    pub fn mercator_to_screen(&self, at: Mercator) -> Point<Pixels> {
+        self.transform.mercator_to_screen(at)
     }
 
     /// The trig-free Mercator-to-screen mapping as a copyable value for hot
@@ -209,13 +195,13 @@ impl Viewport {
     }
 
     /// Convert screen coordinates to geographic coordinates
-    pub fn screen_to_geo(&self, point: Point<Pixels>) -> (f64, f64) {
+    pub fn screen_to_geo(&self, point: Point<Pixels>) -> LatLon {
         self.transform.screen_to_geo(point)
     }
 
     /// Convert screen coordinates directly to Web Mercator meters (no lat/lon
     /// round trip). Used by box-select hit-testing.
-    pub fn screen_to_mercator(&self, point: Point<Pixels>) -> (f64, f64) {
+    pub fn screen_to_mercator(&self, point: Point<Pixels>) -> Mercator {
         self.transform.screen_to_mercator(point)
     }
 
@@ -229,17 +215,12 @@ impl Viewport {
     }
 
     /// Reset viewport to initial state
-    pub fn reset(&mut self, center_lat: f64, center_lon: f64, zoom_level: f64) {
+    pub fn reset(&mut self, center: LatLon, zoom_level: f64) {
         self.is_dragging = false;
         self.last_mouse_position = None;
         self.drag_start_position = None;
 
-        self.transform = CoordinateTransform::new(
-            center_lat,
-            center_lon,
-            zoom_level,
-            self.transform.screen_size,
-        );
+        self.transform = CoordinateTransform::new(center, zoom_level, self.transform.screen_size);
     }
 }
 
@@ -251,17 +232,17 @@ mod tests {
     #[test]
     fn test_viewport_creation() {
         let screen_size = size(px(800.0), px(600.0));
-        let viewport = Viewport::new(40.7128, -74.0060, 10.0, screen_size);
+        let viewport = Viewport::new(LatLon::new(40.7128, -74.0060), 10.0, screen_size);
 
         assert_eq!(viewport.zoom_level(), 10.0);
-        assert_eq!(viewport.center(), (40.7128, -74.0060));
+        assert_eq!(viewport.center(), LatLon::new(40.7128, -74.0060));
         assert!(!viewport.is_dragging);
     }
 
     #[test]
     fn test_viewport_zoom() {
         let screen_size = size(px(800.0), px(600.0));
-        let mut viewport = Viewport::new(40.7128, -74.0060, 10.0, screen_size);
+        let mut viewport = Viewport::new(LatLon::new(40.7128, -74.0060), 10.0, screen_size);
 
         viewport.set_zoom(12.0);
         assert_eq!(viewport.zoom_level(), 12.0);
@@ -270,22 +251,22 @@ mod tests {
     #[test]
     fn test_viewport_pan() {
         let screen_size = size(px(800.0), px(600.0));
-        let mut viewport = Viewport::new(40.7128, -74.0060, 10.0, screen_size);
+        let mut viewport = Viewport::new(LatLon::new(40.7128, -74.0060), 10.0, screen_size);
 
         let new_lat = 41.0;
         let new_lon = -73.0;
-        viewport.pan_to(new_lat, new_lon);
+        viewport.pan_to(LatLon::new(new_lat, new_lon));
 
-        assert_eq!(viewport.center(), (new_lat, new_lon));
+        assert_eq!(viewport.center(), LatLon::new(new_lat, new_lon));
     }
 
     /// Only the centre is clamped (to +-180), so the view reaches past the
     /// antimeridian whenever the centre is near it; tile coverage must wrap.
     #[test]
     fn the_view_can_span_the_antimeridian_because_only_the_centre_is_clamped() {
-        let mut viewport = Viewport::new(0.0, 179.9, 5.0, size(px(800.0), px(600.0)));
+        let mut viewport = Viewport::new(LatLon::new(0.0, 179.9), 5.0, size(px(800.0), px(600.0)));
         viewport.transform.pan_by_pixels(px(10_000.0), px(0.0));
-        assert_eq!(viewport.center().1, 180.0);
+        assert_eq!(viewport.center().lon, 180.0);
         let (_, max_x, _, _) = viewport.mercator_view_bounds();
         assert!(max_x > crate::coordinates::MERCATOR_HALF_WORLD_M);
         let placed =
@@ -294,7 +275,11 @@ mod tests {
     }
 
     fn test_viewport() -> Viewport {
-        Viewport::new(40.7128, -74.0060, 10.0, size(px(800.0), px(600.0)))
+        Viewport::new(
+            LatLon::new(40.7128, -74.0060),
+            10.0,
+            size(px(800.0), px(600.0)),
+        )
     }
 
     #[test]
@@ -305,7 +290,7 @@ mod tests {
         // Content should move 50px right and 30px down.
         assert!(viewport.pan_by_scroll(point(px(50.0), px(30.0))));
 
-        let moved = viewport.geo_to_screen(anchor.0, anchor.1);
+        let moved = viewport.geo_to_screen(anchor);
         assert!((moved.x.as_f32() - 450.0).abs() < 0.5);
         assert!((moved.y.as_f32() - 330.0).abs() < 0.5);
         assert_eq!(viewport.zoom_level(), 10.0);
@@ -367,7 +352,7 @@ mod tests {
         assert!(viewport.zoom_by_pinch(fingers, 1.0));
 
         assert!((viewport.zoom_level() - 11.0).abs() < 1e-9);
-        let after = viewport.geo_to_screen(anchor.0, anchor.1);
+        let after = viewport.geo_to_screen(anchor);
         assert!((after.x.as_f32() - 600.0).abs() < 0.5);
         assert!((after.y.as_f32() - 200.0).abs() < 0.5);
     }
@@ -394,19 +379,26 @@ mod tests {
 
     #[test]
     fn zoom_at_the_limit_is_not_a_change() {
-        let mut viewport = Viewport::new(40.7128, -74.0060, 23.0, size(px(800.0), px(600.0)));
+        let mut viewport = Viewport::new(
+            LatLon::new(40.7128, -74.0060),
+            23.0,
+            size(px(800.0), px(600.0)),
+        );
         assert!(!viewport.zoom_by_pinch(point(px(400.0), px(300.0)), 0.5));
     }
 
     #[test]
     fn test_coordinate_conversion() {
         let screen_size = size(px(800.0), px(600.0));
-        let viewport = Viewport::new(40.7128, -74.0060, 10.0, screen_size);
+        let viewport = Viewport::new(LatLon::new(40.7128, -74.0060), 10.0, screen_size);
 
         let original_lat = 40.7500;
         let original_lon = -73.9000;
-        let screen_point = viewport.geo_to_screen(original_lat, original_lon);
-        let (converted_lat, converted_lon) = viewport.screen_to_geo(screen_point);
+        let screen_point = viewport.geo_to_screen(LatLon::new(original_lat, original_lon));
+        let LatLon {
+            lat: converted_lat,
+            lon: converted_lon,
+        } = viewport.screen_to_geo(screen_point);
 
         assert!((converted_lat - original_lat).abs() < 0.001);
         assert!((converted_lon - original_lon).abs() < 0.001);

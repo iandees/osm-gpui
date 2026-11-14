@@ -114,8 +114,7 @@ impl MapViewer {
         let at = self
             .last_mouse_pos
             .unwrap_or_else(|| gpui::point(size.width / 2.0, size.height / 2.0));
-        let (lat, lon) = self.viewport.screen_to_geo(at);
-        PastePosition::CenterAt { lat, lon }
+        PastePosition::CenterAt(self.viewport.screen_to_geo(at))
     }
 
     /// Copy the selection to the feature clipboard (and, when it is not

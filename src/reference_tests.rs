@@ -3,6 +3,7 @@
 use super::*;
 use crate::test_support::*;
 use gpui::{point, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::reference::{Builder, FeatureKind, Format};
 
 fn track() -> osm_gpui::reference::ReferenceData {
@@ -114,7 +115,7 @@ fn a_single_point_is_centred_at_an_editing_zoom(cx: &mut TestAppContext) {
         let f = b.feature(FeatureKind::Geo, "Point", None, vec![]);
         b.point(f, 8.5, 47.25).unwrap();
         view.add_reference_dataset("pt".into(), b.finish().unwrap(), cx);
-        let (lat, lon) = view.viewport.center();
+        let LatLon { lat, lon } = view.viewport.center();
         assert!((lat - 47.25).abs() < 1e-6 && (lon - 8.5).abs() < 1e-6);
         assert!(view.viewport.zoom_level() >= 18.0);
     });

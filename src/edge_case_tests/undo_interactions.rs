@@ -3,6 +3,7 @@
 
 use super::*;
 use osm_gpui::autosave;
+use osm_gpui::coordinates::LatLon;
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -201,7 +202,8 @@ fn with_restored(
     let window = cx.add_window(MapViewer::new);
     window
         .update(cx, |view, _window, cx| {
-            view.viewport = Viewport::new(40.0, -74.0, 18.0, size(px(800.0), px(600.0)));
+            view.viewport =
+                Viewport::new(LatLon::new(40.0, -74.0), 18.0, size(px(800.0), px(600.0)));
             view.enter_mode(EditMode::Select);
             let mut s = Session {
                 view,

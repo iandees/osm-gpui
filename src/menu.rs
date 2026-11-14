@@ -7,6 +7,7 @@ use gpui::{
 
 use gpui_component::menu::AppMenuBar;
 use gpui_component::{GlobalState, ThemeMode};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
@@ -409,21 +410,20 @@ pub(crate) fn rebuild_menus_for_live_viewer(cx: &mut App) {
     // live map viewer's if it exists yet, else fall back to the same
     // placeholder used before the map viewer/imagery index are ready (see
     // the startup call to `rebuild_menus` in `main.rs`).
-    let (lat, lon, state, toggles) = crate::MAP_VIEWER_HANDLE
+    let (center, state, toggles) = crate::MAP_VIEWER_HANDLE
         .get()
         .and_then(|h| h.upgrade())
         .map(|view| {
             let view = view.read(cx);
-            let (lat, lon, state) = view.imagery_menu_context();
-            (lat, lon, state, view.menu_toggles())
+            let (center, state) = view.imagery_menu_context();
+            (center, state, view.menu_toggles())
         })
         .unwrap_or((
-            40.7128,
-            -74.0060,
+            LatLon::new(40.7128, -74.0060),
             crate::ImageryLoadState::Loading,
             MenuToggles::default(),
         ));
-    rebuild_menus(cx, lat, lon, state, toggles);
+    rebuild_menus(cx, center, state, toggles);
 }
 
 /// What the viewer's state decides about the menus: the View menu's
@@ -461,31 +461,23 @@ impl Default for MenuToggles {
 /// checkmark toggle) is reflected there too.
 pub(crate) fn rebuild_menus(
     cx: &mut App,
-    center_lat: f64,
-    center_lon: f64,
+    center: LatLon,
     state: ImageryLoadState,
     toggles: MenuToggles,
 ) {
     cx.set_menus(build_menus(
         cfg!(target_os = "macos"),
-        center_lat,
-        center_lon,
+        center,
         state,
         toggles,
     ));
     if in_window_menu_enabled() {
         // `Menu` is not `Clone`, so build the (cheap) list a second time for
         // the bar's owned copy.
-        let owned = build_menus(
-            in_window_menu_is_macos_layout(),
-            center_lat,
-            center_lon,
-            state,
-            toggles,
-        )
-        .into_iter()
-        .map(|menu| fit_owned_menu(menu.owned()))
-        .collect();
+        let owned = build_menus(in_window_menu_is_macos_layout(), center, state, toggles)
+            .into_iter()
+            .map(|menu| fit_owned_menu(menu.owned()))
+            .collect();
         sync_in_window_menu(cx, owned);
     }
 }
@@ -732,8 +724,7 @@ pub(crate) fn in_window_menu_bar(cx: &App) -> Option<gpui::Entity<AppMenuBar>> {
 /// Help.
 fn build_menus(
     is_macos: bool,
-    center_lat: f64,
-    center_lon: f64,
+    center: LatLon,
     state: ImageryLoadState,
     toggles: MenuToggles,
 ) -> Vec<Menu> {
@@ -792,7 +783,7 @@ fn build_menus(
                 .get()
                 .and_then(|i| i.lock().ok().map(|g| g.clone()))
                 .unwrap_or_default();
-            let shown = imagery::entries_for_viewport(&entries, center_lat, center_lon);
+            let shown = imagery::entries_for_viewport(&entries, center);
             if !shown.is_empty() {
                 imagery_items.push(MenuItem::separator());
                 for entry in shown {
@@ -1066,8 +1057,7 @@ mod tests {
     fn menus_for(is_macos: bool) -> Vec<gpui::OwnedMenu> {
         build_menus(
             is_macos,
-            40.0,
-            -74.0,
+            LatLon::new(40.0, -74.0),
             ImageryLoadState::Loading,
             uploadable_toggles(),
         )
@@ -1085,7 +1075,12 @@ mod tests {
 
     /// The `checked` flags of the View menu's entries, by label.
     fn view_checks(toggles: MenuToggles) -> Vec<(String, bool)> {
-        let menus = build_menus(true, 40.0, -74.0, ImageryLoadState::Loading, toggles);
+        let menus = build_menus(
+            true,
+            LatLon::new(40.0, -74.0),
+            ImageryLoadState::Loading,
+            toggles,
+        );
         let view = menus
             .into_iter()
             .map(Menu::owned)
@@ -1246,8 +1241,7 @@ mod tests {
             .collect();
         build_menus(
             is_macos,
-            40.0,
-            -74.0,
+            LatLon::new(40.0, -74.0),
             ImageryLoadState::Ready,
             uploadable_toggles(),
         )

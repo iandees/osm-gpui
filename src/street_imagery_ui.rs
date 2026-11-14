@@ -237,8 +237,8 @@ impl MapViewer {
     }
 
     fn refresh_menus_for_imagery(&mut self, cx: &mut Context<Self>) {
-        let (lat, lon, state) = self.imagery_menu_context();
-        crate::menu::rebuild_menus(&mut *cx, lat, lon, state, self.menu_toggles());
+        let (center, state) = self.imagery_menu_context();
+        crate::menu::rebuild_menus(&mut *cx, center, state, self.menu_toggles());
     }
 
     pub(crate) fn set_show_imagery(

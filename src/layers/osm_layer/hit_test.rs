@@ -1,4 +1,6 @@
 use super::*;
+use crate::coordinates::LatLon;
+use crate::coordinates::Mercator;
 
 /// How close, in pixels, the pointer must be to a way's line to hover it.
 pub(super) const WAY_HIT_TOL: f32 = 6.0;
@@ -33,7 +35,7 @@ impl OsmLayer {
         let mut best: Option<f32> = None;
         let mut prev: Option<Point<Pixels>> = None;
         for &(_, mx, my) in verts.iter() {
-            let sp = viewport.mercator_to_screen(mx, my);
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             if !is_point_valid(sp) {
                 continue;
             }
@@ -82,8 +84,10 @@ impl OsmLayer {
     ) -> Option<i64> {
         self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 2.0);
-        let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
-        let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
+        let Mercator { x: ex1, y: ey1 } =
+            viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
+        let Mercator { x: ex2, y: ey2 } =
+            viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
         let envelope =
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
         let mut best: Option<(f32, i64)> = None;
@@ -96,7 +100,7 @@ impl OsmLayer {
                 continue;
             };
             let (_, mx, my) = self.derived.node_cache.flat[idx];
-            let sp = viewport.mercator_to_screen(mx, my);
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             if !is_point_valid(sp) {
                 continue;
             }
@@ -134,8 +138,10 @@ impl OsmLayer {
     ) -> Option<(i64, i64, i64, usize)> {
         self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
-        let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
-        let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
+        let Mercator { x: ex1, y: ey1 } =
+            viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
+        let Mercator { x: ex2, y: ey2 } =
+            viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
         let envelope =
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
@@ -155,8 +161,8 @@ impl OsmLayer {
             for i in 0..verts.len().saturating_sub(1) {
                 let (id_a, ax, ay) = verts[i];
                 let (id_b, bx, by) = verts[i + 1];
-                let sp_a = viewport.mercator_to_screen(ax, ay);
-                let sp_b = viewport.mercator_to_screen(bx, by);
+                let sp_a = viewport.mercator_to_screen(Mercator::new(ax, ay));
+                let sp_b = viewport.mercator_to_screen(Mercator::new(bx, by));
                 if !is_point_valid(sp_a) || !is_point_valid(sp_b) {
                     continue;
                 }
@@ -197,8 +203,10 @@ impl OsmLayer {
     ) -> Option<(i64, i64, i64, usize, f64, f64)> {
         self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
-        let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
-        let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
+        let Mercator { x: ex1, y: ey1 } =
+            viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
+        let Mercator { x: ex2, y: ey2 } =
+            viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
         let envelope =
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
@@ -219,8 +227,8 @@ impl OsmLayer {
             for i in 0..verts.len().saturating_sub(1) {
                 let (id_a, ax, ay) = verts[i];
                 let (id_b, bx, by) = verts[i + 1];
-                let sp_a = viewport.mercator_to_screen(ax, ay);
-                let sp_b = viewport.mercator_to_screen(bx, by);
+                let sp_a = viewport.mercator_to_screen(Mercator::new(ax, ay));
+                let sp_b = viewport.mercator_to_screen(Mercator::new(bx, by));
                 if !is_point_valid(sp_a) || !is_point_valid(sp_b) {
                     continue;
                 }
@@ -232,7 +240,7 @@ impl OsmLayer {
             }
         }
         best.map(|(_, way_id, a, b, idx, nearest)| {
-            let (lat, lon) = viewport.screen_to_geo(nearest);
+            let LatLon { lat, lon } = viewport.screen_to_geo(nearest);
             (way_id, a, b, idx, lat, lon)
         })
     }
@@ -263,7 +271,7 @@ impl OsmLayer {
         if viewport.zoom_level() >= VERTEX_MIN_ZOOM {
             let mut marker_hits: Vec<HitCandidate> = Vec::new();
             for (&relation_id, r) in &self.derived.mp.restrictions {
-                let sp = viewport.mercator_to_screen(r.x, r.y);
+                let sp = viewport.mercator_to_screen(Mercator::new(r.x, r.y));
                 if !is_point_valid(sp) {
                     continue;
                 }
@@ -291,8 +299,10 @@ impl OsmLayer {
 
         let max_tol = NODE_TOL.max(WAY_TOL);
         let pad = px(max_tol * ENVELOPE_PAD_FACTOR);
-        let (ex1, ey1) = viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
-        let (ex2, ey2) = viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
+        let Mercator { x: ex1, y: ey1 } =
+            viewport.screen_to_mercator(point(screen_pt.x - pad, screen_pt.y - pad));
+        let Mercator { x: ex2, y: ey2 } =
+            viewport.screen_to_mercator(point(screen_pt.x + pad, screen_pt.y + pad));
         let envelope =
             AABB::from_corners([ex1.min(ex2), ey1.min(ey2)], [ex1.max(ex2), ey1.max(ey2)]);
 
@@ -315,7 +325,7 @@ impl OsmLayer {
                 continue;
             }
             let (_, mx, my) = self.derived.node_cache.flat[idx];
-            let sp = viewport.mercator_to_screen(mx, my);
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             if !is_point_valid(sp) {
                 continue;
             }
@@ -360,7 +370,7 @@ impl OsmLayer {
             let mut best = f32::INFINITY;
             let mut prev: Option<Point<Pixels>> = None;
             for &(_, mx, my) in verts.iter() {
-                let sp = viewport.mercator_to_screen(mx, my);
+                let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
                 if !is_point_valid(sp) {
                     continue;
                 }
@@ -396,7 +406,7 @@ impl OsmLayer {
             return Vec::new();
         }
 
-        let (mx, my) = viewport.screen_to_mercator(screen_pt);
+        let Mercator { x: mx, y: my } = viewport.screen_to_mercator(screen_pt);
         let envelope = AABB::from_corners([mx, my], [mx, my]);
 
         let mut hits: Vec<HitCandidate> = Vec::new();
@@ -417,7 +427,7 @@ impl OsmLayer {
             }
             let screen_verts: Vec<Point<Pixels>> = verts
                 .iter()
-                .map(|&(_, vx, vy)| viewport.mercator_to_screen(vx, vy))
+                .map(|&(_, vx, vy)| viewport.mercator_to_screen(Mercator::new(vx, vy)))
                 .collect();
             if !screen_verts.iter().all(|p| is_point_valid(*p)) {
                 continue;
@@ -441,8 +451,8 @@ impl OsmLayer {
         // multipolygon leaves the click to its tagged outer way), and the
         // area is scaled by a hair so a relation beats a closed way of
         // exactly the same area, e.g. its own single outer way.
-        let (x0, _) = viewport.screen_to_mercator(point(px(0.0), px(0.0)));
-        let (x1, _) = viewport.screen_to_mercator(point(px(1.0), px(0.0)));
+        let Mercator { x: x0, .. } = viewport.screen_to_mercator(point(px(0.0), px(0.0)));
+        let Mercator { x: x1, .. } = viewport.screen_to_mercator(point(px(1.0), px(0.0)));
         let m_per_px = (x1 - x0).abs();
         for (&relation_id, entry) in &self.derived.mp.entries {
             let b = &entry.bbox;
@@ -480,8 +490,8 @@ impl OsmLayer {
         viewport: &Viewport,
         rect: Bounds<Pixels>,
     ) -> Vec<FeatureRef> {
-        let (x1, y1) = viewport.screen_to_mercator(rect.origin);
-        let (x2, y2) = viewport.screen_to_mercator(point(
+        let Mercator { x: x1, y: y1 } = viewport.screen_to_mercator(rect.origin);
+        let Mercator { x: x2, y: y2 } = viewport.screen_to_mercator(point(
             rect.origin.x + rect.size.width,
             rect.origin.y + rect.size.height,
         ));

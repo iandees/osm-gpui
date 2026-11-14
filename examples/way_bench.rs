@@ -10,6 +10,7 @@
 //! `frame_stats` script op in the real app for those).
 
 use gpui::{point, px, size, Bounds};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::osm::OsmParser;
@@ -42,7 +43,7 @@ fn main() {
     };
     println!("zoom    median_ms   p95_ms   path_vertices");
     for z in zooms {
-        let viewport = Viewport::new(lat, lon, z, view);
+        let viewport = Viewport::new(LatLon::new(lat, lon), z, view);
         // Warm-up.
         let verts = layer.build_way_scene(&viewport, bounds).vertex_count();
         let mut ms: Vec<f64> = (0..30)

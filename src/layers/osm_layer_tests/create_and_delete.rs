@@ -1,6 +1,8 @@
 //! Creating, deleting and restoring nodes and ways.
 
 use super::{data_with, empty_tags, viewport_centered_on};
+use crate::coordinates::LatLon;
+use crate::coordinates::Mercator;
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
 use crate::layers::{EditError, EditableLayer};
@@ -323,7 +325,8 @@ fn restore_feature_round_trips_deleted_way() {
     // node_to_ways was patched so the restored way is picked up by a
     // node-move on one of its members.
     layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
-    let (mx, my) = crate::coordinates::lat_lon_to_mercator(41.0, -75.0);
+    let Mercator { x: mx, y: my } =
+        crate::coordinates::lat_lon_to_mercator(LatLon::new(41.0, -75.0));
     let verts =
         layer.derived.way_vertices[*layer.derived.way_id_to_index.get(&10).unwrap()].clone();
     let &(_, vmx, vmy) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();

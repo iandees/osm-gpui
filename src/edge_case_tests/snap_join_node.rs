@@ -6,6 +6,7 @@
 
 use super::*;
 use gpui::{point, Modifiers, MouseMoveEvent, MouseUpEvent};
+use osm_gpui::coordinates::LatLon;
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -226,7 +227,7 @@ fn scene(way_tags: &[(&str, &str)], node_tags: &[(&str, &str)]) -> OsmData {
 }
 
 fn screen(s: &Session, lat: f64, lon: f64) -> gpui::Point<gpui::Pixels> {
-    s.view.viewport.geo_to_screen(lat, lon)
+    s.view.viewport.geo_to_screen(LatLon::new(lat, lon))
 }
 
 fn win(p: gpui::Point<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {

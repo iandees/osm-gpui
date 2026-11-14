@@ -16,7 +16,7 @@
 //! rectangles as is cheap, and the outline is the set of cell edges that
 //! separate a covered cell from an uncovered one.
 
-use crate::coordinates::lat_lon_to_mercator;
+use crate::coordinates::{lat_lon_to_mercator, LatLon};
 use crate::osm::OsmBounds;
 
 /// An axis-aligned rectangle in Web Mercator meters.
@@ -48,9 +48,9 @@ impl MercRect {
         {
             return None;
         }
-        let (min_x, min_y) = lat_lon_to_mercator(b.min_lat, b.min_lon);
-        let (max_x, max_y) = lat_lon_to_mercator(b.max_lat, b.max_lon);
-        (min_x < max_x && min_y < max_y).then_some(Self::new(min_x, max_x, min_y, max_y))
+        let min = lat_lon_to_mercator(LatLon::new(b.min_lat, b.min_lon));
+        let max = lat_lon_to_mercator(LatLon::new(b.max_lat, b.max_lon));
+        (min.x < max.x && min.y < max.y).then_some(Self::new(min.x, max.x, min.y, max.y))
     }
 
     fn intersect(&self, other: &MercRect) -> Option<MercRect> {
@@ -210,6 +210,7 @@ pub fn outside_region(view: MercRect, rects: &[MercRect]) -> OutsideRegion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinates::Mercator;
     use std::prelude::v1::test;
 
     fn r(min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> MercRect {
@@ -280,7 +281,7 @@ mod tests {
             max_lon: -74.0,
         };
         let m = MercRect::from_bounds(&b).unwrap();
-        let (x, y) = lat_lon_to_mercator(40.0, -75.0);
+        let Mercator { x, y } = lat_lon_to_mercator(LatLon::new(40.0, -75.0));
         assert_eq!((m.min_x, m.min_y), (x, y));
         assert!(m.max_x > m.min_x && m.max_y > m.min_y);
     }

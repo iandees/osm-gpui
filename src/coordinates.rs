@@ -1,6 +1,48 @@
 use gpui::{px, Pixels, Point as GpuiPoint, Size};
 use std::f64::consts::PI;
 
+/// A geographic position in degrees. Named fields carry the order, and the
+/// type keeps it from being passed where Web Mercator metres are expected.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LatLon {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl LatLon {
+    #[inline]
+    pub const fn new(lat: f64, lon: f64) -> Self {
+        Self { lat, lon }
+    }
+
+    /// For code that still passes `(lat, lon)` pairs. Each use marks a place
+    /// not yet converted to `LatLon`.
+    #[inline]
+    pub const fn from_pair((lat, lon): (f64, f64)) -> Self {
+        Self { lat, lon }
+    }
+
+    /// The `(lat, lon)` pair; see [`LatLon::from_pair`].
+    #[inline]
+    pub const fn to_pair(self) -> (f64, f64) {
+        (self.lat, self.lon)
+    }
+}
+
+/// A position in Web Mercator (EPSG:3857) metres: `x` grows east, `y` north.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Mercator {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Mercator {
+    #[inline]
+    pub const fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+}
+
 /// Represents a geographic bounding box (axis-aligned, inclusive).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeoBounds {
@@ -20,8 +62,30 @@ impl GeoBounds {
         }
     }
 
-    pub fn contains(&self, lat: f64, lon: f64) -> bool {
-        lat >= self.min_lat && lat <= self.max_lat && lon >= self.min_lon && lon <= self.max_lon
+    pub fn contains(&self, at: LatLon) -> bool {
+        at.lat >= self.min_lat
+            && at.lat <= self.max_lat
+            && at.lon >= self.min_lon
+            && at.lon <= self.max_lon
+    }
+
+    /// Grow `bounds` to include `at`; `None` becomes the box of that one point.
+    pub fn extend(bounds: &mut Option<GeoBounds>, at: LatLon) {
+        let b = bounds.get_or_insert(GeoBounds::new(at.lat, at.lat, at.lon, at.lon));
+        b.min_lat = b.min_lat.min(at.lat);
+        b.max_lat = b.max_lat.max(at.lat);
+        b.min_lon = b.min_lon.min(at.lon);
+        b.max_lon = b.max_lon.max(at.lon);
+    }
+
+    /// The smallest box holding both `self` and `other`.
+    pub fn union(&self, other: &GeoBounds) -> GeoBounds {
+        GeoBounds::new(
+            self.min_lat.min(other.min_lat),
+            self.max_lat.max(other.max_lat),
+            self.min_lon.min(other.min_lon),
+            self.max_lon.max(other.max_lon),
+        )
     }
 
     pub fn width(&self) -> f64 {
@@ -32,8 +96,8 @@ impl GeoBounds {
         self.max_lat - self.min_lat
     }
 
-    pub fn center(&self) -> (f64, f64) {
-        (
+    pub fn center(&self) -> LatLon {
+        LatLon::new(
             (self.min_lat + self.max_lat) / 2.0,
             (self.min_lon + self.max_lon) / 2.0,
         )
@@ -41,17 +105,17 @@ impl GeoBounds {
 }
 
 /// Web Mercator projection utilities
-pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
+pub fn lat_lon_to_mercator(at: LatLon) -> Mercator {
     // Clamp latitude to avoid projection issues at poles
-    let clamped_lat = lat.clamp(-85.051128779807, 85.051128779807);
+    let clamped_lat = at.lat.clamp(-85.051128779807, 85.051128779807);
 
-    let x = lon * MERCATOR_HALF_WORLD_M / 180.0;
+    let x = at.lon * MERCATOR_HALF_WORLD_M / 180.0;
     let y = ((PI / 4.0) + (clamped_lat * PI / 360.0)).tan().ln() * MERCATOR_HALF_WORLD_M / PI;
 
     let x = if x.is_finite() { x } else { 0.0 };
     let y = if y.is_finite() { y } else { 0.0 };
 
-    (x, y)
+    Mercator { x, y }
 }
 
 /// Half the width of the Web Mercator world in metres (the projection's
@@ -68,36 +132,39 @@ const MAX_MERCATOR_LAT: f64 = 85.051128779807;
 
 /// Inverse of `lat_lon_to_mercator`: latitude clamped to the projection's
 /// limit, longitude clamped to [-180, 180].
-pub fn mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
-    let (lat, lon) = unproject(x, y);
+pub fn mercator_to_lat_lon(at: Mercator) -> LatLon {
+    let LatLon { lat, lon } = unproject(at);
     let lon = if lon.is_finite() {
         lon.clamp(-180.0, 180.0)
     } else {
         0.0
     };
-    (lat, lon)
+    LatLon { lat, lon }
 }
 
 /// Like `mercator_to_lat_lon`, but a longitude beyond the antimeridian wraps
 /// around into [-180, 180] instead of sticking to the edge.
-pub fn mercator_to_lat_lon_wrapped(x: f64, y: f64) -> (f64, f64) {
-    let (lat, mut lon) = unproject(x, y);
+pub fn mercator_to_lat_lon_wrapped(at: Mercator) -> LatLon {
+    let LatLon { lat, mut lon } = unproject(at);
     if !(-180.0..=180.0).contains(&lon) {
         lon = (lon + 180.0).rem_euclid(360.0) - 180.0;
     }
-    (lat, if lon.is_finite() { lon } else { 0.0 })
+    LatLon {
+        lat,
+        lon: if lon.is_finite() { lon } else { 0.0 },
+    }
 }
 
 /// Latitude (clamped, 0 if not finite) and unclamped longitude of a point.
-fn unproject(x: f64, y: f64) -> (f64, f64) {
-    let lon = x * 180.0 / MERCATOR_HALF_WORLD_M;
-    let lat = (2.0 * (y * PI / MERCATOR_HALF_WORLD_M).exp().atan() - PI / 2.0) * 180.0 / PI;
+fn unproject(at: Mercator) -> LatLon {
+    let lon = at.x * 180.0 / MERCATOR_HALF_WORLD_M;
+    let lat = (2.0 * (at.y * PI / MERCATOR_HALF_WORLD_M).exp().atan() - PI / 2.0) * 180.0 / PI;
     let lat = if lat.is_finite() {
         lat.clamp(-MAX_MERCATOR_LAT, MAX_MERCATOR_LAT)
     } else {
         0.0
     };
-    (lat, lon)
+    LatLon { lat, lon }
 }
 
 /// Coordinate transformation system for converting between geographic and screen coordinates
@@ -123,13 +190,15 @@ pub struct CoordinateTransform {
 }
 
 impl CoordinateTransform {
-    pub fn new(
-        center_lat: f64,
-        center_lon: f64,
-        zoom_level: f64,
-        screen_size: Size<Pixels>,
-    ) -> Self {
-        let (center_x, center_y) = lat_lon_to_mercator(center_lat, center_lon);
+    pub fn new(center: LatLon, zoom_level: f64, screen_size: Size<Pixels>) -> Self {
+        let LatLon {
+            lat: center_lat,
+            lon: center_lon,
+        } = center;
+        let Mercator {
+            x: center_x,
+            y: center_y,
+        } = lat_lon_to_mercator(center);
 
         // At zoom level 0, the entire world (40075016.686 m) fits in 256 pixels
         let world_width_meters = WORLD_WIDTH_M;
@@ -151,13 +220,13 @@ impl CoordinateTransform {
         let pixels_per_meter_x = screen_size.width.to_f64() / denom_x;
         let pixels_per_meter_y = screen_size.height.to_f64() / denom_y;
 
-        let (min_lat, min_lon) = mercator_to_lat_lon(mercator_min_x, mercator_min_y);
-        let (max_lat, max_lon) = mercator_to_lat_lon(mercator_max_x, mercator_max_y);
+        let min = mercator_to_lat_lon(Mercator::new(mercator_min_x, mercator_min_y));
+        let max = mercator_to_lat_lon(Mercator::new(mercator_max_x, mercator_max_y));
         let bounds = GeoBounds::new(
-            min_lat.min(max_lat),
-            max_lat.max(min_lat),
-            min_lon.min(max_lon),
-            max_lon.max(min_lon),
+            min.lat.min(max.lat),
+            max.lat.max(min.lat),
+            min.lon.min(max.lon),
+            max.lon.max(min.lon),
         );
 
         Self {
@@ -181,11 +250,11 @@ impl CoordinateTransform {
     /// screen pixels: the trig-free path for layers that cache Mercator
     /// coordinates.
     #[inline]
-    pub fn mercator_to_screen(&self, mx: f64, my: f64) -> GpuiPoint<Pixels> {
+    pub fn mercator_to_screen(&self, at: Mercator) -> GpuiPoint<Pixels> {
         let half_w = self.screen_size.width * 0.5;
         let half_h = self.screen_size.height * 0.5;
-        let x = half_w + px(((mx - self.mercator_center_x) * self.pixels_per_meter_x) as f32);
-        let y = half_h - px(((my - self.mercator_center_y) * self.pixels_per_meter_y) as f32);
+        let x = half_w + px(((at.x - self.mercator_center_x) * self.pixels_per_meter_x) as f32);
+        let y = half_h - px(((at.y - self.mercator_center_y) * self.pixels_per_meter_y) as f32);
         let x = if x.as_f32().is_finite() { x } else { half_w };
         let y = if y.as_f32().is_finite() { y } else { half_h };
         GpuiPoint { x, y }
@@ -204,10 +273,22 @@ impl CoordinateTransform {
         }
     }
 
-    /// Convert geographic coordinates (lat, lon) to screen coordinates (x, y)
-    pub fn geo_to_screen(&self, lat: f64, lon: f64) -> GpuiPoint<Pixels> {
-        let (merc_x, merc_y) = lat_lon_to_mercator(lat, lon);
-        let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
+    /// The view centre.
+    #[inline]
+    pub fn center(&self) -> LatLon {
+        LatLon::new(self.center_lat, self.center_lon)
+    }
+
+    /// Convert a geographic position to screen coordinates
+    pub fn geo_to_screen(&self, at: LatLon) -> GpuiPoint<Pixels> {
+        let Mercator {
+            x: merc_x,
+            y: merc_y,
+        } = lat_lon_to_mercator(at);
+        let Mercator {
+            x: center_merc_x,
+            y: center_merc_y,
+        } = lat_lon_to_mercator(self.center());
 
         let half_w = self.screen_size.width * 0.5;
         let half_h = self.screen_size.height * 0.5;
@@ -221,9 +302,12 @@ impl CoordinateTransform {
         GpuiPoint { x, y }
     }
 
-    /// Convert screen coordinates (x, y) to geographic coordinates (lat, lon)
-    pub fn screen_to_geo(&self, point: GpuiPoint<Pixels>) -> (f64, f64) {
-        let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
+    /// Convert screen coordinates to a geographic position
+    pub fn screen_to_geo(&self, point: GpuiPoint<Pixels>) -> LatLon {
+        let Mercator {
+            x: center_merc_x,
+            y: center_merc_y,
+        } = lat_lon_to_mercator(self.center());
 
         let merc_x = center_merc_x
             + (point.x - self.screen_size.width * 0.5).to_f64() / self.pixels_per_meter_x;
@@ -241,13 +325,13 @@ impl CoordinateTransform {
             center_merc_y
         };
 
-        mercator_to_lat_lon(merc_x, merc_y)
+        mercator_to_lat_lon(Mercator::new(merc_x, merc_y))
     }
 
     /// Convert screen coordinates directly to Web Mercator (EPSG:3857) meters,
     /// skipping the final lat/lon conversion `screen_to_geo` does. Used by
     /// box-select hit-testing, which queries an R-tree built in Mercator space.
-    pub fn screen_to_mercator(&self, point: GpuiPoint<Pixels>) -> (f64, f64) {
+    pub fn screen_to_mercator(&self, point: GpuiPoint<Pixels>) -> Mercator {
         let merc_x = self.mercator_center_x
             + (point.x - self.screen_size.width * 0.5).to_f64() / self.pixels_per_meter_x;
         let merc_y = self.mercator_center_y
@@ -264,23 +348,23 @@ impl CoordinateTransform {
             self.mercator_center_y
         };
 
-        (merc_x, merc_y)
+        Mercator::new(merc_x, merc_y)
     }
 
     /// Update the transform for a new center point (for panning)
-    pub fn pan_to(&mut self, new_center_lat: f64, new_center_lon: f64) {
-        let lat = if new_center_lat.is_finite() {
-            new_center_lat.clamp(-85.0, 85.0)
+    pub fn pan_to(&mut self, new_center: LatLon) {
+        let lat = if new_center.lat.is_finite() {
+            new_center.lat.clamp(-85.0, 85.0)
         } else {
             self.center_lat
         };
-        let lon = if new_center_lon.is_finite() {
-            new_center_lon.clamp(-180.0, 180.0)
+        let lon = if new_center.lon.is_finite() {
+            new_center.lon.clamp(-180.0, 180.0)
         } else {
             self.center_lon
         };
 
-        *self = Self::new(lat, lon, self.zoom_level, self.screen_size);
+        *self = Self::new(LatLon::new(lat, lon), self.zoom_level, self.screen_size);
     }
 
     /// Update the transform for a new zoom level
@@ -291,7 +375,7 @@ impl CoordinateTransform {
             self.zoom_level
         };
 
-        *self = Self::new(self.center_lat, self.center_lon, zoom, self.screen_size);
+        *self = Self::new(self.center(), zoom, self.screen_size);
     }
 
     /// Zoom in/out by a delta while keeping the zoom centered on a specific screen point
@@ -300,7 +384,10 @@ impl CoordinateTransform {
             return;
         }
 
-        let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
+        let Mercator {
+            x: center_merc_x,
+            y: center_merc_y,
+        } = lat_lon_to_mercator(self.center());
         let dx = (screen_point.x - self.screen_size.width * 0.5).to_f64() / self.pixels_per_meter_x;
         let dy =
             -(screen_point.y - self.screen_size.height * 0.5).to_f64() / self.pixels_per_meter_y;
@@ -308,7 +395,7 @@ impl CoordinateTransform {
         let mouse_merc_y = center_merc_y + dy;
 
         let new_zoom = (self.zoom_level + zoom_delta).clamp(1.0, MAX_MAP_ZOOM);
-        let new_transform = Self::new(self.center_lat, self.center_lon, new_zoom, self.screen_size);
+        let new_transform = Self::new(self.center(), new_zoom, self.screen_size);
 
         // The new center keeps mouse_merc_x/y under the same screen pixel.
         let new_dx = (screen_point.x - self.screen_size.width * 0.5).to_f64()
@@ -317,10 +404,9 @@ impl CoordinateTransform {
             / new_transform.pixels_per_meter_y;
         let new_center_merc_x = mouse_merc_x - new_dx;
         let new_center_merc_y = mouse_merc_y - new_dy;
-        let (new_center_lat, new_center_lon) =
-            mercator_to_lat_lon(new_center_merc_x, new_center_merc_y);
+        let new_center = mercator_to_lat_lon(Mercator::new(new_center_merc_x, new_center_merc_y));
 
-        *self = Self::new(new_center_lat, new_center_lon, new_zoom, self.screen_size);
+        *self = Self::new(new_center, new_zoom, self.screen_size);
     }
 
     /// Pan by a screen pixel offset
@@ -343,17 +429,16 @@ impl CoordinateTransform {
             0.0
         };
 
-        let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
-        let new_center_merc_x = center_merc_x + mercator_dx;
-        let new_center_merc_y = center_merc_y + mercator_dy;
-        let (new_center_lat, new_center_lon) =
-            mercator_to_lat_lon(new_center_merc_x, new_center_merc_y);
+        let center_merc = lat_lon_to_mercator(self.center());
+        let new_center_merc_x = center_merc.x + mercator_dx;
+        let new_center_merc_y = center_merc.y + mercator_dy;
+        let new_center = mercator_to_lat_lon(Mercator::new(new_center_merc_x, new_center_merc_y));
 
-        self.pan_to(new_center_lat, new_center_lon);
+        self.pan_to(new_center);
     }
 
-    pub fn is_visible(&self, lat: f64, lon: f64) -> bool {
-        self.bounds.contains(lat, lon)
+    pub fn is_visible(&self, at: LatLon) -> bool {
+        self.bounds.contains(at)
     }
 
     pub fn visible_bounds(&self) -> GeoBounds {
@@ -373,9 +458,9 @@ pub const POINT_ZOOM: f64 = 19.0;
 /// deepest tiles) past their own max zoom.
 pub const MAX_MAP_ZOOM: f64 = 23.0;
 
-/// Compute the `(center_lat, center_lon, zoom_level)` that fits a
-/// geographic bounding box within a viewport of `screen_width`×
-/// `screen_height` pixels, with a 20% margin and zoom clamped to `[1, 18]`.
+/// Compute the centre and zoom level that fit a geographic bounding box
+/// within a viewport of `screen_width`×`screen_height` pixels, with a 20%
+/// margin and zoom clamped to `[1, 18]`.
 ///
 /// Degenerate bounds: with no extent on one axis (all data at one latitude)
 /// only the other axis decides the zoom; with none on either (a single
@@ -384,13 +469,16 @@ pub const MAX_MAP_ZOOM: f64 = 23.0;
 /// The caller (`MapViewer::fit_to_osm_data`) is responsible for first
 /// reducing a dataset's nodes down to a min/max lat/lon bounding box.
 pub fn fit_bounds_to_viewport(
-    min_lat: f64,
-    max_lat: f64,
-    min_lon: f64,
-    max_lon: f64,
+    bounds: GeoBounds,
     screen_width: f64,
     screen_height: f64,
-) -> (f64, f64, f64) {
+) -> (LatLon, f64) {
+    let GeoBounds {
+        min_lat,
+        max_lat,
+        min_lon,
+        max_lon,
+    } = bounds;
     let mut center_lat = (min_lat + max_lat) / 2.0;
     let mut center_lon = (min_lon + max_lon) / 2.0;
 
@@ -401,7 +489,7 @@ pub fn fit_bounds_to_viewport(
     let flat_lat = (max_lat - min_lat).abs() < 1e-6;
     let flat_lon = (max_lon - min_lon).abs() < 1e-6;
     if flat_lat && flat_lon {
-        return (center_lat, center_lon, POINT_ZOOM);
+        return (LatLon::new(center_lat, center_lon), POINT_ZOOM);
     }
     if flat_lat {
         center_lat = min_lat;
@@ -412,10 +500,10 @@ pub fn fit_bounds_to_viewport(
 
     let margin = 1.2; // 20% margin
 
-    let (min_x, min_y) = lat_lon_to_mercator(min_lat, min_lon);
-    let (max_x, max_y) = lat_lon_to_mercator(max_lat, max_lon);
-    let bbox_width = (max_x - min_x).abs();
-    let bbox_height = (max_y - min_y).abs();
+    let min = lat_lon_to_mercator(LatLon::new(min_lat, min_lon));
+    let max = lat_lon_to_mercator(LatLon::new(max_lat, max_lon));
+    let bbox_width = (max.x - min.x).abs();
+    let bbox_height = (max.y - min.y).abs();
 
     let world_width_meters = WORLD_WIDTH_M;
     let tile_size = 256.0;
@@ -431,7 +519,7 @@ pub fn fit_bounds_to_viewport(
     };
     let zoom_level = zoom_x.min(zoom_y).clamp(1.0, 18.0);
 
-    (center_lat, center_lon, zoom_level)
+    (LatLon::new(center_lat, center_lon), zoom_level)
 }
 
 /// The Mercator-to-screen mapping of a [`CoordinateTransform`] as plain
@@ -470,14 +558,14 @@ pub fn is_point_valid(point: GpuiPoint<Pixels>) -> bool {
     point.x.as_f32().is_finite() && point.y.as_f32().is_finite()
 }
 
-/// `Some((lat, lon))` when both are finite and within [-90, 90] / [-180, 180].
-pub fn validate_coords(lat: f64, lon: f64) -> Option<(f64, f64)> {
-    if lat.is_finite()
-        && lon.is_finite()
-        && (-90.0..=90.0).contains(&lat)
-        && (-180.0..=180.0).contains(&lon)
+/// `Some(at)` when both are finite and within [-90, 90] / [-180, 180].
+pub fn validate_coords(at: LatLon) -> Option<LatLon> {
+    if at.lat.is_finite()
+        && at.lon.is_finite()
+        && (-90.0..=90.0).contains(&at.lat)
+        && (-180.0..=180.0).contains(&at.lon)
     {
-        Some((lat, lon))
+        Some(at)
     } else {
         None
     }
@@ -490,10 +578,10 @@ mod tests {
 
     #[test]
     fn mercator_to_lat_lon_clamps_longitude_past_the_antimeridian() {
-        let (_, lon) = mercator_to_lat_lon(MERCATOR_HALF_WORLD_M * 1.5, 0.0);
-        assert_eq!(lon, 180.0);
-        let (_, lon) = mercator_to_lat_lon_wrapped(MERCATOR_HALF_WORLD_M * 1.5, 0.0);
-        assert!((lon - -90.0).abs() < 1e-9);
+        let at = mercator_to_lat_lon(Mercator::new(MERCATOR_HALF_WORLD_M * 1.5, 0.0));
+        assert_eq!(at.lon, 180.0);
+        let at = mercator_to_lat_lon_wrapped(Mercator::new(MERCATOR_HALF_WORLD_M * 1.5, 0.0));
+        assert!((at.lon - -90.0).abs() < 1e-9);
     }
 
     #[test]
@@ -516,11 +604,13 @@ mod tests {
         ];
         for &lat in &lats {
             for &lon in &lons {
-                let (x, y) = lat_lon_to_mercator(lat, lon);
-                let (lat2, lon2) = mercator_to_lat_lon(x, y);
+                let m = lat_lon_to_mercator(LatLon::new(lat, lon));
+                let back = mercator_to_lat_lon(m);
                 assert!(
-                    (lat - lat2).abs() < 1e-7 && (lon - lon2).abs() < 1e-7,
-                    "({lat}, {lon}) -> ({lat2}, {lon2})"
+                    (lat - back.lat).abs() < 1e-7 && (lon - back.lon).abs() < 1e-7,
+                    "({lat}, {lon}) -> ({}, {})",
+                    back.lat,
+                    back.lon
                 );
             }
         }
@@ -528,18 +618,70 @@ mod tests {
 
     #[test]
     fn mercator_clamps_beyond_the_poles() {
-        let (_, y_max) = lat_lon_to_mercator(85.051128779807, 0.0);
-        let (_, y_over) = lat_lon_to_mercator(89.9, 0.0);
+        let y_max = lat_lon_to_mercator(LatLon::new(85.051128779807, 0.0)).y;
+        let y_over = lat_lon_to_mercator(LatLon::new(89.9, 0.0)).y;
         assert_eq!(y_max, y_over);
-        let (lat, _) = mercator_to_lat_lon(0.0, y_over);
-        assert!((lat - 85.051128779807).abs() < 1e-6);
+        let at = mercator_to_lat_lon(Mercator::new(0.0, y_over));
+        assert!((at.lat - 85.051128779807).abs() < 1e-6);
+    }
+
+    #[test]
+    fn longitude_maps_to_x_and_latitude_to_y() {
+        // Longitude drives x, latitude drives y: the order the two types
+        // exist to keep straight.
+        let east = lat_lon_to_mercator(LatLon::new(0.0, 180.0));
+        assert!((east.x - MERCATOR_HALF_WORLD_M).abs() < 1e-6);
+        assert!(east.y.abs() < 1e-6);
+        let north = lat_lon_to_mercator(LatLon::new(45.0, 0.0));
+        assert!(north.x.abs() < 1e-6);
+        assert!(north.y > 5.0e6);
+        let back = mercator_to_lat_lon(Mercator::new(MERCATOR_HALF_WORLD_M / 2.0, 0.0));
+        assert!((back.lon - 90.0).abs() < 1e-9 && back.lat.abs() < 1e-9);
+    }
+
+    #[test]
+    fn non_finite_input_projects_to_the_origin() {
+        let m = lat_lon_to_mercator(LatLon::new(f64::NAN, f64::NAN));
+        assert_eq!((m.x, m.y), (0.0, 0.0));
+        let at = mercator_to_lat_lon(Mercator::new(f64::NAN, f64::NAN));
+        assert_eq!((at.lat, at.lon), (0.0, 0.0));
+    }
+
+    #[test]
+    fn validate_coords_keeps_the_position_or_rejects_it() {
+        let ok = LatLon::new(40.0, -74.0);
+        assert_eq!(validate_coords(ok), Some(ok));
+        assert_eq!(validate_coords(LatLon::new(91.0, 0.0)), None);
+        assert_eq!(validate_coords(LatLon::new(0.0, 181.0)), None);
+        assert_eq!(validate_coords(LatLon::new(f64::NAN, 0.0)), None);
+        // A swapped pair is only caught when a value does not fit the other range.
+        assert_eq!(validate_coords(LatLon::new(120.0, -74.0)), None);
+    }
+
+    #[test]
+    fn geo_bounds_contains_center_and_extend() {
+        let b = GeoBounds::new(10.0, 20.0, 30.0, 50.0);
+        assert!(b.contains(LatLon::new(15.0, 40.0)));
+        assert!(!b.contains(LatLon::new(40.0, 15.0)));
+        assert_eq!(b.center(), LatLon::new(15.0, 40.0));
+
+        let mut grown = None;
+        GeoBounds::extend(&mut grown, LatLon::new(1.0, 2.0));
+        assert_eq!(grown, Some(GeoBounds::new(1.0, 1.0, 2.0, 2.0)));
+        GeoBounds::extend(&mut grown, LatLon::new(-3.0, 5.0));
+        GeoBounds::extend(&mut grown, LatLon::new(0.0, -1.0));
+        assert_eq!(grown, Some(GeoBounds::new(-3.0, 1.0, -1.0, 5.0)));
     }
 
     #[test]
     fn projector_agrees_with_mercator_to_screen() {
-        let t = CoordinateTransform::new(40.7128, -74.0060, 12.0, size(px(800.0), px(600.0)));
+        let t = CoordinateTransform::new(
+            LatLon::new(40.7128, -74.0060),
+            12.0,
+            size(px(800.0), px(600.0)),
+        );
         let p = t.projector();
-        let (cx, cy) = lat_lon_to_mercator(40.7128, -74.0060);
+        let c = lat_lon_to_mercator(LatLon::new(40.7128, -74.0060));
         for (dx, dy) in [
             (0.0, 0.0),
             (1.0, -1.0),
@@ -547,9 +689,9 @@ mod tests {
             (20_000.0, 15_000.0),
             (-1.0e6, 1.0e6),
         ] {
-            let (mx, my) = (cx + dx, cy + dy);
-            let a = t.mercator_to_screen(mx, my);
-            let (bx, by) = p.to_screen(mx, my);
+            let at = Mercator::new(c.x + dx, c.y + dy);
+            let a = t.mercator_to_screen(at);
+            let (bx, by) = p.to_screen(at.x, at.y);
             assert!((a.x.as_f32() - bx).abs() < 1e-3, "x at ({dx}, {dy})");
             assert!((a.y.as_f32() - by).abs() < 1e-3, "y at ({dx}, {dy})");
         }
@@ -557,7 +699,8 @@ mod tests {
 
     #[test]
     fn zoom_can_go_past_20_up_to_max() {
-        let mut t = CoordinateTransform::new(40.0, -74.0, 19.0, size(px(800.0), px(600.0)));
+        let mut t =
+            CoordinateTransform::new(LatLon::new(40.0, -74.0), 19.0, size(px(800.0), px(600.0)));
         t.zoom_to(22.0);
         assert_eq!(t.zoom_level, 22.0);
         t.zoom_at_point(gpui::point(px(100.0), px(100.0)), 10.0);
@@ -568,77 +711,94 @@ mod tests {
     #[test]
     fn test_coordinate_conversion() {
         let screen_size = size(px(800.0), px(600.0));
-        let transform = CoordinateTransform::new(40.7128, -74.0060, 10.0, screen_size);
+        let transform = CoordinateTransform::new(LatLon::new(40.7128, -74.0060), 10.0, screen_size);
 
-        let screen_center = transform.geo_to_screen(40.7128, -74.0060);
+        let screen_center = transform.geo_to_screen(LatLon::new(40.7128, -74.0060));
         assert!((screen_center.x.as_f32() - 400.0).abs() < 1.0);
         assert!((screen_center.y.as_f32() - 300.0).abs() < 1.0);
 
-        let original_lat = 40.7500;
-        let original_lon = -73.9000;
-        let screen_point = transform.geo_to_screen(original_lat, original_lon);
-        let (converted_lat, converted_lon) = transform.screen_to_geo(screen_point);
+        let original = LatLon::new(40.7500, -73.9000);
+        let screen_point = transform.geo_to_screen(original);
+        let converted = transform.screen_to_geo(screen_point);
 
-        assert!((converted_lat - original_lat).abs() < 0.001);
-        assert!((converted_lon - original_lon).abs() < 0.001);
+        assert!((converted.lat - original.lat).abs() < 0.001);
+        assert!((converted.lon - original.lon).abs() < 0.001);
+    }
+
+    #[test]
+    fn the_centre_round_trips_through_the_transform() {
+        let t = CoordinateTransform::new(LatLon::new(12.5, 99.25), 8.0, size(px(640.0), px(480.0)));
+        assert_eq!(t.center(), LatLon::new(12.5, 99.25));
+        let m = lat_lon_to_mercator(t.center());
+        assert_eq!((m.x, m.y), (t.mercator_center_x, t.mercator_center_y));
     }
 
     #[test]
     fn test_screen_to_mercator_round_trip() {
         let screen_size = size(px(800.0), px(600.0));
-        let transform = CoordinateTransform::new(40.7128, -74.0060, 12.0, screen_size);
+        let transform = CoordinateTransform::new(LatLon::new(40.7128, -74.0060), 12.0, screen_size);
 
         // Offsets from the viewport's own mercator center, not absolute
         // mercator coordinates: real map viewports are always centered near
         // their content, so this exercises the round trip at a screen-pixel
         // magnitude the f32 `Pixels` type can represent precisely.
-        let original_mx = transform.mercator_center_x + 100.0;
-        let original_my = transform.mercator_center_y - 50.0;
-        let screen_point = transform.mercator_to_screen(original_mx, original_my);
-        let (mx, my) = transform.screen_to_mercator(screen_point);
+        let original = Mercator::new(
+            transform.mercator_center_x + 100.0,
+            transform.mercator_center_y - 50.0,
+        );
+        let screen_point = transform.mercator_to_screen(original);
+        let Mercator { x: mx, y: my } = transform.screen_to_mercator(screen_point);
 
         assert!(
-            (mx - original_mx).abs() < 0.01,
+            (mx - original.x).abs() < 0.01,
             "mx: {} vs {}",
             mx,
-            original_mx
+            original.x
         );
         assert!(
-            (my - original_my).abs() < 0.01,
+            (my - original.y).abs() < 0.01,
             "my: {} vs {}",
             my,
-            original_my
+            original.y
         );
+    }
+
+    fn fit(
+        min_lat: f64,
+        max_lat: f64,
+        min_lon: f64,
+        max_lon: f64,
+        w: f64,
+        h: f64,
+    ) -> (LatLon, f64) {
+        fit_bounds_to_viewport(GeoBounds::new(min_lat, max_lat, min_lon, max_lon), w, h)
     }
 
     #[test]
     fn fit_bounds_centers_on_the_bbox_midpoint() {
-        let (center_lat, center_lon, zoom) =
-            fit_bounds_to_viewport(40.0, 41.0, -74.5, -73.5, 800.0, 600.0);
-        assert!((center_lat - 40.5).abs() < 1e-9);
-        assert!((center_lon - (-74.0)).abs() < 1e-9);
+        let (center, zoom) = fit(40.0, 41.0, -74.5, -73.5, 800.0, 600.0);
+        assert!((center.lat - 40.5).abs() < 1e-9);
+        assert!((center.lon - (-74.0)).abs() < 1e-9);
         assert!((1.0..=18.0).contains(&zoom));
     }
 
     #[test]
     fn fit_bounds_zoom_clamped_to_max_for_a_tiny_bbox() {
-        let (_, _, zoom) =
-            fit_bounds_to_viewport(40.7127, 40.7129, -74.0061, -74.0059, 800.0, 600.0);
+        let (_, zoom) = fit(40.7127, 40.7129, -74.0061, -74.0059, 800.0, 600.0);
         assert!((zoom - 18.0).abs() < 1e-9);
     }
 
     #[test]
     fn fit_bounds_zoom_clamped_to_min_for_a_huge_bbox() {
-        let (_, _, zoom) = fit_bounds_to_viewport(-85.0, 85.0, -180.0, 180.0, 800.0, 600.0);
+        let (_, zoom) = fit(-85.0, 85.0, -180.0, 180.0, 800.0, 600.0);
         assert!((zoom - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn fit_bounds_degenerate_single_point_does_not_panic_and_centers_correctly() {
-        let (center_lat, center_lon, zoom) =
-            fit_bounds_to_viewport(40.7128, 40.7128, -74.0060, -74.0060, 800.0, 600.0);
-        assert!((center_lat - 40.7128).abs() < 1e-9);
-        assert!((center_lon - (-74.0060)).abs() < 1e-9);
+        let (center, zoom) = fit(40.7128, 40.7128, -74.0060, -74.0060, 800.0, 600.0);
+        assert!((center.lat - 40.7128).abs() < 1e-9);
+        assert!((center.lon - (-74.0060)).abs() < 1e-9);
         assert!(zoom.is_finite());
         // Centred on the point at an editing zoom, not zoomed out to ~z16.
         assert!((zoom - POINT_ZOOM).abs() < 1e-9);
@@ -648,7 +808,7 @@ mod tests {
     fn fit_bounds_zero_extent_never_zooms_out_below_editing_zoom() {
         // Whatever the window size, a point is centred at z19.
         for (w, h) in [(300.0, 200.0), (800.0, 600.0), (3000.0, 2000.0)] {
-            let (_, _, zoom) = fit_bounds_to_viewport(10.0, 10.0, 20.0, 20.0, w, h);
+            let (_, zoom) = fit(10.0, 10.0, 20.0, 20.0, w, h);
             assert!(zoom >= 19.0, "{w}x{h} gave z{zoom}");
         }
     }
@@ -657,10 +817,9 @@ mod tests {
     fn fit_bounds_degenerate_zero_height_only() {
         // Same latitude, distinct longitudes: only the longitude axis sets
         // the zoom.
-        let (center_lat, center_lon, zoom) =
-            fit_bounds_to_viewport(40.0, 40.0, -75.0, -73.0, 800.0, 600.0);
-        assert!((center_lat - 40.0).abs() < 1e-9);
-        assert!((center_lon - (-74.0)).abs() < 1e-9);
+        let (center, zoom) = fit(40.0, 40.0, -75.0, -73.0, 800.0, 600.0);
+        assert!((center.lat - 40.0).abs() < 1e-9);
+        assert!((center.lon - (-74.0)).abs() < 1e-9);
         assert!(zoom.is_finite());
     }
 
@@ -668,10 +827,10 @@ mod tests {
     fn fit_bounds_a_flat_short_line_fits_by_its_length_not_a_padded_kilometre() {
         // A way 20 m long and exactly horizontal must not be padded to 1 km
         // tall (z16).
-        let (_, _, zoom) = fit_bounds_to_viewport(40.712, 40.712, -74.0062, -74.0060, 800.0, 600.0);
+        let (_, zoom) = fit(40.712, 40.712, -74.0062, -74.0060, 800.0, 600.0);
         assert!((zoom - 18.0).abs() < 1e-9, "z{zoom}");
         // Likewise exactly vertical.
-        let (_, _, zoom) = fit_bounds_to_viewport(40.7120, 40.7122, -74.006, -74.006, 800.0, 600.0);
+        let (_, zoom) = fit(40.7120, 40.7122, -74.006, -74.006, 800.0, 600.0);
         assert!((zoom - 18.0).abs() < 1e-9, "z{zoom}");
     }
 }

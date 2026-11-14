@@ -2,6 +2,7 @@
 //! outline and marker is built the same way and the colours live in one place.
 
 use gpui::{fill, point, px, size, Bounds, PathBuilder, Pixels, Point, Rgba, Window};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::viewport::Viewport;
 
 /// The colour of every preview that shows what a click would make or keep.
@@ -34,7 +35,7 @@ pub(crate) struct PreviewFrame<'a> {
 impl PreviewFrame<'_> {
     /// The window position of a geo `(lat, lon)`.
     pub(super) fn geo(&self, (lat, lon): (f64, f64)) -> Point<Pixels> {
-        let p = self.viewport.geo_to_screen(lat, lon);
+        let p = self.viewport.geo_to_screen(LatLon::new(lat, lon));
         self.local(p)
     }
 

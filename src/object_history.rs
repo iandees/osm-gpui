@@ -369,7 +369,10 @@ pub fn diff_states(prev: Option<&ObjectState>, cur: &ObjectState) -> StateChange
     }
 
     if let (Some((alat, alon)), Some((blat, blon))) = (before.position, cur.position) {
-        let d = crate::imagery_offset::distance_m(alat, alon, blat, blon);
+        let d = crate::imagery_offset::distance_m(
+            crate::coordinates::LatLon::new(alat, alon),
+            crate::coordinates::LatLon::new(blat, blon),
+        );
         if d > MOVE_THRESHOLD_M {
             change.moved_m = Some(d);
         }

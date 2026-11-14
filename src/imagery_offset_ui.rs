@@ -19,6 +19,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     v_flex, ActiveTheme, Sizable,
 };
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::imagery_offset::{self, ImageryOffset, Nudge, OffsetSession};
 use osm_gpui::layers::{LayerId, LayerKind};
 use osm_gpui::tr;
@@ -114,12 +115,12 @@ impl MapViewer {
     /// one if it was made within 10 km of the view centre, else none. (A
     /// remembered offset elsewhere is left in the store untouched.)
     pub(crate) fn saved_imagery_offset(&self, imagery_id: &str) -> ImageryOffset {
-        let (lat, lon) = self.offset_anchor();
-        imagery_offset::lookup(imagery_id, lat, lon).unwrap_or(ImageryOffset::ZERO)
+        let at = self.offset_anchor();
+        imagery_offset::lookup(imagery_id, at).unwrap_or(ImageryOffset::ZERO)
     }
 
     /// Where the view is looking, for remembering an offset "here".
-    fn offset_anchor(&self) -> (f64, f64) {
+    fn offset_anchor(&self) -> LatLon {
         self.viewport.center()
     }
 
@@ -132,8 +133,8 @@ impl MapViewer {
         else {
             return;
         };
-        let (lat, lon) = self.offset_anchor();
-        imagery_offset::remember(&id, offset, lat, lon);
+        let at = self.offset_anchor();
+        imagery_offset::remember(&id, offset, at);
     }
 
     /// Enter the mode for `layer`.
@@ -344,7 +345,7 @@ impl MapViewer {
         left_pressed: bool,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (zoom, lat) = (self.viewport.zoom_level(), self.viewport.center().0);
+        let (zoom, lat) = (self.viewport.zoom_level(), self.viewport.center().lat);
         let Some(adjust) = self.offset_adjust.as_mut() else {
             return false;
         };
@@ -391,7 +392,7 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (zoom, lat) = (self.viewport.zoom_level(), self.viewport.center().0);
+        let (zoom, lat) = (self.viewport.zoom_level(), self.viewport.center().lat);
         let Some(adjust) = self.offset_adjust.as_mut() else {
             return false;
         };
@@ -614,7 +615,7 @@ mod tests {
         let window = cx.add_window(MapViewer::new);
         window
             .update(cx, |view, _window, _cx| {
-                view.viewport.pan_to(40.7125, -74.0056);
+                view.viewport.pan_to(LatLon::new(40.7125, -74.0056));
                 view.viewport.set_zoom(19.0);
                 let id = view.layer_manager.alloc_id();
                 let layer = TileLayer::new(id, view.tile_cache.clone());

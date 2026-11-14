@@ -1,6 +1,8 @@
 //! Relation overlays: member highlights and restriction markers.
 
 use super::super::{lat_lon_to_mercator, OsmLayer, RESTRICTION_OFFSET_PX};
+use crate::coordinates::LatLon;
+use crate::coordinates::Mercator;
 use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
@@ -142,7 +144,7 @@ fn restriction_markers_sit_at_the_via_and_skip_missing_vias() {
     assert_eq!(markers.iter().map(|m| m.0).collect::<Vec<_>>(), [20, 22]);
     let (_, x, y, only) = markers[0];
     assert!(!only);
-    let (ex, ey) = lat_lon_to_mercator(40.0, -73.999);
+    let Mercator { x: ex, y: ey } = lat_lon_to_mercator(LatLon::new(40.0, -73.999));
     assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
 }
 
@@ -151,7 +153,7 @@ fn moving_or_deleting_the_via_node_updates_the_marker() {
     let mut layer = layer();
     layer.commit_node_moves(&[(2, 40.0005, -73.998)]).unwrap();
     let (_, x, y, _) = layer.restriction_markers()[0];
-    let (ex, ey) = lat_lon_to_mercator(40.0005, -73.998);
+    let Mercator { x: ex, y: ey } = lat_lon_to_mercator(LatLon::new(40.0005, -73.998));
     assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
 
     // Node 4 is a standalone via, so it can be deleted.
@@ -164,8 +166,12 @@ fn moving_or_deleting_the_via_node_updates_the_marker() {
 #[test]
 fn clicking_the_marker_selects_the_restriction_only_at_vertex_zoom() {
     let mut layer = layer();
-    let v = Viewport::new(40.0005, -73.9985, 18.0, size(px(800.0), px(600.0)));
-    let via = v.geo_to_screen(40.0, -73.999);
+    let v = Viewport::new(
+        LatLon::new(40.0005, -73.9985),
+        18.0,
+        size(px(800.0), px(600.0)),
+    );
+    let via = v.geo_to_screen(LatLon::new(40.0, -73.999));
     let on_marker = point(
         via.x + px(RESTRICTION_OFFSET_PX.0),
         via.y + px(RESTRICTION_OFFSET_PX.1),
@@ -186,8 +192,12 @@ fn clicking_the_marker_selects_the_restriction_only_at_vertex_zoom() {
     let hit = layer.hit_test(&v, point(via.x, via.y));
     assert_eq!(hit[0].kind, FeatureKind::Node);
     // Zoomed out, no marker to click.
-    let far = Viewport::new(40.0005, -73.9985, 12.0, size(px(800.0), px(600.0)));
-    let via = far.geo_to_screen(40.0, -73.999);
+    let far = Viewport::new(
+        LatLon::new(40.0005, -73.9985),
+        12.0,
+        size(px(800.0), px(600.0)),
+    );
+    let via = far.geo_to_screen(LatLon::new(40.0, -73.999));
     let hit = layer.hit_test(
         &far,
         point(

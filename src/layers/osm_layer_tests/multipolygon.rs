@@ -1,6 +1,7 @@
 //! Multipolygon assembly, area state and hit resolution in the layer.
 
 use super::super::{MpState, OsmLayer};
+use crate::coordinates::LatLon;
 use crate::layers::{EditableLayer, LayerId};
 use crate::multipolygon::Problem;
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
@@ -120,11 +121,15 @@ fn layer() -> OsmLayer {
 }
 
 fn viewport() -> Viewport {
-    Viewport::new(40.006, -73.985, 14.0, size(px(800.0), px(600.0)))
+    Viewport::new(
+        LatLon::new(40.006, -73.985),
+        14.0,
+        size(px(800.0), px(600.0)),
+    )
 }
 
 fn at(viewport: &Viewport, c: f64, r: f64) -> Point<Pixels> {
-    let p = viewport.geo_to_screen(40.0 + r * 0.001, -74.0 + c * 0.001);
+    let p = viewport.geo_to_screen(LatLon::new(40.0 + r * 0.001, -74.0 + c * 0.001));
     point(p.x, p.y)
 }
 

@@ -2,6 +2,7 @@
 //! is aligned to a squared way.
 
 use gpui::{CursorStyle, Pixels, Point, Window};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
 use osm_gpui::interaction::{self, Interaction};
 use osm_gpui::layers::LayerId;
@@ -70,7 +71,7 @@ pub(super) fn press(view: &mut MapViewer, position: Point<Pixels>) -> bool {
     }
     let placed_first_corner = view.building_progress().is_none();
     if placed_first_corner {
-        let corner = view.viewport.screen_to_geo(position);
+        let corner = view.viewport.screen_to_geo(position).to_pair();
         view.set_building_progress(Some(BuildingProgress {
             corner_a: corner,
             corner_b: None,
@@ -104,7 +105,7 @@ pub(super) fn release(view: &mut MapViewer, up_pos: Point<Pixels>) -> bool {
     if press.placed_first_corner && !moved {
         return true;
     }
-    let opposite = view.viewport.screen_to_geo(up_pos);
+    let opposite = view.viewport.screen_to_geo(up_pos).to_pair();
     if let Some(corners) = osm_gpui::building::rectangle_from_opposite_corners(
         progress.corner_a,
         opposite,
@@ -123,7 +124,7 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>) {
     let Some(layer_id) = view.active_layer else {
         return;
     };
-    let (lat, lon) = view.viewport.screen_to_geo(screen_pt);
+    let LatLon { lat, lon } = view.viewport.screen_to_geo(screen_pt);
 
     match view.take_building_progress() {
         None => {
@@ -195,7 +196,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
                 .and_then(|(reference, mouse)| {
                     osm_gpui::building::rectangle_from_opposite_corners(
                         progress.corner_a,
-                        frame.viewport.screen_to_geo(mouse),
+                        frame.viewport.screen_to_geo(mouse).to_pair(),
                         reference.orientation,
                     )
                 });
@@ -223,7 +224,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
         Some(corner_b) => {
             let cursor_geo = view
                 .last_mouse_pos
-                .map(|p| frame.viewport.screen_to_geo(p))
+                .map(|p| frame.viewport.screen_to_geo(p).to_pair())
                 .unwrap_or(corner_b);
             let (far_a, far_b) =
                 view.rectangle_from_geo_edge(progress.corner_a, corner_b, cursor_geo);

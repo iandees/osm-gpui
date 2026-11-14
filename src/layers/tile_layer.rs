@@ -1,3 +1,4 @@
+use crate::coordinates::Mercator;
 use gpui::*;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -107,7 +108,7 @@ impl TileLayer {
 
     /// The offset as a Web Mercator shift, scaled for the view's latitude.
     fn mercator_offset(&self, viewport: &Viewport) -> (f64, f64) {
-        offset_to_mercator(self.offset, viewport.center().0)
+        offset_to_mercator(self.offset, viewport.center().lat)
     }
 
     pub fn with_min_zoom(mut self, min_zoom: Option<u32>) -> Self {
@@ -280,8 +281,8 @@ fn tile_screen_rect_shifted(
         min_y,
         max_y,
     } = tile.mercator_bounds();
-    let top_left = viewport.mercator_to_screen(min_x + off_x, max_y + off_y);
-    let bottom_right = viewport.mercator_to_screen(max_x + off_x, min_y + off_y);
+    let top_left = viewport.mercator_to_screen(Mercator::new(min_x + off_x, max_y + off_y));
+    let bottom_right = viewport.mercator_to_screen(Mercator::new(max_x + off_x, min_y + off_y));
 
     let half_overlap = px(TILE_OVERLAP_PX / 2.0);
     let width = (bottom_right.x - top_left.x).abs() + px(TILE_OVERLAP_PX);
@@ -514,6 +515,7 @@ mod tests {
         compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, render_tile_zoom,
         tile_screen_rect, wanted_urls, OSM_CARTO_TEMPLATE, TILE_OVERLAP_PX,
     };
+    use crate::coordinates::{LatLon, Mercator};
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
     use gpui::{px, size};
@@ -533,13 +535,13 @@ mod tests {
     #[test]
     fn shared_corner_of_four_tiles_is_covered_from_every_side() {
         let screen_size = size(px(801.0), px(600.0));
-        let viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
+        let viewport = Viewport::new(LatLon::new(40.71277, -74.00591), 12.37, screen_size);
         let tiles = adjacent_tiles(12);
 
         // Corner mercator coordinate shared by all four tiles: top-left
         // tile's right edge / bottom edge.
         let a = tiles[0].mercator_bounds();
-        let corner = viewport.mercator_to_screen(a.max_x, a.min_y);
+        let corner = viewport.mercator_to_screen(Mercator::new(a.max_x, a.min_y));
 
         // The corner must be a comfortable *interior* point of each tile's
         // box, not merely on its boundary — an edge that only touches the
@@ -570,7 +572,7 @@ mod tests {
     #[test]
     fn adjacent_tiles_overlap_with_no_gap() {
         let screen_size = size(px(801.0), px(600.0));
-        let viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
+        let viewport = Viewport::new(LatLon::new(40.71277, -74.00591), 12.37, screen_size);
         let tiles = adjacent_tiles(12);
 
         let (x_a, _, width_a, _) = tile_screen_rect(&viewport, &tiles[0]);
@@ -601,7 +603,7 @@ mod tests {
     #[test]
     fn tiles_pan_in_lockstep_without_relative_jiggle() {
         let screen_size = size(px(801.0), px(600.0));
-        let mut viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
+        let mut viewport = Viewport::new(LatLon::new(40.71277, -74.00591), 12.37, screen_size);
         let tiles = adjacent_tiles(12);
 
         let mut prev_x: Vec<f32> = tiles
@@ -642,7 +644,7 @@ mod tests {
     #[test]
     fn tiles_zoom_smoothly_without_disproportionate_jumps() {
         let screen_size = size(px(801.0), px(600.0));
-        let mut viewport = Viewport::new(40.71277, -74.00591, 12.37, screen_size);
+        let mut viewport = Viewport::new(LatLon::new(40.71277, -74.00591), 12.37, screen_size);
         let tile = TileCoord::new(1206, 1539, 12);
 
         let mut prev_x = tile_screen_rect(&viewport, &tile).0.as_f32();
@@ -668,16 +670,20 @@ mod tests {
         use super::tile_screen_rect_shifted;
         use crate::imagery_offset::{metres_to_pixels, offset_to_mercator, ImageryOffset};
 
-        let viewport = Viewport::new(40.71277, -74.00591, 18.0, size(px(900.0), px(600.0)));
+        let viewport = Viewport::new(
+            LatLon::new(40.71277, -74.00591),
+            18.0,
+            size(px(900.0), px(600.0)),
+        );
         let tile = TileCoord::new(77_000, 98_500, 18);
         let offset = ImageryOffset::new(3.2, -1.75);
         let (zero_x, zero_y, _, _) = tile_screen_rect(&viewport, &tile);
         let (x, y, _, _) = tile_screen_rect_shifted(
             &viewport,
             &tile,
-            offset_to_mercator(offset, viewport.center().0),
+            offset_to_mercator(offset, viewport.center().lat),
         );
-        let (dx, dy) = metres_to_pixels(offset, 18.0, viewport.center().0);
+        let (dx, dy) = metres_to_pixels(offset, 18.0, viewport.center().lat);
         assert!((x.as_f32() - zero_x.as_f32() - dx as f32).abs() < 0.01);
         assert!((y.as_f32() - zero_y.as_f32() - dy as f32).abs() < 0.01);
         assert!(dx > 0.0 && dy > 0.0, "east is right, south is down");

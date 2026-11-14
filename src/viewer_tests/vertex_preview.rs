@@ -3,6 +3,7 @@
 use super::{feature, setup};
 use crate::{menu, EditMode, MapViewer};
 use gpui::{point, px, Context, MouseMoveEvent, MouseUpEvent, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::interaction::Interaction;
 
 /// Window position of a map-local point (inverse of `window_to_map`).
@@ -60,7 +61,7 @@ fn node_screen(view: &MapViewer, id: i64) -> gpui::Point<gpui::Pixels> {
         .and_then(|l| l.as_editable())
         .and_then(|e| e.node_lat_lon(id))
         .unwrap();
-    view.viewport.geo_to_screen(lat, lon)
+    view.viewport.geo_to_screen(LatLon::new(lat, lon))
 }
 
 /// `setup`, switched to Select mode.

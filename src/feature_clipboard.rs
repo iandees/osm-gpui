@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon_wrapped};
+use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon_wrapped, LatLon, Mercator};
 use crate::edit_ops::{replay, EditOp};
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::limits::{self, Limits};
@@ -56,7 +56,7 @@ pub enum PastePosition {
     /// Exactly where they were copied from.
     Source,
     /// Moved so the centre of the copied features' bounding box lands here.
-    CenterAt { lat: f64, lon: f64 },
+    CenterAt(LatLon),
 }
 
 /// Why a paste did nothing.
@@ -193,49 +193,51 @@ impl FeatureClipboard {
     /// when no node was copied (a lone relation has no position of its own).
     /// The box is taken in Web Mercator, so "centre" means the middle of what
     /// the map shows.
-    pub fn center(&self) -> Option<(f64, f64)> {
-        self.mercator_center()
-            .map(|(x, y)| mercator_to_lat_lon_wrapped(x, y))
+    pub fn center(&self) -> Option<LatLon> {
+        self.mercator_center().map(mercator_to_lat_lon_wrapped)
     }
 
-    fn mercator_center(&self) -> Option<(f64, f64)> {
+    fn mercator_center(&self) -> Option<Mercator> {
         let mut bounds: Option<(f64, f64, f64, f64)> = None;
         for node in &self.nodes {
-            let (x, y) = lat_lon_to_mercator(node.lat, node.lon);
+            let Mercator { x, y } = lat_lon_to_mercator(LatLon::new(node.lat, node.lon));
             let b = bounds.get_or_insert((x, y, x, y));
             b.0 = b.0.min(x);
             b.1 = b.1.min(y);
             b.2 = b.2.max(x);
             b.3 = b.3.max(y);
         }
-        bounds.map(|(min_x, min_y, max_x, max_y)| ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0))
+        bounds.map(|(min_x, min_y, max_x, max_y)| {
+            Mercator::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+        })
     }
 
     /// The Mercator shift that puts the centre at `position`; `(0, 0)` for
     /// the source position, for a clipboard without nodes and for a
     /// position that is not a number.
     fn mercator_shift(&self, position: PastePosition) -> (f64, f64) {
-        let PastePosition::CenterAt { lat, lon } = position else {
+        let PastePosition::CenterAt(at) = position else {
             return (0.0, 0.0);
         };
-        if !lat.is_finite() || !lon.is_finite() {
+        if !at.lat.is_finite() || !at.lon.is_finite() {
             return (0.0, 0.0);
         }
-        let Some((cx, cy)) = self.mercator_center() else {
+        let Some(center) = self.mercator_center() else {
             return (0.0, 0.0);
         };
-        let (tx, ty) = lat_lon_to_mercator(lat, lon);
-        (tx - cx, ty - cy)
+        let target = lat_lon_to_mercator(at);
+        (target.x - center.x, target.y - center.y)
     }
 
     /// Where the copied node `node` ends up under `position`.
-    pub fn pasted_position(&self, node: &ClipNode, position: PastePosition) -> (f64, f64) {
+    pub fn pasted_position(&self, node: &ClipNode, position: PastePosition) -> LatLon {
         let (dx, dy) = self.mercator_shift(position);
+        let source = LatLon::new(node.lat, node.lon);
         if dx == 0.0 && dy == 0.0 {
-            return (node.lat, node.lon);
+            return source;
         }
-        let (x, y) = lat_lon_to_mercator(node.lat, node.lon);
-        mercator_to_lat_lon_wrapped(x + dx, y + dy)
+        let Mercator { x, y } = lat_lon_to_mercator(source);
+        mercator_to_lat_lon_wrapped(Mercator::new(x + dx, y + dy))
     }
 
     /// Check the clipboard against the server's size limits, before anything
@@ -336,7 +338,7 @@ impl FeatureClipboard {
 
         let mut new_nodes: HashMap<i64, i64> = HashMap::new();
         for node in &self.nodes {
-            let (lat, lon) = self.pasted_position(node, position);
+            let LatLon { lat, lon } = self.pasted_position(node, position);
             let id = editable.add_node(lat, lon);
             new_nodes.insert(node.id, id);
             pasted.nodes.push(DeletedFeatureSnapshot {
@@ -652,9 +654,11 @@ mod tests {
     /// longitude wraps (unlike `coordinates::mercator_to_lat_lon`, which clamps).
     #[test]
     fn mercator_to_lat_lon_wraps_longitude() {
-        let (_, lon) = mercator_to_lat_lon_wrapped(MERCATOR_HALF_WORLD_M * 1.5, 0.0);
+        let LatLon { lon, .. } =
+            mercator_to_lat_lon_wrapped(Mercator::new(MERCATOR_HALF_WORLD_M * 1.5, 0.0));
         assert!((lon - -90.0).abs() < 1e-9, "got {lon}");
-        let (lat, lon) = mercator_to_lat_lon_wrapped(MERCATOR_HALF_WORLD_M, 0.0);
+        let LatLon { lat, lon } =
+            mercator_to_lat_lon_wrapped(Mercator::new(MERCATOR_HALF_WORLD_M, 0.0));
         assert!(lat.abs() < 1e-9 && (lon - 180.0).abs() < 1e-9);
     }
 
@@ -787,21 +791,21 @@ mod tests {
             .expect("paste")
     }
 
-    fn center_of(layer: &OsmLayer, nodes: &[i64]) -> (f64, f64) {
-        let merc: Vec<(f64, f64)> = nodes
+    fn center_of(layer: &OsmLayer, nodes: &[i64]) -> LatLon {
+        let merc: Vec<Mercator> = nodes
             .iter()
             .map(|&id| {
                 let (lat, lon) = layer.node_lat_lon(id).unwrap();
-                lat_lon_to_mercator(lat, lon)
+                lat_lon_to_mercator(LatLon::new(lat, lon))
             })
             .collect();
         let (min_x, max_x) = merc.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
-            (lo.min(p.0), hi.max(p.0))
+            (lo.min(p.x), hi.max(p.x))
         });
         let (min_y, max_y) = merc.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
-            (lo.min(p.1), hi.max(p.1))
+            (lo.min(p.y), hi.max(p.y))
         });
-        mercator_to_lat_lon_wrapped((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+        mercator_to_lat_lon_wrapped(Mercator::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0))
     }
 
     fn all(layer: &OsmLayer) -> Vec<FeatureRef> {
@@ -968,10 +972,7 @@ mod tests {
             &clip,
             &mut layer,
             A,
-            PastePosition::CenterAt {
-                lat: 10.0,
-                lon: 10.0,
-            },
+            PastePosition::CenterAt(LatLon::new(10.0, 10.0)),
         );
         assert_eq!(moved.relations.len(), 1);
     }
@@ -1031,13 +1032,10 @@ mod tests {
             &clip,
             &mut layer,
             A,
-            PastePosition::CenterAt {
-                lat: target_lat,
-                lon: target_lon,
-            },
+            PastePosition::CenterAt(LatLon::new(target_lat, target_lon)),
         );
         let ids: Vec<i64> = pasted.nodes.iter().map(|s| s.id).collect();
-        let (lat, lon) = center_of(&layer, &ids);
+        let LatLon { lat, lon } = center_of(&layer, &ids);
         assert!((lat - target_lat).abs() < 1e-7, "{lat}");
         assert!((lon - target_lon).abs() < 1e-7, "{lon}");
 
@@ -1045,13 +1043,13 @@ mod tests {
         // the same Mercator vector.
         let merc = |layer: &OsmLayer, id: i64| {
             let (lat, lon) = layer.node_lat_lon(id).unwrap();
-            lat_lon_to_mercator(lat, lon)
+            lat_lon_to_mercator(LatLon::new(lat, lon))
         };
         let new_ids: Vec<i64> = pasted.nodes.iter().map(|s| s.id).collect();
         let shift = |old: i64, new: i64| {
-            let (ox, oy) = merc(&layer, old);
-            let (nx, ny) = merc(&layer, new);
-            (nx - ox, ny - oy)
+            let o = merc(&layer, old);
+            let n = merc(&layer, new);
+            (n.x - o.x, n.y - o.y)
         };
         let first = shift(clip.nodes()[0].id, new_ids[0]);
         for (old, new) in clip.nodes().iter().zip(&new_ids) {
@@ -1067,16 +1065,16 @@ mod tests {
         for node in clip.nodes() {
             assert_eq!(
                 clip.pasted_position(node, PastePosition::Source),
-                (node.lat, node.lon)
+                LatLon::new(node.lat, node.lon)
             );
         }
         // An unusable target is the source position too.
-        let nan = PastePosition::CenterAt {
-            lat: f64::NAN,
-            lon: 0.0,
-        };
+        let nan = PastePosition::CenterAt(LatLon::new(f64::NAN, 0.0));
         for node in clip.nodes() {
-            assert_eq!(clip.pasted_position(node, nan), (node.lat, node.lon));
+            assert_eq!(
+                clip.pasted_position(node, nan),
+                LatLon::new(node.lat, node.lon)
+            );
         }
     }
 
@@ -1094,7 +1092,10 @@ mod tests {
             (f64::INFINITY, 0.0),
         ] {
             for node in clip.nodes() {
-                let (nlat, nlon) = clip.pasted_position(node, PastePosition::CenterAt { lat, lon });
+                let LatLon {
+                    lat: nlat,
+                    lon: nlon,
+                } = clip.pasted_position(node, PastePosition::CenterAt(LatLon::new(lat, lon)));
                 assert!(nlat.is_finite() && (-85.06..=85.06).contains(&nlat));
                 assert!(
                     nlon.is_finite() && (-180.0..=180.0).contains(&nlon),
@@ -1122,10 +1123,7 @@ mod tests {
             .paste(
                 &mut layer,
                 A,
-                PastePosition::CenterAt {
-                    lat: 40.0,
-                    lon: 9.0,
-                },
+                PastePosition::CenterAt(LatLon::new(40.0, 9.0)),
                 &limits(),
                 &select(FeatureKind::Node, &[1]),
             )

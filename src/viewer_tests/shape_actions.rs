@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{ExtrudeDrag, ExtrudeStyle, MapViewer};
 use gpui::{point, px, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::layers::LayerId;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
 
@@ -429,7 +430,7 @@ fn extrude_triangle_drag(
             .and_then(|l| l.as_editable())
             .and_then(|e| e.node_lat_lon(id))
             .unwrap();
-        view.viewport.geo_to_screen(lat, lon)
+        view.viewport.geo_to_screen(LatLon::new(lat, lon))
     };
     let (a, b) = (screen(14), screen(15));
     let mid = point((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);

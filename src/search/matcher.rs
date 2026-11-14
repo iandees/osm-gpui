@@ -330,14 +330,14 @@ impl<'a> Env<'a> {
     /// a relation with such a member (one level deep).
     fn in_view(&self, view: &GeoBounds, obj: Obj<'_>, recurse: bool) -> bool {
         match obj {
-            Obj::Node(n) => view.contains(n.lat, n.lon),
+            Obj::Node(n) => view.contains(n.lat_lon()),
             Obj::Way(w) => {
                 let mut bbox: Option<GeoBounds> = None;
                 for id in &w.nodes {
                     let Some(n) = self.data.nodes.get(id) else {
                         continue;
                     };
-                    if view.contains(n.lat, n.lon) {
+                    if view.contains(n.lat_lon()) {
                         return true;
                     }
                     let b = bbox.get_or_insert(GeoBounds {

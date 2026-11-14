@@ -4,11 +4,12 @@
 use super::*;
 use crate::test_support::*;
 use gpui::{point, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 
 #[gpui::test]
 fn three_clicks_make_one_arc_and_one_undo_removes_it(cx: &mut TestAppContext) {
     with_osm(cx, empty_data(), EditMode::Arc, |view, w, cx, layer| {
-        let c = view.viewport.geo_to_screen(LAT, LON);
+        let c = view.viewport.geo_to_screen(LatLon::new(LAT, LON));
         // Chord along the horizontal, bulging upward: a shallow arc.
         let start = c + point(px(-100.0), px(0.0));
         let end = c + point(px(100.0), px(0.0));
@@ -47,7 +48,7 @@ fn three_clicks_make_one_arc_and_one_undo_removes_it(cx: &mut TestAppContext) {
             .iter()
             .map(|&id| {
                 let (lat, lon) = editable.node_lat_lon(id).unwrap();
-                let p = view.viewport.geo_to_screen(lat, lon);
+                let p = view.viewport.geo_to_screen(LatLon::new(lat, lon));
                 (p.x.to_f64(), p.y.to_f64())
             })
             .collect();
@@ -74,7 +75,7 @@ fn three_clicks_make_one_arc_and_one_undo_removes_it(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_collinear_third_click_is_ignored(cx: &mut TestAppContext) {
     with_osm(cx, empty_data(), EditMode::Arc, |view, _w, _cx, layer| {
-        let c = view.viewport.geo_to_screen(LAT, LON);
+        let c = view.viewport.geo_to_screen(LatLon::new(LAT, LON));
         crate::modes::arc::click(view, c + point(px(-100.0), px(0.0)), false);
         crate::modes::arc::click(view, c + point(px(100.0), px(0.0)), false);
         // On the chord itself: no circle, so the arc stays pending.
@@ -92,7 +93,7 @@ fn endpoints_snap_onto_a_way_and_are_spliced_into_it(cx: &mut TestAppContext) {
         .way(10, &[1, 2], &[])
         .done();
     with_osm(cx, data, EditMode::Arc, |view, w, cx, layer| {
-        let c = view.viewport.geo_to_screen(LAT, LON);
+        let c = view.viewport.geo_to_screen(LatLon::new(LAT, LON));
         // Start and end a few pixels off the horizontal way; the bulge
         // is far from it.
         crate::modes::arc::click(view, c + point(px(-100.0), px(4.0)), false);
@@ -147,9 +148,9 @@ fn endpoints_snap_onto_existing_vertices_and_reuse_them(cx: &mut TestAppContext)
         .way(10, &[1, 2], &[])
         .done();
     with_osm(cx, data, EditMode::Arc, |view, w, cx, layer| {
-        let a = view.viewport.geo_to_screen(LAT, LON - 0.0005);
-        let b = view.viewport.geo_to_screen(LAT, LON + 0.0005);
-        let c = view.viewport.geo_to_screen(LAT, LON);
+        let a = view.viewport.geo_to_screen(LatLon::new(LAT, LON - 0.0005));
+        let b = view.viewport.geo_to_screen(LatLon::new(LAT, LON + 0.0005));
+        let c = view.viewport.geo_to_screen(LatLon::new(LAT, LON));
         crate::modes::arc::click(view, a + point(px(2.0), px(2.0)), false);
         crate::modes::arc::click(view, b + point(px(-2.0), px(1.0)), false);
         crate::modes::arc::click(view, c + point(px(0.0), px(-60.0)), false);

@@ -1,6 +1,7 @@
 //! Path decimation, arrow placement, fill triangulation and area labels.
 
 use super::{data_with, empty_tags};
+use crate::coordinates::LatLon;
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{OsmData, OsmNode, OsmWay};
@@ -279,10 +280,10 @@ fn multipolygon_area_label_uses_the_relation_tags_and_avoids_holes() {
     let g = layer.area_geom_for(&mut cache, key).unwrap();
     assert_eq!(g.polys.len(), 1);
     assert_eq!(g.polys[0].rings.len(), 2, "outer ring plus the hole");
-    let hole_edge = crate::coordinates::lat_lon_to_mercator(40.002, -74.002);
-    let hole_far = crate::coordinates::lat_lon_to_mercator(40.008, -73.992);
+    let hole_edge = crate::coordinates::lat_lon_to_mercator(LatLon::new(40.002, -74.002));
+    let hole_far = crate::coordinates::lat_lon_to_mercator(LatLon::new(40.008, -73.992));
     let p = g.polys[0].pole;
-    let in_hole = p.x > hole_edge.0 && p.x < hole_far.0 && p.y > hole_edge.1 && p.y < hole_far.1;
+    let in_hole = p.x > hole_edge.x && p.x < hole_far.x && p.y > hole_edge.y && p.y < hole_far.y;
     assert!(!in_hole, "pole {p:?} is in the hole");
     // The member ways carry no tags, so they get no label of their own.
     assert!(layer

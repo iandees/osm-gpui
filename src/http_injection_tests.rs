@@ -4,6 +4,7 @@
 
 use super::*;
 use gpui::TestAppContext;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::http::{HttpClient, HttpError, HttpRequest, HttpResponse};
 use std::path::{Path, PathBuf};
 
@@ -46,7 +47,11 @@ fn a_download_goes_through_the_viewers_client(cx: &mut TestAppContext) {
     window
         .update(cx, |view, _, cx| {
             view.http = injected;
-            view.viewport = Viewport::new(40.0, -74.0, 18.0, gpui::size(px(800.0), px(600.0)));
+            view.viewport = Viewport::new(
+                LatLon::new(40.0, -74.0),
+                18.0,
+                gpui::size(px(800.0), px(600.0)),
+            );
             view.request_download(cx);
         })
         .unwrap();

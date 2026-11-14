@@ -181,7 +181,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     ) else {
         return;
     };
-    let cursor_geo = frame.viewport.screen_to_geo(mouse_pos);
+    let cursor_geo = frame.viewport.screen_to_geo(mouse_pos).to_pair();
     let (far_a, far_b) = view.rectangle_from_geo_edge(a_geo, b_geo, cursor_geo);
     let a = frame.geo(a_geo);
     stroke_polyline(

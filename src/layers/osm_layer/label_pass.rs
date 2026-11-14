@@ -1,4 +1,5 @@
 use super::*;
+use crate::coordinates::Mercator;
 
 /// Areas smaller than this on screen (width, height in px) cannot hold any
 /// label text and are not considered.
@@ -279,7 +280,7 @@ impl OsmLayer {
             if !is_forced && Self::names_a_node_inside(node_texts, &label.text, &at, &view) {
                 continue;
             }
-            let sp = viewport.mercator_to_screen(at.mx, at.my);
+            let sp = viewport.mercator_to_screen(Mercator::new(at.mx, at.my));
             let (w, h) = (f32::from(line.width), f32::from(line.ascent + line.descent));
             out.push(Candidate {
                 item: labels::Item {
@@ -351,7 +352,7 @@ impl OsmLayer {
             if !style.tagged {
                 continue;
             }
-            let sp = viewport.mercator_to_screen(mx, my);
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             if !is_point_valid(sp) {
                 continue;
             }
@@ -587,7 +588,7 @@ impl OsmLayer {
             } else {
                 Point::default()
             };
-            let sp = viewport.mercator_to_screen(l.mx, l.my) + drag;
+            let sp = viewport.mercator_to_screen(Mercator::new(l.mx, l.my)) + drag;
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
@@ -626,7 +627,8 @@ impl OsmLayer {
             };
             let Some(text) = &label.text else { continue };
             let (_, mx, my) = self.derived.node_cache.flat[idx];
-            let sp = viewport.mercator_to_screen(mx, my) + self.drag_preview_offset(f.id);
+            let sp =
+                viewport.mercator_to_screen(Mercator::new(mx, my)) + self.drag_preview_offset(f.id);
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
@@ -676,7 +678,7 @@ impl OsmLayer {
             ) else {
                 continue;
             };
-            let sp = viewport.mercator_to_screen(at.mx, at.my);
+            let sp = viewport.mercator_to_screen(Mercator::new(at.mx, at.my));
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
@@ -757,7 +759,7 @@ impl OsmLayer {
     ) {
         let fs = crate::frame_stats::start();
         let obstacles = points.occupied(|mx, my| {
-            let sp = viewport.mercator_to_screen(mx, my);
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             (f32::from(sp.x), f32::from(sp.y))
         });
         let cands = self.line_label_candidates(viewport, cam.zoom);
@@ -772,7 +774,7 @@ impl OsmLayer {
             .map(|p| (p.way_id, p.slot))
             .collect();
         let to_screen = |mx: f64, my: f64| {
-            let sp = viewport.mercator_to_screen(mx, my);
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             (f32::from(sp.x), f32::from(sp.y))
         };
         let (placed, _built) = match self.render.line_labels.lock() {
@@ -823,7 +825,7 @@ impl OsmLayer {
         emit_frame(
             &placed.placed,
             |mx, my| {
-                let sp = viewport.mercator_to_screen(mx, my);
+                let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
                 (f32::from(sp.x), f32::from(sp.y))
             },
             origin,

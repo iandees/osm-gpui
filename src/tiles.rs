@@ -4,7 +4,7 @@
 use std::f64::consts::PI;
 use std::ops::Range;
 
-use crate::coordinates::{GeoBounds, MERCATOR_HALF_WORLD_M};
+use crate::coordinates::{GeoBounds, LatLon, MERCATOR_HALF_WORLD_M};
 use crate::download_bounds::MercRect;
 
 /// A tile coordinate in the Web Mercator projection
@@ -23,9 +23,14 @@ impl TileCoord {
     /// The tile's lat/lon box.
     pub fn geo_bounds(&self) -> GeoBounds {
         let (x, y) = (f64::from(self.x), f64::from(self.y));
-        let (max_lat, min_lon) = tile_position_to_lat_lon(self.z, x, y);
-        let (min_lat, max_lon) = tile_position_to_lat_lon(self.z, x + 1.0, y + 1.0);
-        GeoBounds::new(min_lat, max_lat, min_lon, max_lon)
+        let north_west = tile_position_to_lat_lon(self.z, x, y);
+        let south_east = tile_position_to_lat_lon(self.z, x + 1.0, y + 1.0);
+        GeoBounds::new(
+            south_east.lat,
+            north_west.lat,
+            north_west.lon,
+            south_east.lon,
+        )
     }
 
     /// The tile's Web Mercator box in metres, computed straight from its grid
@@ -119,12 +124,12 @@ pub fn url_from_template(template: &str, tile: &TileCoord) -> String {
     s
 }
 
-/// `(lat, lon)` of the point `(x, y)` in tile units of zoom `z` (fractions
+/// The position of the point `(x, y)` in tile units of zoom `z` (fractions
 /// allowed; y grows southwards).
-pub fn tile_position_to_lat_lon(z: u32, x: f64, y: f64) -> (f64, f64) {
+pub fn tile_position_to_lat_lon(z: u32, x: f64, y: f64) -> LatLon {
     let n = 2.0_f64.powi(z as i32);
     let lat = (PI * (1.0 - 2.0 * y / n)).sinh().atan().to_degrees();
-    (lat, x / n * 360.0 - 180.0)
+    LatLon::new(lat, x / n * 360.0 - 180.0)
 }
 
 /// Number of tiles along one axis at `zoom` (saturating, so absurd zooms
@@ -263,11 +268,11 @@ fn lat_to_y(lat: f64, zoom: u32) -> f64 {
 }
 
 #[cfg(test)]
-fn lat_lon_to_tile(lat: f64, lon: f64, zoom: u32) -> TileCoord {
-    let lat_rad = lat.to_radians();
+fn lat_lon_to_tile(at: LatLon, zoom: u32) -> TileCoord {
+    let lat_rad = at.lat.to_radians();
     let n = 2.0_f64.powi(zoom as i32);
 
-    let x = ((lon + 180.0) / 360.0 * n).floor() as u32;
+    let x = ((at.lon + 180.0) / 360.0 * n).floor() as u32;
     let y = ((1.0 - lat_rad.tan().asinh() / PI) / 2.0 * n).floor() as u32;
 
     TileCoord::new(x, y, zoom)
@@ -276,16 +281,31 @@ fn lat_lon_to_tile(lat: f64, lon: f64, zoom: u32) -> TileCoord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinates::Mercator;
 
     #[test]
     fn test_lat_lon_to_tile() {
-        let tile = lat_lon_to_tile(51.5074, -0.1278, 10); // London
+        let tile = lat_lon_to_tile(LatLon::new(51.5074, -0.1278), 10); // London
         assert!(tile.x > 0 && tile.y > 0 && tile.z == 10);
 
-        let tile = lat_lon_to_tile(0.0, 0.0, 1);
+        let tile = lat_lon_to_tile(LatLon::new(0.0, 0.0), 1);
         assert_eq!(tile.x, 1);
         assert_eq!(tile.y, 1);
         assert_eq!(tile.z, 1);
+    }
+
+    #[test]
+    fn tile_positions_are_latitude_then_longitude() {
+        // The north-west corner of the world's single tile.
+        let nw = tile_position_to_lat_lon(0, 0.0, 0.0);
+        assert!((nw.lat - 85.0511287798).abs() < 1e-6 && (nw.lon + 180.0).abs() < 1e-9);
+        let centre = tile_position_to_lat_lon(0, 0.5, 0.5);
+        assert!(centre.lat.abs() < 1e-9 && centre.lon.abs() < 1e-9);
+        // It inverts `lat_lon_to_tile` to the tile's own corner.
+        let at = LatLon::new(44.926, -93.2234);
+        let t = lat_lon_to_tile(at, 15);
+        let corner = tile_position_to_lat_lon(15, f64::from(t.x), f64::from(t.y));
+        assert!(corner.lat >= at.lat && corner.lon <= at.lon);
     }
 
     #[test]
@@ -315,8 +335,10 @@ mod tests {
         use crate::coordinates::lat_lon_to_mercator;
         let t = TileCoord::new(7898, 11796, 15);
         let (g, m) = (t.geo_bounds(), t.mercator_bounds());
-        let (min_x, min_y) = lat_lon_to_mercator(g.min_lat, g.min_lon);
-        let (max_x, max_y) = lat_lon_to_mercator(g.max_lat, g.max_lon);
+        let Mercator { x: min_x, y: min_y } =
+            lat_lon_to_mercator(LatLon::new(g.min_lat, g.min_lon));
+        let Mercator { x: max_x, y: max_y } =
+            lat_lon_to_mercator(LatLon::new(g.max_lat, g.max_lon));
         for (a, b) in [
             (min_x, m.min_x),
             (max_x, m.max_x),
@@ -380,7 +402,7 @@ mod tests {
         assert!(!tiles.is_empty());
         assert!(tiles.iter().all(|t| t.z == 5));
         let point = tiles_covering_geo(&GeoBounds::new(51.5, 51.5, -0.5, -0.5), 5);
-        assert_eq!(point, vec![lat_lon_to_tile(51.5, -0.5, 5)]);
+        assert_eq!(point, vec![lat_lon_to_tile(LatLon::new(51.5, -0.5), 5)]);
     }
 
     #[test]

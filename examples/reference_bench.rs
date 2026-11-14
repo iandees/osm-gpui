@@ -7,6 +7,7 @@
 //! at several zooms over the data. Painting and the GPU are not included.
 
 use gpui::{point, px, size, Bounds};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::layers::reference_layer::ReferenceLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::viewport::Viewport;
@@ -87,7 +88,7 @@ fn report(name: &str, layer: &ReferenceLayer) {
     };
     println!("{name}: zoom  median_ms  p95_ms  path_vertices  paths");
     for z in [8.0, 10.0, 12.0, 14.0, 16.0, 18.0] {
-        let viewport = Viewport::new(LAT + 0.01, LON, z, view);
+        let viewport = Viewport::new(LatLon::new(LAT + 0.01, LON), z, view);
         let first = layer.build_scene(&viewport, bounds);
         let (verts, paths) = (first.vertex_count(), first.path_count());
         let mut ms: Vec<f64> = (0..30)

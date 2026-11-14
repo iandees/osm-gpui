@@ -1,4 +1,5 @@
 use super::*;
+use crate::coordinates::Mercator;
 
 impl OsmLayer {
     /// The CPU half of the multipolygon fill pass of `render_canvas` (cull,
@@ -126,7 +127,7 @@ impl OsmLayer {
     ) {
         pts.clear();
         for &(node_id, mx, my) in &polygon.verts {
-            let mut sp = viewport.mercator_to_screen(mx, my);
+            let mut sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             if !is_point_valid(sp) {
                 return;
             }

@@ -1075,6 +1075,7 @@ impl LayerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinates::LatLon;
     // `use super::*` above also re-imports `gpui::test` (this file's
     // top-level `use gpui::*` brings it in, and gpui re-exports
     // `gpui_macros::test` — its own `#[gpui::test]` async-test attribute —
@@ -1242,7 +1243,11 @@ mod tests {
         let layer = OsmLayer::new_with_data(layer_id, "L", data);
         manager.add_layer(Box::new(layer));
 
-        let viewport = Viewport::new(center_lat, center_lon, 18.0, size(px(800.0), px(600.0)));
+        let viewport = Viewport::new(
+            LatLon::new(center_lat, center_lon),
+            18.0,
+            size(px(800.0), px(600.0)),
+        );
         let selected = vec![FeatureRef {
             layer_id,
             kind: FeatureKind::Node,
@@ -1287,7 +1292,11 @@ mod tests {
         let layer = OsmLayer::new_with_data(layer_id, "L", data);
         manager.add_layer(Box::new(layer));
 
-        let viewport = Viewport::new(center_lat, center_lon, 18.0, size(px(800.0), px(600.0)));
+        let viewport = Viewport::new(
+            LatLon::new(center_lat, center_lon),
+            18.0,
+            size(px(800.0), px(600.0)),
+        );
         // Selection references a *different* node id than the one under the cursor.
         let selected = vec![FeatureRef {
             layer_id,
@@ -1393,12 +1402,15 @@ mod tests {
         use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
 
         let (lat, lon) = (40.0, -74.0);
-        let viewport = Viewport::new(lat, lon, 18.0, size(px(800.0), px(600.0)));
+        let viewport = Viewport::new(LatLon::new(lat, lon), 18.0, size(px(800.0), px(600.0)));
         // The pin's head is above its tip, so click the head; the photo and
         // the track vertex are put under that same pixel.
-        let tip = viewport.geo_to_screen(lat, lon);
+        let tip = viewport.geo_to_screen(LatLon::new(lat, lon));
         let click = point(tip.x, tip.y - px(16.0));
-        let (hit_lat, hit_lon) = viewport.screen_to_geo(click);
+        let LatLon {
+            lat: hit_lat,
+            lon: hit_lon,
+        } = viewport.screen_to_geo(click);
 
         let notes = NoteStore::default();
         notes.replace(vec![Note {
@@ -1484,10 +1496,10 @@ mod tests {
         use crate::layers::street_imagery_layer::StreetImageryLayer;
         use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
 
-        let viewport = Viewport::new(40.0, -74.0, 18.0, size(px(800.0), px(600.0)));
-        let centre = viewport.geo_to_screen(40.0, -74.0);
+        let viewport = Viewport::new(LatLon::new(40.0, -74.0), 18.0, size(px(800.0), px(600.0)));
+        let centre = viewport.geo_to_screen(LatLon::new(40.0, -74.0));
         let photo_at = |provider: Provider, id: &str, dx: f32| {
-            let (lat, lon) = viewport.screen_to_geo(point(centre.x + px(dx), centre.y));
+            let LatLon { lat, lon } = viewport.screen_to_geo(point(centre.x + px(dx), centre.y));
             StreetPhoto {
                 provider,
                 id: id.into(),

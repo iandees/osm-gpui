@@ -410,7 +410,12 @@ mod tests {
         // Route: one run. Track: two segments.
         assert_eq!(data.parts.len(), 3);
         assert_eq!(data.vertex_count, 2 + 3 + 3 + 2);
-        assert_eq!(data.extent(), Some((40.0, 40.101, -74.101, -74.0)));
+        assert_eq!(
+            data.extent(),
+            Some(crate::coordinates::GeoBounds::new(
+                40.0, 40.101, -74.101, -74.0
+            ))
+        );
     }
 
     #[test]

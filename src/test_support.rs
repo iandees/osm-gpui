@@ -4,6 +4,7 @@
 
 use crate::{EditMode, MapViewer};
 use gpui::{px, size, Context, TestAppContext, Window, WindowHandle};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::layers::diff::LayerDiff;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::{EditableLayer, LayerId};
@@ -162,7 +163,7 @@ pub(crate) fn with_view(
 /// The viewport every fixture uses: centred on (`LAT`, `LON`) at zoom 18,
 /// 800x600.
 pub(crate) fn centered_viewport() -> Viewport {
-    Viewport::new(LAT, LON, 18.0, size(px(800.0), px(600.0)))
+    Viewport::new(LatLon::new(LAT, LON), 18.0, size(px(800.0), px(600.0)))
 }
 
 /// A fresh headless window with `centered_viewport` and no layers, for tests

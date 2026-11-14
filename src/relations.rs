@@ -15,6 +15,7 @@
 //! - **Delete**: the memberships of the deleted feature are dropped, unless
 //!   that would leave an empty relation or a broken turn restriction.
 
+use crate::coordinates::{GeoBounds, LatLon};
 use crate::osm::{MemberType, OsmMember, OsmRelation};
 use crate::tr;
 use std::collections::{HashMap, HashSet};
@@ -104,28 +105,17 @@ pub fn flatten_members(
 /// How to resolve members to geometry; `None` from a lookup means the
 /// element isn't loaded.
 pub struct MemberLookup<'a> {
-    /// A node's `(lat, lon)`.
-    pub node: &'a dyn Fn(i64) -> Option<(f64, f64)>,
+    pub node: &'a dyn Fn(i64) -> Option<LatLon>,
     /// A way's node ids.
     pub way_nodes: &'a dyn Fn(i64) -> Option<Vec<i64>>,
     pub relation: &'a dyn Fn(i64) -> Option<OsmRelation>,
 }
 
-/// The bounding box `(min_lat, max_lat, min_lon, max_lon)` of the members of
-/// `relation` that are loaded (nested relations followed one level), or
-/// `None` if none of them is.
-pub fn members_bounds(
-    relation: &OsmRelation,
-    lookup: &MemberLookup,
-) -> Option<(f64, f64, f64, f64)> {
-    let mut bounds: Option<(f64, f64, f64, f64)> = None;
-    let mut extend = |(lat, lon): (f64, f64)| {
-        let b = bounds.get_or_insert((lat, lat, lon, lon));
-        b.0 = b.0.min(lat);
-        b.1 = b.1.max(lat);
-        b.2 = b.2.min(lon);
-        b.3 = b.3.max(lon);
-    };
+/// The bounding box of the members of `relation` that are loaded (nested
+/// relations followed one level), or `None` if none of them is.
+pub fn members_bounds(relation: &OsmRelation, lookup: &MemberLookup) -> Option<GeoBounds> {
+    let mut bounds: Option<GeoBounds> = None;
+    let mut extend = |at: LatLon| GeoBounds::extend(&mut bounds, at);
     for (member_type, id) in flatten_members(relation, lookup.relation) {
         match member_type {
             MemberType::Node => {
@@ -1373,9 +1363,9 @@ mod tests {
         );
         let nested = rel(2, vec![node(3, "")]);
         let node_pos = |id: i64| match id {
-            1 => Some((10.0, 20.0)),
-            2 => Some((12.0, 18.0)),
-            3 => Some((5.0, 30.0)),
+            1 => Some(LatLon::new(10.0, 20.0)),
+            2 => Some(LatLon::new(12.0, 18.0)),
+            3 => Some(LatLon::new(5.0, 30.0)),
             _ => None,
         };
         let way_nodes = |id: i64| (id == 20).then(|| vec![2, 777]);
@@ -1385,7 +1375,10 @@ mod tests {
             way_nodes: &way_nodes,
             relation: &find,
         };
-        assert_eq!(members_bounds(&r, &lookup), Some((5.0, 12.0, 18.0, 30.0)));
+        assert_eq!(
+            members_bounds(&r, &lookup),
+            Some(GeoBounds::new(5.0, 12.0, 18.0, 30.0))
+        );
 
         let empty = rel(3, vec![node(99, ""), way(21, "")]);
         assert_eq!(members_bounds(&empty, &lookup), None);
