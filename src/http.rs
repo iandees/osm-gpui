@@ -117,6 +117,32 @@ impl std::fmt::Display for HttpError {
 
 impl std::error::Error for HttpError {}
 
+/// An [`HttpError`] with its body decoded, the one place the status/transport
+/// split and the lossy body conversion live. Module error enums implement
+/// `From<HttpError>` on top of this instead of matching `HttpError` themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpFailure {
+    /// The server answered with a non-2xx status.
+    Status { status: u16, body: String },
+    /// The request never completed (DNS, connect, TLS, timeout, body I/O).
+    Transport(String),
+    /// The caller's progress callback abandoned the transfer.
+    Cancelled,
+}
+
+impl From<HttpError> for HttpFailure {
+    fn from(e: HttpError) -> Self {
+        match e {
+            HttpError::Status { status, body } => HttpFailure::Status {
+                status,
+                body: String::from_utf8_lossy(&body).into_owned(),
+            },
+            HttpError::Transport(msg) => HttpFailure::Transport(msg),
+            HttpError::Cancelled => HttpFailure::Cancelled,
+        }
+    }
+}
+
 /// Seam over the concrete HTTP implementation. Production code uses `UreqClient`;
 /// tests use `fake::FakeClient` to script responses without touching the network.
 pub trait HttpClient: Send + Sync {
@@ -140,6 +166,36 @@ pub trait HttpClient: Send + Sync {
             Err(HttpError::Cancelled)
         }
     }
+}
+
+/// What `default_client` hands out until the binary installs a real client:
+/// every request fails, so nothing built without one (tests, tools) can reach
+/// the network by accident.
+struct OfflineClient;
+
+impl HttpClient for OfflineClient {
+    fn request(&self, _req: HttpRequest) -> Result<HttpResponse, HttpError> {
+        Err(HttpError::Transport("no HTTP client installed".to_string()))
+    }
+}
+
+static DEFAULT_CLIENT: std::sync::OnceLock<std::sync::Arc<dyn HttpClient>> =
+    std::sync::OnceLock::new();
+
+/// Install the process-wide client, once, at startup. Later calls are ignored.
+/// It only seeds objects that cannot be handed a client (the `MapViewer`
+/// constructor used by `cx.add_window`, the settings-change hook); code that
+/// makes requests takes the client as a parameter.
+pub fn install_default_client(client: std::sync::Arc<dyn HttpClient>) {
+    let _ = DEFAULT_CLIENT.set(client);
+}
+
+/// The installed client, or one that fails every request when none is.
+pub fn default_client() -> std::sync::Arc<dyn HttpClient> {
+    DEFAULT_CLIENT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::sync::Arc::new(OfflineClient))
 }
 
 /// Cap on how much of an *error* response body is read into memory: error pages are
@@ -300,9 +356,9 @@ pub fn fetch_with_retries_progress(
 }
 
 /// Test double for `HttpClient`: returns scripted responses in order, one per call to
-/// `request`. Public (not `#[cfg(test)]`-gated at the item level, only the module is)
-/// so it can be used from the `#[cfg(test)]` modules of other files in this crate.
-#[cfg(test)]
+/// `request`. Compiled in non-test builds too because the binary's tests link this
+/// library built without `cfg(test)`.
+#[doc(hidden)]
 pub mod fake {
     use super::*;
     use std::sync::Mutex;
@@ -360,6 +416,36 @@ pub mod fake {
 mod tests {
     use super::fake::*;
     use super::*;
+
+    #[test]
+    fn failures_split_into_status_transport_and_cancelled() {
+        assert_eq!(
+            HttpFailure::from(HttpError::Status {
+                status: 418,
+                body: b"teapot \xff".to_vec(),
+            }),
+            HttpFailure::Status {
+                status: 418,
+                body: "teapot \u{fffd}".to_string(),
+            }
+        );
+        assert_eq!(
+            HttpFailure::from(HttpError::Transport("reset".into())),
+            HttpFailure::Transport("reset".into())
+        );
+        assert_eq!(
+            HttpFailure::from(HttpError::Cancelled),
+            HttpFailure::Cancelled
+        );
+    }
+
+    #[test]
+    fn the_default_client_fails_every_request_until_one_is_installed() {
+        let err = default_client()
+            .request(HttpRequest::get("https://example.invalid/"))
+            .unwrap_err();
+        assert!(matches!(err, HttpError::Transport(_)));
+    }
 
     #[test]
     fn retries_then_succeeds_on_retryable_status() {

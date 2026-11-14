@@ -31,6 +31,8 @@ mod edge_case_tests;
 mod fields_section;
 mod gps_traces_ui;
 mod history_actions;
+#[cfg(test)]
+mod http_injection_tests;
 mod imagery_offset_ui;
 #[cfg(test)]
 mod improve_click_tests;
@@ -903,6 +905,9 @@ struct MapViewer {
     viewport: Viewport,
     layer_manager: LayerManager,
     tile_cache: Arc<Mutex<TileCache>>,
+    /// The HTTP client every network feature of this window uses (see
+    /// `osm_gpui::http::install_default_client`); cloned into worker tasks.
+    http: Arc<dyn osm_gpui::http::HttpClient>,
     first_dataset_fitted: bool,
     /// The main window's bounds as last rendered, saved on quit.
     window_bounds: Option<gpui::Bounds<gpui::Pixels>>,
@@ -1297,6 +1302,7 @@ impl MapViewer {
             viewport,
             layer_manager,
             tile_cache,
+            http: osm_gpui::http::default_client(),
             first_dataset_fitted: false,
             window_bounds: None,
             status_message: None,
@@ -6957,6 +6963,7 @@ impl MapViewer {
         // in `queue` and the layers never disagree, and if the app is lost
         // between two chunks, what the layers still hold as pending is
         // exactly what the server has not got.
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let total = queue.total();
             let mut accepted = 0usize;
@@ -6965,11 +6972,12 @@ impl MapViewer {
                 let Some((part, chunk)) = queue.next_chunk() else {
                     break None;
                 };
-                let (oauth_base, base_url, tags, progress) = (
+                let (oauth_base, base_url, tags, progress, http) = (
                     oauth_base.clone(),
                     base_url.clone(),
                     tags.clone(),
                     progress.clone(),
+                    http.clone(),
                 );
                 let sent = cx
                     .background_executor()
@@ -6978,12 +6986,16 @@ impl MapViewer {
                         // first time; say so while it does (and only then).
                         // A refusal stops the upload with the edits and the
                         // saved login untouched.
-                        let token = auth::ensure_fresh_token_notify(&oauth_base, &mut || {
-                            progress.set_upload_phase(None, TransferPhase::WaitingForKeychain)
-                        })
+                        let token = auth::ensure_fresh_token_notify(
+                            http.as_ref(),
+                            &oauth_base,
+                            &mut || {
+                                progress.set_upload_phase(None, TransferPhase::WaitingForKeychain)
+                            },
+                        )
                         .map_err(|e| UploadStop::Failed(e.to_string()))?;
                         osm_gpui::upload_chunks::upload_chunk(
-                            &osm_gpui::http::UreqClient::new(),
+                            http.as_ref(),
                             &base_url,
                             &token.access_token,
                             &tags,
@@ -7255,11 +7267,19 @@ impl MapViewer {
                 cx.notify();
                 let base_url = settings_store::api_base_url();
                 let full = action == ConflictAction::UseTheirs;
+                let http = self.http.clone();
                 cx.spawn(async move |this, cx| {
                     let fetched = cx
                         .background_executor()
                         .spawn(async move {
-                            osm_gpui::osm_api::fetch_element(&base_url, None, kind, id, full)
+                            osm_gpui::osm_api::fetch_element_with(
+                                http.as_ref(),
+                                &base_url,
+                                None,
+                                kind,
+                                id,
+                                full,
+                            )
                         })
                         .await;
                     let _ = this.update(cx, |this, cx| {
@@ -7561,7 +7581,7 @@ impl MapViewer {
         let base_url = settings_store::api_base_url();
         // Lazily (re)fetch the server's capabilities if we have none or it
         // last reported itself offline; never blocks.
-        osm_gpui::capabilities::ensure_fetched(&base_url);
+        osm_gpui::capabilities::ensure_fetched(self.http.clone(), &base_url);
 
         if osm_gpui::capabilities::for_server(&base_url).is_offline() {
             self.set_status(tr!("status.api_offline"));
@@ -7587,6 +7607,7 @@ impl MapViewer {
         self.poll_transfer(progress.clone(), cx);
         cx.notify();
 
+        let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -7596,9 +7617,18 @@ impl MapViewer {
                     // if it is already in memory (it may refresh over the network
                     // if expired, hence this background thread) and otherwise, or
                     // on any error, the request goes out anonymously.
-                    let token = auth::fresh_token_if_loaded(&auth::oauth_base_for(&base_url))
-                        .map(|t| t.access_token);
-                    osm_api::fetch_bbox_tracked(bounds, &base_url, token.as_deref(), &progress)
+                    let token = auth::fresh_token_if_loaded(
+                        http.as_ref(),
+                        &auth::oauth_base_for(&base_url),
+                    )
+                    .map(|t| t.access_token);
+                    osm_api::fetch_bbox_tracked_with(
+                        http.as_ref(),
+                        bounds,
+                        &base_url,
+                        token.as_deref(),
+                        &progress,
+                    )
                 })
                 .await;
 
@@ -8720,6 +8750,8 @@ fn main() {
     // store, so nothing here is ever saved to settings.json.
     settings_store::set_run_override(args.api_server.clone());
 
+    osm_gpui::http::install_default_client(Arc::new(osm_gpui::http::UreqClient::new()));
+
     // Initialize the global idle tracker before the app starts so TileCache
     // picks up the same Arc.
     let idle = IdleTracker::new();
@@ -8881,7 +8913,10 @@ fn main() {
         auth::init_store(auth::load());
         // Learn the server's limits (max download area etc.) in the
         // background; defaults apply until it answers.
-        osm_gpui::capabilities::ensure_fetched(&settings_store::api_base_url());
+        osm_gpui::capabilities::ensure_fetched(
+            osm_gpui::http::default_client(),
+            &settings_store::api_base_url(),
+        );
         load_saved_map_style(cx);
 
         // Initial menu (before ELI loads). MapViewer's render loop will call
@@ -8896,9 +8931,11 @@ fn main() {
         );
 
         // Kick off background download/parse of the Editor Layer Index.
+        let startup_http = osm_gpui::http::default_client();
+        let imagery_http = startup_http.clone();
         cx.background_executor()
             .spawn(async move {
-                match imagery::fetch_and_cache() {
+                match imagery::fetch_and_cache(imagery_http.as_ref()) {
                     Ok(body) => {
                         let entries = imagery::parse(&body);
                         eprintln!("imagery: loaded {} ELI entries", entries.len());
@@ -8929,9 +8966,10 @@ fn main() {
         osm_gpui::nsi::init_store();
         cx.background_executor()
             .spawn(async move {
-                match osm_gpui::nsi::fetch_and_cache() {
-                    Ok(body) => {
-                        let entries = osm_gpui::nsi::parse(&body);
+                match osm_gpui::nsi::fetch_and_cache(startup_http.as_ref())
+                    .and_then(|body| osm_gpui::nsi::parse(&body))
+                {
+                    Ok(entries) => {
                         eprintln!("nsi: loaded {} brand entries", entries.len());
                         osm_gpui::nsi::set_index(osm_gpui::nsi::NsiIndex::from_entries(entries));
                     }
@@ -9107,10 +9145,11 @@ fn load_saved_map_style(cx: &mut App) {
     let Some(location) = settings_store::snapshot().active_map_style else {
         return;
     };
+    let http = osm_gpui::http::default_client();
     cx.spawn(async move |cx| {
         let result = cx
             .background_executor()
-            .spawn(async move { osm_gpui::style::custom::load_blocking(&location) })
+            .spawn(async move { osm_gpui::style::custom::load(&location, http.as_ref()) })
             .await;
         match result {
             Ok(sheet) => {

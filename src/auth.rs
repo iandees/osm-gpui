@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::http::{HttpClient, HttpError, HttpRequest, HttpResponse, RetryPolicy, UreqClient};
+use crate::http::{HttpClient, HttpError, HttpFailure, HttpRequest, HttpResponse, RetryPolicy};
 use crate::settings_store::PRIMARY_API_URL;
 use crate::tr;
 
@@ -103,6 +103,16 @@ pub enum AuthError {
     KeychainRead {
         detail: String,
     },
+}
+
+impl From<HttpError> for AuthError {
+    fn from(e: HttpError) -> Self {
+        match HttpFailure::from(e) {
+            HttpFailure::Status { status, body } => AuthError::Http { status, body },
+            HttpFailure::Transport(msg) => AuthError::Network(msg),
+            HttpFailure::Cancelled => AuthError::Network(HttpError::Cancelled.to_string()),
+        }
+    }
 }
 
 impl std::fmt::Display for AuthError {
@@ -242,7 +252,7 @@ fn wait_for_callback(
 /// Run the full OAuth2 PKCE login flow, blocking until it completes or times out.
 /// Opens the user's browser and runs a local HTTP server on 127.0.0.1 to catch the
 /// redirect. Call this from a background thread, not the UI thread.
-pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
+pub fn login(client: &dyn HttpClient, api_base_url: &str) -> Result<LoginResult, AuthError> {
     let oauth_base = oauth_base_for(api_base_url);
     let client_id = client_id_for(&oauth_base);
 
@@ -302,7 +312,7 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     let code = code.ok_or(AuthError::NoRedirect)?;
 
     let (access_token, refresh_token, expires_at) = token_request_with(
-        &UreqClient::new(),
+        client,
         &oauth_base,
         vec![
             ("grant_type".to_string(), "authorization_code".to_string()),
@@ -313,7 +323,7 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
         ],
     )?;
 
-    let (display_name, user_id) = fetch_user_details(api_base_url, &access_token)?;
+    let (display_name, user_id) = fetch_user_details_with(client, api_base_url, &access_token)?;
 
     let token = StoredToken {
         access_token,
@@ -330,24 +340,9 @@ pub fn login(api_base_url: &str) -> Result<LoginResult, AuthError> {
     })
 }
 
-/// Exchange a refresh token for a new access token via the `refresh_token` grant,
-/// keeping the previously-known display name/user id (the token endpoint doesn't return
-/// those). Returns the new stored token and persists it.
-pub fn refresh(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
-    refresh_with(&UreqClient::new(), oauth_base_url)
-}
-
-/// Same as `refresh`, but against an injected `HttpClient` so it's testable without a
-/// real network. Kept `pub(crate)` since tests are the only other caller.
-pub(crate) fn refresh_with(
-    client: &dyn HttpClient,
-    oauth_base_url: &str,
-) -> Result<StoredToken, AuthError> {
-    let existing = try_current_token(oauth_base_url)?.ok_or(AuthError::NotLoggedIn)?;
-    refresh_from(client, oauth_base_url, existing)
-}
-
-/// The refresh grant for an already-resolved stored token.
+/// The `refresh_token` grant for an already-resolved stored token, keeping the
+/// previously-known display name/user id (the token endpoint doesn't return those).
+/// Returns the new stored token and persists it.
 fn refresh_from(
     client: &dyn HttpClient,
     oauth_base_url: &str,
@@ -387,30 +382,29 @@ fn refresh_from(
 /// (e.g. the upload path in main.rs) should use this instead of `try_current_token`
 /// directly, which never refreshes. May block on the system keychain prompt the first
 /// time (see `keyring_read_pending`).
-pub fn ensure_fresh_token(oauth_base_url: &str) -> Result<StoredToken, AuthError> {
-    ensure_fresh_token_notify(oauth_base_url, &mut || {})
+pub fn ensure_fresh_token(
+    client: &dyn HttpClient,
+    oauth_base_url: &str,
+) -> Result<StoredToken, AuthError> {
+    ensure_fresh_token_notify(client, oauth_base_url, &mut || {})
 }
 
 /// `ensure_fresh_token`, calling `on_keychain_wait` just before a blocking system
 /// keychain read starts (and only then), so the caller can tell the user why it waits.
 pub fn ensure_fresh_token_notify(
+    client: &dyn HttpClient,
     oauth_base_url: &str,
     on_keychain_wait: &mut dyn FnMut(),
 ) -> Result<StoredToken, AuthError> {
-    ensure_fresh_token_using(
-        &UreqClient::new(),
-        &SystemKeyring,
-        oauth_base_url,
-        on_keychain_wait,
-    )
+    ensure_fresh_token_using(client, &SystemKeyring, oauth_base_url, on_keychain_wait)
 }
 
 /// A fresh token for `oauth_base_url` only if its secret is already in memory; `None`
 /// (so the caller goes anonymous) when there is no login, it is unusable, or its secret
 /// has not yet been read from the keychain. Never performs a keychain read, so it can
 /// never raise the OS prompt. Used by map downloads, which work without authentication.
-pub fn fresh_token_if_loaded(oauth_base_url: &str) -> Option<StoredToken> {
-    fresh_token_if_loaded_using(&UreqClient::new(), &SystemKeyring, oauth_base_url)
+pub fn fresh_token_if_loaded(client: &dyn HttpClient, oauth_base_url: &str) -> Option<StoredToken> {
+    fresh_token_if_loaded_using(client, &SystemKeyring, oauth_base_url)
 }
 
 fn fresh_token_if_loaded_using(
@@ -422,16 +416,6 @@ fn fresh_token_if_loaded_using(
         return None;
     }
     ensure_fresh_token_using(client, backend, oauth_base_url, &mut || {}).ok()
-}
-
-/// Same as `ensure_fresh_token`, but against an injected `HttpClient` so it's testable
-/// without a real network.
-#[cfg(test)]
-pub(crate) fn ensure_fresh_token_with(
-    client: &dyn HttpClient,
-    oauth_base_url: &str,
-) -> Result<StoredToken, AuthError> {
-    ensure_fresh_token_using(client, &SystemKeyring, oauth_base_url, &mut || {})
 }
 
 fn ensure_fresh_token_using(
@@ -491,22 +475,11 @@ fn parse_token_response(
                 .map(|secs| now_unix() + secs);
             Ok((access_token, refresh_token, expires_at))
         }
-        Err(HttpError::Status { status, body }) => Err(AuthError::Http {
-            status,
-            body: String::from_utf8_lossy(&body).into_owned(),
-        }),
-        Err(HttpError::Transport(msg)) => Err(AuthError::Network(msg)),
-        Err(e @ HttpError::Cancelled) => Err(AuthError::Network(e.to_string())),
+        Err(e) => Err(e.into()),
     }
 }
 
 /// `GET /api/0.6/user/details.json` with the given bearer token. Returns (display_name, id).
-fn fetch_user_details(api_base_url: &str, access_token: &str) -> Result<(String, u64), AuthError> {
-    fetch_user_details_with(&UreqClient::new(), api_base_url, access_token)
-}
-
-/// Same as `fetch_user_details`, but against an injected `HttpClient` so it's testable
-/// without a real network.
 fn fetch_user_details_with(
     client: &dyn HttpClient,
     api_base_url: &str,
@@ -519,19 +492,9 @@ fn fetch_user_details_with(
     let req = HttpRequest::get(url).bearer(access_token);
     let response = crate::http::fetch_with_retries(client, &req, &RetryPolicy::none());
 
-    let body = match response {
-        Ok(resp) => resp
-            .into_string()
-            .map_err(|e| AuthError::Network(e.to_string()))?,
-        Err(HttpError::Status { status, body }) => {
-            return Err(AuthError::Http {
-                status,
-                body: String::from_utf8_lossy(&body).into_owned(),
-            });
-        }
-        Err(HttpError::Transport(msg)) => return Err(AuthError::Network(msg)),
-        Err(e @ HttpError::Cancelled) => return Err(AuthError::Network(e.to_string())),
-    };
+    let body = response?
+        .into_string()
+        .map_err(|e| AuthError::Network(e.to_string()))?;
 
     let json: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| AuthError::Parse(e.to_string()))?;
@@ -709,7 +672,7 @@ pub struct TokenStore {
     /// OAuth base URLs whose `access_token`/`refresh_token` in `tokens` are
     /// placeholder-empty and still need a one-time platform-keyring read.
     /// Populated by `load()` for entries with no on-disk fallback secret;
-    /// drained lazily by `current_token()` the first time each URL is
+    /// drained lazily by `try_current_token` the first time each URL is
     /// actually looked up, so a plain app launch that never needs auth
     /// (e.g. just viewing tiles) never triggers a keychain prompt.
     pending_keyring: std::collections::HashSet<String>,
@@ -746,7 +709,7 @@ pub fn logout(oauth_base_url: &str) {
 }
 
 /// The display name of the account logged in at the given OAuth base URL, if
-/// any. Unlike `current_token`, this never touches the platform keyring (the
+/// any. Unlike `try_current_token`, this never touches the platform keyring (the
 /// display name is part of the on-disk metadata), so it's safe to call every
 /// frame — e.g. from the status bar.
 pub fn stored_display_name(oauth_base_url: &str) -> Option<String> {
@@ -875,7 +838,7 @@ pub fn default_path() -> Option<PathBuf> {
 /// touching the platform keyring. Entries whose secret lives only in the
 /// keyring (i.e. no on-disk fallback) are populated with an empty
 /// `access_token`/`refresh_token` and flagged in `pending_keyring`;
-/// `current_token()` resolves them from the keyring on first actual use.
+/// `try_current_token` resolves them from the keyring on first actual use.
 /// This keeps a plain app launch from prompting for the keychain password
 /// once per logged-in server before the user has done anything that needs
 /// auth.
@@ -898,7 +861,7 @@ fn build_token_store(persisted: PersistedStore) -> TokenStore {
         let (access_token, refresh_token) = match meta.access_token_fallback.clone() {
             Some(access_token) => (access_token, meta.refresh_token_fallback.clone()),
             // Secret lives in the keyring; defer the read until this URL's
-            // token is actually requested (see `current_token`).
+            // token is actually requested (see `try_current_token`).
             None => {
                 pending_keyring.insert(oauth_base_url.clone());
                 (String::new(), None)
@@ -1027,6 +990,25 @@ fn build_persisted(store: &TokenStore, backend: &dyn SecretBackend) -> Persisted
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn http_failures_map_to_auth_errors() {
+        assert!(matches!(
+            AuthError::from(HttpError::Status {
+                status: 401,
+                body: b"nope".to_vec()
+            }),
+            AuthError::Http { status: 401, body } if body == "nope"
+        ));
+        assert!(matches!(
+            AuthError::from(HttpError::Transport("dns".into())),
+            AuthError::Network(m) if m == "dns"
+        ));
+        assert!(matches!(
+            AuthError::from(HttpError::Cancelled),
+            AuthError::Network(m) if m == "cancelled"
+        ));
+    }
 
     fn tmp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir()
@@ -1243,7 +1225,7 @@ mod tests {
             },
         );
         let client = crate::http::fake::FakeClient::new(vec![]);
-        let token = ensure_fresh_token_with(&client, oauth_base).unwrap();
+        let token = ensure_fresh_token(&client, oauth_base).unwrap();
         assert_eq!(token.access_token, "valid-token");
         assert_eq!(client.request_count(), 0);
     }
@@ -1264,7 +1246,7 @@ mod tests {
         );
         let body = r#"{"access_token":"new-token","expires_in":3600}"#;
         let client = crate::http::fake::FakeClient::new(vec![crate::http::fake::ok(200, body)]);
-        let token = ensure_fresh_token_with(&client, oauth_base).unwrap();
+        let token = ensure_fresh_token(&client, oauth_base).unwrap();
         assert_eq!(token.access_token, "new-token");
         assert_eq!(token.display_name, "alice");
         // Response omitted a new refresh_token, so the old one is kept.
@@ -1290,7 +1272,7 @@ mod tests {
             400,
             "invalid_grant",
         )]);
-        let err = ensure_fresh_token_with(&client, oauth_base).unwrap_err();
+        let err = ensure_fresh_token(&client, oauth_base).unwrap_err();
         assert!(matches!(err, AuthError::Http { status: 400, .. }));
     }
 
@@ -1298,8 +1280,7 @@ mod tests {
     fn ensure_fresh_token_with_not_logged_in_is_an_error() {
         init_store(TokenStore::default());
         let client = crate::http::fake::FakeClient::new(vec![]);
-        let err =
-            ensure_fresh_token_with(&client, "https://auth-test-nologin.example").unwrap_err();
+        let err = ensure_fresh_token(&client, "https://auth-test-nologin.example").unwrap_err();
         assert!(matches!(err, AuthError::NotLoggedIn));
     }
 
@@ -1376,7 +1357,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             token.access_token, "",
-            "placeholder until current_token() resolves it"
+            "placeholder until try_current_token resolves it"
         );
         assert_eq!(
             token.display_name, "bob",

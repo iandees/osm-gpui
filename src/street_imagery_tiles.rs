@@ -270,7 +270,7 @@ pub fn fetch_tile_with(
                 req = req.bearer(key);
             }
             let resp = fetch_with_retries(client, &req, &RetryPolicy::none())
-                .map_err(ImageryError::from_http)?;
+                .map_err(ImageryError::from)?;
             let body = resp
                 .into_string()
                 .map_err(|e| ImageryError::Network(e.to_string()))?;
@@ -289,7 +289,7 @@ fn get_bytes(client: &dyn HttpClient, url: String, retry: bool) -> Result<Vec<u8
     };
     fetch_with_retries(client, &HttpRequest::get(url), &policy)
         .map(|r| r.body)
-        .map_err(ImageryError::from_http)
+        .map_err(ImageryError::from)
 }
 
 /// What a tile leaves out, filled in when a photo is opened: image URLs, the
