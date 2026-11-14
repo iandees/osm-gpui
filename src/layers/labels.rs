@@ -1981,7 +1981,7 @@ mod tests {
                 priority: 400,
                 forced: true,
             };
-            let placed = place(&[it.clone()], &[], &HashMap::new(), &cfg());
+            let placed = place(std::slice::from_ref(&it), &[], &HashMap::new(), &cfg());
             assert_eq!(placed[0].text, it.forced_text_rect(), "{pref:?}");
         }
         let mut none = item(1, 0.0, 0.0, 10.0, 1);

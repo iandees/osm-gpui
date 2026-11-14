@@ -1013,6 +1013,7 @@ impl LineLabelCache {
     /// the `(way, slot)` pairs placed last time: they get a priority bonus
     /// so a small camera change does not swap which of two overlapping
     /// labels wins.
+    #[allow(clippy::too_many_arguments)]
     pub fn place(
         &mut self,
         cands: &[Candidate<'_>],
