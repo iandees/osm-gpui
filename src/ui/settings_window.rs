@@ -1,7 +1,7 @@
-//! Settings window with custom imagery management, OSM API server selection, and
-//! OpenStreetMap OAuth login. Built on gpui-component's `Settings` widget, which
-//! supplies page/group navigation and search chrome; this module only builds the
-//! `Vec<SettingPage>` from `SettingsWindow`'s state.
+//! The Settings window (see [`SettingsPage`] for its pages). Built on
+//! gpui-component's `Settings` widget, which supplies page/group navigation
+//! and search chrome; this module only builds the `Vec<SettingPage>` from
+//! `SettingsWindow`'s state.
 
 use gpui::*;
 use std::sync::Arc;
@@ -1056,7 +1056,8 @@ impl SettingsWindow {
             ])
     }
 
-    /// The Editing page: the autosave switch and the tag-suggestion switch.
+    /// The Editing page: the autosave switch, the tag-suggestion switch and
+    /// the Simplify Way tolerance.
     fn editing_page(&self, view: Entity<Self>) -> SettingPage {
         let taginfo_view = view.clone();
         let taginfo_item = SettingItem::new(
@@ -1356,11 +1357,8 @@ impl SettingsWindow {
     fn cache_group(&self, view: Entity<Self>) -> SettingGroup {
         let summary = crate::tile_cache::cache_summary();
 
-        // Exclude the synthetic "(uncategorized)" bucket from the reported
-        // source count: it's leftover loose files from before per-source
-        // directories existed, not a real configured imagery source, so
-        // including it would inflate the count a user sees relative to how
-        // many layers they actually configured.
+        // The synthetic "(uncategorized)" bucket holds loose files that belong
+        // to no imagery source, so it is not counted as one.
         let real_source_count = summary
             .sources
             .iter()
