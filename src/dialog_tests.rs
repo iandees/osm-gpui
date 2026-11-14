@@ -402,9 +402,8 @@ fn find_up_arrow_twice_shows_the_second_newest_query(cx: &mut TestAppContext) {
         build,
         |_: &DialogEvent| String::new(),
         |vcx, dialog| {
-            let shown = |vcx: &mut gpui::VisualTestContext| {
-                dialog.read_with(vcx, |d, cx| d.query_text(cx))
-            };
+            let shown =
+                |vcx: &mut gpui::VisualTestContext| dialog.read_with(vcx, |d, cx| d.query_text(cx));
             vcx.simulate_keystrokes("up");
             vcx.run_until_parked();
             assert_eq!(shown(vcx), "newest");

@@ -395,36 +395,37 @@ impl Render for FindDialog {
             .child(Label::new(self.preview_text()).text_color(status_color));
 
         // Under an empty field: the last few queries, to click.
-        let recent = (self.preview == Preview::Blank && !self.nav.entries().is_empty()).then(|| {
-            v_flex()
-                .gap_0p5()
-                .child(
-                    Label::new(tr!("dialog.find.recent"))
-                        .text_size(muted_text_size())
-                        .text_color(muted),
-                )
-                .children(
-                    self.nav
-                        .entries()
-                        .iter()
-                        .take(RECENT_SHOWN)
-                        .enumerate()
-                        .map(|(i, q)| {
-                            let q_click = q.clone();
-                            div()
-                                .id(("find-recent", i))
-                                .px_2()
-                                .py_0p5()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .hover(|el| el.bg(cx.theme().accent))
-                                .child(Label::new(q.clone()))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.set_query(&q_click, window, cx);
-                                }))
-                        }),
-                )
-        });
+        let recent =
+            (self.preview == Preview::Blank && !self.nav.entries().is_empty()).then(|| {
+                v_flex()
+                    .gap_0p5()
+                    .child(
+                        Label::new(tr!("dialog.find.recent"))
+                            .text_size(muted_text_size())
+                            .text_color(muted),
+                    )
+                    .children(
+                        self.nav
+                            .entries()
+                            .iter()
+                            .take(RECENT_SHOWN)
+                            .enumerate()
+                            .map(|(i, q)| {
+                                let q_click = q.clone();
+                                div()
+                                    .id(("find-recent", i))
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|el| el.bg(cx.theme().accent))
+                                    .child(Label::new(q.clone()))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.set_query(&q_click, window, cx);
+                                    }))
+                            }),
+                    )
+            });
 
         let examples: [(&str, SharedString); 6] = [
             ("amenity=cafe", tr!("dialog.find.hint.equals")),
