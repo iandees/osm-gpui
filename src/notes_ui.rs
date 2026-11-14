@@ -21,7 +21,7 @@ use gpui_component::{
 };
 use osm_gpui::auth;
 use osm_gpui::coordinates::GeoBounds;
-use osm_gpui::layers::notes_layer::{self, NotesLayer};
+use osm_gpui::layers::notes_layer::NotesLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::notes::{
     self, FetchPlan, Fetched, Note, NoteStatus, NoteStore, NoteWrite, NotesError,
@@ -68,7 +68,7 @@ pub(crate) struct NotesState {
     open: Option<OpenNote>,
     /// A pin was clicked; the panel opens on the next frame (it needs the
     /// window).
-    pending_open: Option<i64>,
+    pub(crate) pending_open: Option<i64>,
     writing: bool,
     /// New Note was chosen: the next click on the map places the note.
     armed: bool,
@@ -351,35 +351,15 @@ impl MapViewer {
         }
     }
 
-    /// A click on the map at `pos` (map-local pixels): places a new note when
-    /// New Note is armed, otherwise opens the note whose pin was clicked.
-    /// Returns whether the click was used.
-    pub(crate) fn notes_click(&mut self, pos: gpui::Point<gpui::Pixels>) -> bool {
-        if self.notes.armed {
-            self.notes.armed = false;
-            self.notes.pending_new = Some(self.viewport.screen_to_geo(pos));
-            return true;
-        }
-        if self.mode() != EditMode::Select {
+    /// A click on the map at `pos` (map-local pixels) while New Note is armed
+    /// places the note there. Returns whether the click was used.
+    pub(crate) fn place_armed_note(&mut self, pos: gpui::Point<gpui::Pixels>) -> bool {
+        if !self.notes.armed {
             return false;
         }
-        let Some(layer_id) = self.notes.layer else {
-            return false;
-        };
-        if !self
-            .layer_manager
-            .find_layer(layer_id)
-            .is_some_and(|l| l.is_visible())
-        {
-            return false;
-        }
-        match notes_layer::hit_test(&self.notes.store, &self.viewport, pos) {
-            Some(id) => {
-                self.notes.pending_open = Some(id);
-                true
-            }
-            None => false,
-        }
+        self.notes.armed = false;
+        self.notes.pending_new = Some(self.viewport.screen_to_geo(pos));
+        true
     }
 
     /// Escape while New Note is armed cancels it. Returns whether it did.

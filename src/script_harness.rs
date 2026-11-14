@@ -1032,30 +1032,30 @@ impl MapViewer {
             Check::NodeShared { node, ways } => self.script_check_node_shared(*node, ways),
             Check::Layer { kind, name } => {
                 let kind_of = |layer: &dyn osm_gpui::layers::MapLayer| {
+                    use osm_gpui::layers::LayerKind as Kind;
                     use osm_gpui::reference::Format;
-                    if let Some(r) = layer.as_reference() {
-                        match r.format() {
-                            Format::Gpx | Format::OsmTraces => script::LayerKind::Gpx,
-                            Format::GeoJson => script::LayerKind::GeoJson,
-                        }
-                    } else if layer.as_editable().is_some() {
-                        script::LayerKind::Osm
-                    } else if layer.as_imagery().is_some() {
-                        script::LayerKind::Imagery
-                    } else {
-                        script::LayerKind::Grid
+                    match layer.kind() {
+                        Kind::Reference => match layer.as_reference().map(|r| r.format()) {
+                            Some(Format::GeoJson) => Some(script::LayerKind::GeoJson),
+                            _ => Some(script::LayerKind::Gpx),
+                        },
+                        Kind::Osm => Some(script::LayerKind::Osm),
+                        Kind::Tile => Some(script::LayerKind::Imagery),
+                        Kind::Grid => Some(script::LayerKind::Grid),
+                        // The script language has no word for these.
+                        Kind::Notes | Kind::StreetImagery => None,
                     }
                 };
                 let layers = self.layer_manager.layers();
                 if layers
                     .iter()
-                    .any(|l| l.name() == name && kind_of(l.as_ref()) == *kind)
+                    .any(|l| l.name() == name && kind_of(l.as_ref()) == Some(*kind))
                 {
                     Ok(())
                 } else {
                     let found: Vec<String> = layers
                         .iter()
-                        .map(|l| format!("{:?} {:?}", kind_of(l.as_ref()), l.name()))
+                        .map(|l| format!("{:?} {:?}", l.kind(), l.name()))
                         .collect();
                     Err(format!(
                         "no {kind:?} layer named {name:?}; layers: {}",
