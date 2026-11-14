@@ -552,6 +552,12 @@ struct CliArgs {
     /// a crashed run's autosaves there. The only way to turn autosave on in
     /// a scripted run, which otherwise never touches any autosave directory.
     autosave_dir: Option<PathBuf>,
+    /// `--offline`: a scripted run denies every HTTP request that no fixture
+    /// answers. Ignored without `--script`.
+    offline: bool,
+    /// `--http-fixtures FILE`: URL-routing rules for a scripted run
+    /// (see `osm_gpui::http::parse_manifest`).
+    http_fixtures: Option<PathBuf>,
     /// `.osm` files to open as layers at startup (positional arguments).
     files: Vec<PathBuf>,
 }
@@ -591,6 +597,12 @@ fn parse_cli_args_from(args: impl IntoIterator<Item = String>) -> CliArgs {
             "--autosave-dir" => {
                 out.autosave_dir = Some(PathBuf::from(
                     args.next().expect("--autosave-dir needs a directory"),
+                ))
+            }
+            "--offline" => out.offline = true,
+            "--http-fixtures" => {
+                out.http_fixtures = Some(PathBuf::from(
+                    args.next().expect("--http-fixtures needs a file"),
                 ))
             }
             "--script-delay-ms" => {
@@ -7225,7 +7237,29 @@ fn main() {
     // store, so nothing here is ever saved to settings.json.
     settings_store::set_run_override(args.api_server.clone());
 
-    osm_gpui::http::install_default_client(Arc::new(osm_gpui::http::UreqClient::new()));
+    let real_client: Arc<dyn osm_gpui::http::HttpClient> =
+        Arc::new(osm_gpui::http::UreqClient::new());
+    let client = if args.script.is_some() {
+        let mut rules = match &args.http_fixtures {
+            Some(path) => osm_gpui::http::load_manifest(path).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }),
+            None => Vec::new(),
+        };
+        // Canned taginfo answers (see docs/osmscript.md) are one more rule.
+        if let Some(path) = std::env::var_os(osm_gpui::taginfo::FIXTURE_ENV) {
+            let fixture = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or(serde_json::Value::Null);
+            rules.push(osm_gpui::taginfo::fixture_rule(fixture));
+        }
+        osm_gpui::http::script_client(args.offline, rules, real_client)
+    } else {
+        real_client
+    };
+    osm_gpui::http::install_default_client(client);
 
     // Initialize the global idle tracker before the app starts so TileCache
     // picks up the same Arc.

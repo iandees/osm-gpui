@@ -8,7 +8,7 @@ use crate::imagery::AttributionInfo;
 use crate::imagery_offset::{offset_to_mercator, ImageryOffset};
 use crate::layers::{ImageryLayer, LayerId, LayerKind, MapLayer};
 use crate::tile_cache::TileCache;
-use crate::tiles::{tiles_covering, url_from_template, TileCoord};
+use crate::tiles::{tiles_covering_placed, url_from_template, PlacedTile, TileCoord};
 use crate::viewport::Viewport;
 
 /// The built-in OpenStreetMap Carto tile URL template.
@@ -97,8 +97,8 @@ impl TileLayer {
     /// The tiles to fetch and paint for `viewport` at `tile_zoom`, allowing
     /// for the layer's offset: these are the tiles that are visible *after*
     /// the shift, so no strip at the viewport edge is left empty.
-    fn visible_tiles(&self, viewport: &Viewport, tile_zoom: u32) -> Vec<TileCoord> {
-        tiles_covering(
+    fn visible_tiles(&self, viewport: &Viewport, tile_zoom: u32) -> Vec<PlacedTile> {
+        tiles_covering_placed(
             viewport.mercator_view_rect(),
             self.mercator_offset(viewport),
             tile_zoom,
@@ -364,14 +364,21 @@ impl MapLayer for TileLayer {
 
         // Downloads for tiles that scrolled off the map are cancelled; ones
         // cancelled but visible again are re-requested.
-        let wanted = wanted_urls(&self.url_template, &visible_tiles);
+        let coords: Vec<TileCoord> = visible_tiles.iter().map(|t| t.coord).collect();
+        let wanted = wanted_urls(&self.url_template, &coords);
         for key in crate::tile_cache::set_wanted_tiles(&self.source_key, wanted) {
             cx.remove_asset::<crate::tile_cache::TileAsset>(&key);
         }
 
-        for tile_coord in &visible_tiles {
-            let (tile_x, tile_y, tile_width, tile_height) =
-                tile_screen_rect_shifted(viewport, tile_coord, merc_offset);
+        for placed in &visible_tiles {
+            let tile_coord = &placed.coord;
+            // A tile of the other side of the antimeridian is painted a whole
+            // world east or west of where its coordinates put it.
+            let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect_shifted(
+                viewport,
+                tile_coord,
+                (merc_offset.0 + placed.x_shift_m(), merc_offset.1),
+            );
 
             let tile_url = url_from_template(&self.url_template, tile_coord);
 

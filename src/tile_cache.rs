@@ -60,6 +60,57 @@ impl TileErrors {
     }
 }
 
+/// Most cancelled tiles remembered (see `CancelledTiles`).
+const MAX_CANCELLED_TILES: usize = 512;
+
+/// Tiles whose download was cancelled, oldest first. gpui caches the failed
+/// load, so a tile in here has a failed asset that must be removed from gpui's
+/// cache before the tile is requested again; whoever drops a key from this set
+/// takes over that removal.
+#[derive(Default)]
+struct CancelledTiles {
+    keys: HashSet<TileAssetKey>,
+    order: VecDeque<TileAssetKey>,
+}
+
+impl CancelledTiles {
+    fn insert(&mut self, key: TileAssetKey) {
+        if self.keys.insert(key.clone()) {
+            self.order.push_back(key);
+        }
+    }
+
+    /// Remove and return the tiles of `source_key` that are in `urls`.
+    fn take_wanted(&mut self, source_key: &str, urls: &HashSet<String>) -> Vec<TileAssetKey> {
+        let revived: Vec<TileAssetKey> = self
+            .keys
+            .iter()
+            .filter(|k| k.source_key == source_key && urls.contains(&k.url))
+            .cloned()
+            .collect();
+        if !revived.is_empty() {
+            for k in &revived {
+                self.keys.remove(k);
+            }
+            self.order.retain(|k| self.keys.contains(k));
+        }
+        revived
+    }
+
+    /// Drop the oldest tiles beyond `MAX_CANCELLED_TILES` and return them.
+    fn take_overflow(&mut self) -> Vec<TileAssetKey> {
+        let mut dropped = Vec::new();
+        while self.keys.len() > MAX_CANCELLED_TILES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.keys.remove(&oldest);
+            dropped.push(oldest);
+        }
+        dropped
+    }
+}
+
 /// Everything the tile cache remembers while the app runs. Tiles load through
 /// gpui's `Asset` trait, whose `load` is a static function with no way to
 /// reach a `TileCache`, so there is one shared store (see `shared_store`) and
@@ -81,7 +132,7 @@ struct TileStore {
     wanted: Mutex<HashMap<String, HashSet<String>>>,
     /// Tiles whose download was cancelled. gpui caches the (failed) asset
     /// result forever, so these must be evicted before they are requested again.
-    cancelled: Mutex<HashSet<TileAssetKey>>,
+    cancelled: Mutex<CancelledTiles>,
     /// Last failure reason per tile URL, read when drawing a failed tile.
     errors: Mutex<TileErrors>,
     /// Tile loads started and not yet finished (queued for a download slot,
@@ -100,7 +151,7 @@ impl TileStore {
             file_count: Mutex::new(None),
             summary: Mutex::new(None),
             wanted: Mutex::new(HashMap::new()),
-            cancelled: Mutex::new(HashSet::new()),
+            cancelled: Mutex::new(CancelledTiles::default()),
             errors: Mutex::new(TileErrors::default()),
             active_loads: AtomicUsize::new(0),
             idle: OnceLock::new(),
@@ -169,14 +220,13 @@ impl TileStore {
     fn set_wanted(&self, source_key: &str, urls: HashSet<String>) -> Vec<TileAssetKey> {
         let revived: Vec<TileAssetKey> = {
             let mut cancelled = self.cancelled.lock().unwrap();
-            let revived: Vec<_> = cancelled
-                .iter()
-                .filter(|k| k.source_key == source_key && urls.contains(&k.url))
-                .cloned()
-                .collect();
-            for k in &revived {
-                cancelled.remove(k);
-            }
+            let mut revived = cancelled.take_wanted(source_key, &urls);
+            // Also hand back the oldest cancelled tiles beyond the cap. Their
+            // failed asset is removed from gpui's cache now, rather than when
+            // they next scroll into view, so forgetting them can never leave a
+            // cached failure behind; if one scrolls back it is simply loaded
+            // as a fresh tile.
+            revived.extend(cancelled.take_overflow());
             revived
         };
         self.wanted
@@ -198,6 +248,11 @@ impl TileStore {
 
     fn mark_cancelled(&self, key: TileAssetKey) {
         self.cancelled.lock().unwrap().insert(key);
+    }
+
+    #[cfg(test)]
+    fn cancelled_len(&self) -> usize {
+        self.cancelled.lock().unwrap().keys.len()
     }
 
     fn record_error(&self, url: &str, reason: String) {
@@ -383,8 +438,10 @@ fn evict_if_over_budget(dir: &Path, max_bytes: u64) {
 }
 
 /// Record the tile URLs a layer of `source_key` needs right now (replacing
-/// its previous set), and return the previously cancelled tiles among them,
-/// which the caller must evict from gpui's asset cache so they refetch.
+/// its previous set), and return the cancelled tiles the caller must evict
+/// from gpui's asset cache: those now wanted again, so they refetch, and the
+/// oldest ones beyond the cap on remembered cancellations, so no failed asset
+/// outlives its entry here.
 pub fn set_wanted_tiles(source_key: &str, urls: HashSet<String>) -> Vec<TileAssetKey> {
     shared_store().set_wanted(source_key, urls)
 }
@@ -1139,6 +1196,72 @@ mod tests {
         assert!(revived.contains(&key));
         assert!(store
             .set_wanted(src, HashSet::from(["u1".to_string()]))
+            .is_empty());
+    }
+
+    fn cancel(store: &TileStore, src: &str, url: &str) -> TileAssetKey {
+        let key = TileAssetKey {
+            url: url.into(),
+            source_key: src.into(),
+        };
+        store.mark_cancelled(key.clone());
+        key
+    }
+
+    #[test]
+    fn repeated_cancel_and_revive_cycles_do_not_grow_the_cancelled_set() {
+        let store = TileStore::new();
+        let src = "test-src-cycles";
+        for _ in 0..100 {
+            let key = cancel(&store, src, "u1");
+            cancel(&store, src, "u1");
+            assert_eq!(store.cancelled_len(), 1);
+            let revived = store.set_wanted(src, HashSet::from(["u1".to_string()]));
+            assert_eq!(revived, vec![key]);
+            assert_eq!(store.cancelled_len(), 0);
+            store.set_wanted(src, HashSet::new());
+        }
+    }
+
+    #[test]
+    fn cancelled_tiles_never_seen_again_are_capped_and_handed_back_for_eviction() {
+        let store = TileStore::new();
+        let src = "test-src-cap";
+        let total = MAX_CANCELLED_TILES + 30;
+        for i in 0..total {
+            cancel(&store, src, &format!("u{i}"));
+        }
+        let dropped = store.set_wanted(src, HashSet::new());
+        assert_eq!(store.cancelled_len(), MAX_CANCELLED_TILES);
+        let urls: Vec<&str> = dropped.iter().map(|k| k.url.as_str()).collect();
+        let expected: Vec<String> = (0..30).map(|i| format!("u{i}")).collect();
+        assert_eq!(urls, expected, "the oldest go first");
+    }
+
+    #[test]
+    fn a_cancelled_tile_still_revives_after_many_others_were_cancelled() {
+        let store = TileStore::new();
+        let src = "test-src-revive-after-many";
+        let old = cancel(&store, src, "old");
+        for i in 0..MAX_CANCELLED_TILES - 1 {
+            cancel(&store, src, &format!("u{i}"));
+        }
+        // Exactly at the cap: nothing is dropped, and `old` revives.
+        let revived = store.set_wanted(src, HashSet::from(["old".to_string()]));
+        assert_eq!(revived, vec![old]);
+
+        // Past the cap, the evicted tile comes back through the same list, so
+        // the caller removes its failed asset and it can load afresh.
+        let store = TileStore::new();
+        let evicted = cancel(&store, src, "evicted");
+        for i in 0..MAX_CANCELLED_TILES {
+            cancel(&store, src, &format!("v{i}"));
+        }
+        let handed_back = store.set_wanted(src, HashSet::new());
+        assert_eq!(handed_back, vec![evicted]);
+        // Scrolling back to it later finds nothing left to revive.
+        assert!(store
+            .set_wanted(src, HashSet::from(["evicted".to_string()]))
             .is_empty());
     }
 
@@ -2007,6 +2130,68 @@ mod tests {
 
         assert!(load_tile(&store, &client, &dir, &key).is_ok());
         assert_eq!(store.last_error(URL), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn host_rule(handler: crate::http::RouteHandler) -> crate::http::Rule {
+        crate::http::Rule {
+            matcher: crate::http::RouteMatch::Host {
+                host: "tile.example.test".to_string(),
+                path_prefix: None,
+            },
+            handler,
+        }
+    }
+
+    #[test]
+    fn load_tile_serves_a_tile_from_a_fixture_file() {
+        let dir = temp_dir("load-tile-fixture");
+        let blank = dir.join("blank-tile.png");
+        fs::write(&blank, tiny_png()).unwrap();
+        let client = crate::http::RoutedClient::offline(vec![host_rule(
+            crate::http::RouteHandler::File(blank),
+        )]);
+        let store = TileStore::new();
+        let cache = dir.join("cache");
+
+        assert!(load_tile(&store, &client, &cache, &key("src")).is_ok());
+        assert_eq!(store.last_error(URL), None);
+        assert_eq!(
+            fs::read(tile_file_path(&cache, "src", URL)).unwrap(),
+            tiny_png()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_denied_tile_is_recorded_as_failed_quickly_and_leaves_no_load_active() {
+        let dir = temp_dir("load-tile-denied");
+        let client = crate::http::RoutedClient::offline(Vec::new());
+        let store = TileStore::new();
+        let started = Instant::now();
+
+        {
+            let _active = store.begin_load();
+            assert_eq!(store.active_loads(), 1);
+            assert!(load_tile(&store, &client, &dir, &key("src")).is_err());
+        }
+
+        assert_eq!(store.active_loads(), 0);
+        let reason = store.last_error(URL).expect("failure recorded");
+        assert!(reason.contains("offline run"), "{reason}");
+        assert!(reason.contains("tile.example.test"), "{reason}");
+        assert_eq!(
+            store.cancelled_len(),
+            0,
+            "a denial is a failure, not a cancel"
+        );
+        assert!(!tile_file_path(&dir, "src", URL).exists());
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(150),
+            "a denied tile must not sit through retry delays"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

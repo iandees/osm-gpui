@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"match": {"host": "tile.openstreetmap.org"}, "file": "blank-tile.png"},
+    {"match": {"host": "api.openstreetmap.org", "path_prefix": "/api/capabilities"}, "status": 404, "body": "offline fixture"}
+  ]
+}

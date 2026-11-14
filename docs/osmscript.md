@@ -6,6 +6,29 @@ An `.osmscript` file is a line-oriented script that `--script <file>` runs again
 cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 ```
 
+## Running offline
+
+A scripted run uses the network like a normal run (map tiles, imagery index, name suggestions, server capabilities). To make it deterministic, add `--offline`: every HTTP request is then denied with an error that names the host, and fails the way a lost connection does (failed tiles show their placeholder, startup fetches log and carry on). `--offline` is only meaningful with `--script`.
+
+`--http-fixtures FILE` adds routing rules, tried in order before the deny-all fallback (and, without `--offline`, before the real network):
+
+```json
+{"rules": [
+  {"match": {"host": "tile.openstreetmap.org"}, "file": "blank-tile.png"},
+  {"match": {"prefix": "https://example.test/x"}, "status": 404, "body": "gone"},
+  {"match": {"host": "example.test", "path_prefix": "/private"}, "deny": true}
+]}
+```
+
+`match` is `{"prefix": URL-prefix}` or `{"host": H, "path_prefix": P}` (`path_prefix` optional); each rule has exactly one of `file`, `status` (with optional `body`) or `deny`. `file` is relative to the manifest. Unknown keys and missing files are rejected at startup.
+
+```bash
+cargo run -- --script docs/screenshots/smoke.osmscript --offline \
+  --http-fixtures docs/screenshots/fixtures/offline/http-fixtures.json
+```
+
+`OSM_GPUI_TAGINFO_FIXTURE` (canned taginfo answers) still works and is one more rule on the same client. The `load_notes_file` and `load_history_file` ops are unchanged.
+
 The parser is `src/script/parser.rs` (plus `src/script/note_ops.rs` for the notes ops). A unit test checks that every op the parser accepts has exactly one row in the tables below and that no row names an op the parser rejects, so this page stays complete. Every checked-in script is also parsed by `cargo test` (`tests/script_files_parse.rs`).
 
 ## Syntax
