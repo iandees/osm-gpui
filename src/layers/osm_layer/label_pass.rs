@@ -44,10 +44,21 @@ impl OsmLayer {
     }
 
     /// Identifies what label placement depends on besides the data: the
-    /// stylesheet, and the benchmark knobs (so a script changing them
-    /// forces a new placement).
-    pub(super) fn label_sheet_id(&self) -> usize {
-        Arc::as_ptr(&self.store.stylesheet) as usize ^ crate::layers::line_labels::bench_stamp()
+    /// stylesheet, and the tuning (so changing a knob forces a new
+    /// placement).
+    pub(super) fn label_sheet_id(&self, tuning: &labels::LabelTuning) -> usize {
+        Arc::as_ptr(&self.store.stylesheet) as usize ^ tuning.stamp()
+    }
+
+    /// Apply a `LabelBench` script spec to this layer's labels (see
+    /// `line_labels::parse_bench`); the next frame places again.
+    pub fn set_label_bench(&self, spec: &str) -> Result<(), String> {
+        self.render
+            .label_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tuning
+            .set_bench(spec)
     }
 
     /// The (cached) label text and style of the area `key` (a closed way or
@@ -444,11 +455,11 @@ impl OsmLayer {
         labels::Placement {
             cam,
             revision: self.store.revision,
-            sheet: self.label_sheet_id(),
+            sheet: self.label_sheet_id(&cache.tuning),
             labels: placed,
             by_id,
             fade_end: None,
-            halo: labels::halo_for(n_text),
+            halo: cache.tuning.halo_for(n_text),
         }
     }
 
@@ -485,12 +496,12 @@ impl OsmLayer {
             w: f32::from(viewport.transform.screen_size.width),
             h: f32::from(viewport.transform.screen_size.height),
         };
-        let sheet = self.label_sheet_id();
         let mut cache = self
             .render
             .label_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let sheet = self.label_sheet_id(&cache.tuning);
         cache.validate(self.store.revision, sheet, zoom.floor() as i32);
         let now = std::time::Instant::now();
         let step = cache.step(cam, self.store.revision, sheet, now);
@@ -512,7 +523,7 @@ impl OsmLayer {
                 })
                 .collect();
             let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
-            self.place_line_labels(viewport, cam, &p, now);
+            self.place_line_labels(viewport, cam, &p, &cache.tuning.line_knobs(), now);
             cache.store(p, now);
         }
         // Frames are requested only while something is in flight: waiting to
@@ -535,7 +546,13 @@ impl OsmLayer {
             return;
         }
         // Street names under the point labels and icons they yielded to.
-        self.paint_line_labels(viewport, bounds, now, window);
+        self.paint_line_labels(
+            viewport,
+            bounds,
+            now,
+            cache.tuning.line_knobs().repeat,
+            window,
+        );
         let ox = bounds.origin.x;
         let oy = bounds.origin.y;
         let (w, h) = (cam.w, cam.h);
@@ -735,6 +752,7 @@ impl OsmLayer {
         viewport: &Viewport,
         cam: labels::CameraSig,
         points: &labels::Placement,
+        knobs: &crate::layers::line_labels::BenchKnobs,
         now: std::time::Instant,
     ) {
         let fs = crate::frame_stats::start();
@@ -778,6 +796,7 @@ impl OsmLayer {
             Ok(mut cache) => cache.place(
                 &cands,
                 cam.zoom,
+                knobs,
                 to_screen,
                 (cam.w, cam.h),
                 &obstacles,
@@ -799,6 +818,7 @@ impl OsmLayer {
         viewport: &Viewport,
         bounds: Bounds<Pixels>,
         now: std::time::Instant,
+        repeat: u32,
         window: &mut Window,
     ) {
         use crate::layers::line_labels::{emit_frame, FrameOut};
@@ -835,7 +855,6 @@ impl OsmLayer {
         crate::frame_stats::count("linelabels.drawn", out.labels);
         crate::frame_stats::count("linelabels.vertices", nf + nh);
         // `repeat` > 1 is a GPU-load multiplier for benchmarking.
-        let repeat = crate::layers::line_labels::bench_knobs().repeat;
         for (verts, color) in out.halo.iter().chain(out.fill.iter()).map(|(c, v)| (v, *c)) {
             if verts.is_empty() {
                 continue;
@@ -912,5 +931,35 @@ pub(super) fn highway_label_rank(tags: &HashMap<String, String>) -> i32 {
         Some("service" | "living_street" | "pedestrian") => 40,
         Some(_) => 30,
         None => 20,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: it carries `gpui::test`, which shadows `#[test]`.
+    use crate::layers::osm_layer::OsmLayer;
+    use crate::layers::LayerId;
+
+    #[test]
+    fn a_bench_action_changes_the_placement_key_of_that_layer_only() {
+        let a = OsmLayer::new(LayerId(1));
+        let b = OsmLayer::new(LayerId(2));
+        let key = |l: &OsmLayer| {
+            let t = l.render.label_cache.lock().unwrap().tuning;
+            l.label_sheet_id(&t)
+        };
+        let before = key(&a);
+        a.set_label_bench("on halo=none").unwrap();
+        assert_ne!(key(&a), before);
+        assert_eq!(key(&b), before, "the other layer is untouched");
+        assert_eq!(
+            a.render.label_cache.lock().unwrap().tuning.bench.halo,
+            crate::layers::line_labels::MeshHalo::None
+        );
+        assert_eq!(
+            b.render.label_cache.lock().unwrap().tuning.bench,
+            crate::layers::line_labels::BenchKnobs::default()
+        );
+        assert!(a.set_label_bench("halo=wat").is_err());
     }
 }

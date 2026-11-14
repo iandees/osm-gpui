@@ -106,8 +106,8 @@ pub struct Tuning {
     pub spacing_px: f32,
     /// Most labels one way can get.
     pub max_per_way: usize,
-    /// How the halo is built (`StrokeCoarse` by default, see [`HaloMode`]).
-    pub halo_mode: HaloMode,
+    /// How the halo is built (`StrokeCoarse` by default, see [`MeshHalo`]).
+    pub halo_mode: MeshHalo,
 }
 
 impl Default for Tuning {
@@ -118,14 +118,16 @@ impl Default for Tuning {
             pad_px: 4.0,
             spacing_px: 300.0,
             max_per_way: 40,
-            halo_mode: HaloMode::StrokeCoarse,
+            halo_mode: MeshHalo::StrokeCoarse,
         }
     }
 }
 
-/// Halo construction variants, to compare vertex counts and frame times.
+/// How a street name's halo mesh is built. This is not the point labels'
+/// `labels::HaloMode`: those repaint text at paint time, these are meshes
+/// built once per glyph and cached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HaloMode {
+pub enum MeshHalo {
     /// Fully joined stroke around every contour.
     Stroke,
     /// Unjoined stroke segments around a coarser outline: noticeably fewer
@@ -138,77 +140,45 @@ pub enum HaloMode {
     None,
 }
 
-/// Benchmark knobs, settable from a script (`action LabelBench ...`).
+/// Benchmark knobs, settable from a script (`action LabelBench ...`); they
+/// live in [`crate::layers::labels::LabelTuning`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BenchKnobs {
     pub labels: bool,
-    pub halo: HaloMode,
+    pub halo: MeshHalo,
     /// Paint the label batches this many times (GPU load multiplier).
     pub repeat: u32,
     /// Text offset override in whole pixels (`None` = the style default).
     pub offset: Option<u8>,
 }
 
-static BENCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn pack(k: BenchKnobs) -> u32 {
-    (k.labels as u32)
-        | ((k.halo as u32) << 1)
-        | (k.repeat.min(255) << 8)
-        | (k.offset.map_or(0, |o| o as u32 + 1) << 16)
-        | (1 << 31)
-}
-
-/// Current knobs (defaults: labels on, coarse halo, repeat 1).
-pub fn bench_knobs() -> BenchKnobs {
-    let v = BENCH.load(std::sync::atomic::Ordering::Relaxed);
-    if v == 0 {
-        return BenchKnobs {
+impl Default for BenchKnobs {
+    /// Labels on, coarse halo, painted once, the style's own offset.
+    fn default() -> Self {
+        Self {
             labels: true,
-            halo: HaloMode::StrokeCoarse,
+            halo: MeshHalo::StrokeCoarse,
             repeat: 1,
             offset: None,
-        };
-    }
-    BenchKnobs {
-        labels: v & 1 != 0,
-        halo: match (v >> 1) & 3 {
-            0 => HaloMode::Stroke,
-            1 => HaloMode::StrokeCoarse,
-            2 => HaloMode::Offset4,
-            _ => HaloMode::None,
-        },
-        repeat: ((v >> 8) & 255).max(1),
-        offset: match (v >> 16) & 511 {
-            0 => None,
-            n => Some((n - 1) as u8),
-        },
+        }
     }
 }
 
-/// Changes whenever the knobs do, so callers can invalidate placements.
-pub fn bench_stamp() -> usize {
-    (BENCH.load(std::sync::atomic::Ordering::Relaxed) as usize) << 3
+impl BenchKnobs {
+    /// Differs between any two distinct knob settings, so a cache keyed on it
+    /// is invalidated when a knob changes.
+    pub fn stamp(&self) -> u32 {
+        (self.labels as u32)
+            | ((self.halo as u32) << 1)
+            | (self.repeat.min(255) << 8)
+            | (self.offset.map_or(0, |o| o as u32 + 1) << 16)
+    }
 }
 
-/// Parse `off` | `on` plus optional `halo=stroke|coarse|offset4|none` and
-/// `repeat=N` tokens, e.g. `on halo=none repeat=4`.
-pub fn set_bench(spec: &str) -> Result<(), String> {
-    BENCH.store(
-        pack(parse_bench(spec)?),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    Ok(())
-}
-
-/// The pure half of [`set_bench`].
+/// Parse `off` | `on` plus optional `halo=stroke|coarse|offset4|none`,
+/// `offset=N` and `repeat=N` tokens, e.g. `on halo=none repeat=4`.
 pub fn parse_bench(spec: &str) -> Result<BenchKnobs, String> {
-    let mut k = BenchKnobs {
-        labels: true,
-        halo: HaloMode::StrokeCoarse,
-        repeat: 1,
-        offset: None,
-    };
+    let mut k = BenchKnobs::default();
     for tok in spec.split_whitespace() {
         match tok {
             "on" => k.labels = true,
@@ -216,10 +186,10 @@ pub fn parse_bench(spec: &str) -> Result<BenchKnobs, String> {
             _ => {
                 let (key, val) = tok.split_once('=').ok_or(format!("bad token {tok}"))?;
                 match (key, val) {
-                    ("halo", "stroke") => k.halo = HaloMode::Stroke,
-                    ("halo", "coarse") => k.halo = HaloMode::StrokeCoarse,
-                    ("halo", "offset4") => k.halo = HaloMode::Offset4,
-                    ("halo", "none") => k.halo = HaloMode::None,
+                    ("halo", "stroke") => k.halo = MeshHalo::Stroke,
+                    ("halo", "coarse") => k.halo = MeshHalo::StrokeCoarse,
+                    ("halo", "offset4") => k.halo = MeshHalo::Offset4,
+                    ("halo", "none") => k.halo = MeshHalo::None,
                     ("offset", n) => {
                         k.offset = Some(n.parse().map_err(|_| format!("bad offset {n}"))?)
                     }
@@ -497,13 +467,13 @@ fn build_mesh(
     let fill = triangulate_contours(&oc.contours);
     let mut halo = Vec::new();
     let (tol, shape) = match tuning.halo_mode {
-        HaloMode::StrokeCoarse => (tuning.halo_tol.max(0.5), Shape::PLAIN),
+        MeshHalo::StrokeCoarse => (tuning.halo_tol.max(0.5), Shape::PLAIN),
         _ => (tuning.halo_tol, Shape::FULL),
     };
     match tuning.halo_mode {
-        HaloMode::None => {}
+        MeshHalo::None => {}
         _ if style.look.halo_radius <= 0.0 => {}
-        HaloMode::Offset4 => {
+        MeshHalo::Offset4 => {
             let r = style.look.halo_radius;
             for (dx, dy) in [(r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)] {
                 halo.extend(fill.iter().map(|&(x, y)| (x + dx, y + dy)));
@@ -1051,12 +1021,12 @@ impl LineLabelCache {
         &mut self,
         cands: &[Candidate<'_>],
         zoom: f64,
+        knobs: &BenchKnobs,
         to_screen: impl Fn(f64, f64) -> Pt,
         view: (f32, f32),
         obstacles: &[Rect],
         prev: &HashSet<(i64, usize)>,
     ) -> (Vec<LinePlaced>, usize) {
-        let knobs = bench_knobs();
         if zoom < MIN_ZOOM || !knobs.labels {
             return (Vec::new(), 0);
         }
@@ -1191,7 +1161,15 @@ impl LineLabelCache {
         view: (f32, f32),
         out: &mut FrameOut,
     ) {
-        let (placed, built) = self.place(cands, zoom, &to_screen, view, &[], &HashSet::new());
+        let (placed, built) = self.place(
+            cands,
+            zoom,
+            &BenchKnobs::default(),
+            &to_screen,
+            view,
+            &[],
+            &HashSet::new(),
+        );
         out.layouts_built += built;
         emit_frame(&placed, to_screen, origin, view, Instant::now(), out);
     }
@@ -1531,16 +1509,17 @@ mod tests {
             parse_bench("on halo=none repeat=4"),
             Ok(BenchKnobs {
                 labels: true,
-                halo: HaloMode::None,
+                halo: MeshHalo::None,
                 repeat: 4,
                 offset: None
             })
         );
         assert!(!parse_bench("off").unwrap().labels);
         assert!(parse_bench("halo=wat").is_err());
-        // Packing round-trips.
+        // The stamp tells distinct settings apart.
         let k = parse_bench("halo=offset4 repeat=3").unwrap();
-        assert_eq!(pack(k) & 1, 1);
+        assert_eq!(k.stamp() & 1, 1);
+        assert_ne!(k.stamp(), BenchKnobs::default().stamp());
     }
 
     #[test]
@@ -1576,15 +1555,39 @@ mod tests {
         let verts = east_way();
         let cands = [cand(1, "Elm St", &verts)];
         let view = (800.0, 600.0);
-        let (free, _) = cache.place(&cands, 17.0, to_screen, view, &[], &HashSet::new());
+        let (free, _) = cache.place(
+            &cands,
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[],
+            &HashSet::new(),
+        );
         assert_eq!(free.len(), 1);
         // A point label (or icon) right where the street name would go.
         let blocker = Rect::new(150.0, 70.0, 260.0, 130.0);
-        let (blocked, _) = cache.place(&cands, 17.0, to_screen, view, &[blocker], &HashSet::new());
+        let (blocked, _) = cache.place(
+            &cands,
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[blocker],
+            &HashSet::new(),
+        );
         assert!(blocked.is_empty());
         // Far away it does not matter.
         let far = Rect::new(600.0, 400.0, 700.0, 450.0);
-        let (ok, _) = cache.place(&cands, 17.0, to_screen, view, &[far], &HashSet::new());
+        let (ok, _) = cache.place(
+            &cands,
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[far],
+            &HashSet::new(),
+        );
         assert_eq!(ok.len(), 1);
     }
 
@@ -1600,13 +1603,29 @@ mod tests {
         b.priority = 50;
         let view = (800.0, 600.0);
         let none = HashSet::new();
-        let (fresh, _) = cache.place(&[a, b], 17.0, to_screen, view, &[], &none);
+        let (fresh, _) = cache.place(
+            &[a, b],
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[],
+            &none,
+        );
         assert_eq!(fresh.iter().map(|p| p.way_id).collect::<Vec<_>>(), [2]);
         let prev: HashSet<(i64, usize)> = [(1, 0)].into();
         let a = cand(1, "Elm St", &verts);
         let mut b = cand(2, "Elm St", &verts);
         b.priority = 50;
-        let (kept, _) = cache.place(&[a, b], 17.0, to_screen, view, &[], &prev);
+        let (kept, _) = cache.place(
+            &[a, b],
+            17.0,
+            &BenchKnobs::default(),
+            to_screen,
+            view,
+            &[],
+            &prev,
+        );
         assert_eq!(kept.iter().map(|p| p.way_id).collect::<Vec<_>>(), [1]);
     }
 
@@ -1619,6 +1638,7 @@ mod tests {
         let (p, _) = cache.place(
             &cands,
             17.0,
+            &BenchKnobs::default(),
             to_screen,
             (180.0, 600.0),
             &[],
@@ -1682,6 +1702,7 @@ mod tests {
         let (placed, _) = cache.place(
             &cands,
             17.0,
+            &BenchKnobs::default(),
             to_screen,
             (800.0, 600.0),
             &[],
@@ -1727,6 +1748,7 @@ mod tests {
             c.place(
                 &cands,
                 17.0,
+                &BenchKnobs::default(),
                 to_screen,
                 (800.0, 600.0),
                 &[],

@@ -573,7 +573,14 @@ impl MapViewer {
                             let spec = name
                                 .trim_start_matches("LabelBench")
                                 .replace([':', ','], " ");
-                            let result = osm_gpui::layers::line_labels::set_bench(&spec);
+                            let result = osm_gpui::layers::line_labels::parse_bench(&spec)
+                                .and_then(|_| {
+                                    self.layer_manager
+                                        .layers_mut()
+                                        .iter_mut()
+                                        .filter_map(|l| l.as_osm_mut())
+                                        .try_for_each(|l| l.set_label_bench(&spec))
+                                });
                             cx.notify();
                             result
                         }

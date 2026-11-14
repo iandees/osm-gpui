@@ -25,6 +25,7 @@
 //! tests use.
 
 use crate::layers::area_labels::AreaCaches;
+use crate::layers::line_labels::{parse_bench, BenchKnobs};
 use crate::presets;
 use crate::style::{TextPosition, TextStyle};
 use gpui::{
@@ -835,6 +836,8 @@ pub struct LabelCache {
     pub nodes: HashMap<i64, Option<Arc<NodeLabel>>>,
     /// Area labels and their cached label points; see [`area_labels`].
     pub areas: AreaCaches,
+    /// This layer's overrides (environment and script knobs).
+    pub tuning: LabelTuning,
     built_for: Option<(u64, usize, i32)>,
     pub placement: Option<Placement>,
     last_cam: Option<CameraSig>,
@@ -848,6 +851,7 @@ impl Default for LabelCache {
             icons: IconCache::new(),
             nodes: HashMap::new(),
             areas: AreaCaches::default(),
+            tuning: LabelTuning::from_env(),
             built_for: None,
             placement: None,
             last_cam: None,
@@ -1001,32 +1005,101 @@ pub enum HaloMode {
     Off,
 }
 
-/// The halo mode forced by `OSM_GPUI_LABEL_HALO` (`offsets` | `shadow` |
-/// `quad` | `off`), read once; `None` to choose by label count.
-pub fn forced_halo_mode() -> Option<HaloMode> {
-    static MODE: OnceLock<Option<HaloMode>> = OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("OSM_GPUI_LABEL_HALO").as_deref() {
-        Ok("offsets") => Some(HaloMode::Offsets),
-        Ok("shadow") => Some(HaloMode::Shadow),
-        Ok("quad") => Some(HaloMode::Quad),
-        Ok("off") => Some(HaloMode::Off),
-        _ => None,
-    })
+impl HaloMode {
+    /// The mode `OSM_GPUI_LABEL_HALO` names.
+    pub fn from_name(name: &str) -> Option<HaloMode> {
+        match name {
+            "offsets" => Some(HaloMode::Offsets),
+            "shadow" => Some(HaloMode::Shadow),
+            "quad" => Some(HaloMode::Quad),
+            "off" => Some(HaloMode::Off),
+            _ => None,
+        }
+    }
 }
+
+/// Environment variable forcing the halo of point and area labels
+/// (`offsets` | `shadow` | `quad` | `off`).
+pub const HALO_ENV: &str = "OSM_GPUI_LABEL_HALO";
 
 /// The outline (`Offsets`) is the most legible but paints every glyph several
 /// times, so it is used only while there are few labels; with more than
 /// [`OUTLINE_MAX_LABELS`] placed, the much cheaper backing quad takes over.
 pub const OUTLINE_MAX_LABELS: usize = 40;
 
-/// The halo for a placement with `n_text` text labels, unless overridden by
-/// `OSM_GPUI_LABEL_HALO`.
-pub fn halo_for(n_text: usize) -> HaloMode {
-    forced_halo_mode().unwrap_or(if n_text <= OUTLINE_MAX_LABELS {
-        HaloMode::Offsets
-    } else {
-        HaloMode::Quad
-    })
+/// What a layer's labels are tuned with: overrides for measuring, never
+/// changed by normal use. Owned by the layer's [`LabelCache`] and passed
+/// wherever placement or painting needs it, so two layers never share a knob.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LabelTuning {
+    /// Forces how point and area labels draw their halo; `None` picks by
+    /// label count (see [`LabelTuning::halo_for`]).
+    pub halo_override: Option<HaloMode>,
+    /// Text labels up to which the outline halo is used.
+    pub outline_max_labels: usize,
+    /// Street-name benchmark knobs, set by the `LabelBench` script action.
+    pub bench: BenchKnobs,
+}
+
+impl Default for LabelTuning {
+    fn default() -> Self {
+        Self {
+            halo_override: None,
+            outline_max_labels: OUTLINE_MAX_LABELS,
+            bench: BenchKnobs::default(),
+        }
+    }
+}
+
+impl LabelTuning {
+    /// The defaults with `OSM_GPUI_LABEL_HALO` applied; read once, when the
+    /// layer's label cache is made.
+    pub fn from_env() -> Self {
+        Self {
+            halo_override: std::env::var(HALO_ENV)
+                .ok()
+                .and_then(|v| HaloMode::from_name(&v)),
+            ..Self::default()
+        }
+    }
+
+    /// The halo for a placement with `n_text` text labels.
+    pub fn halo_for(&self, n_text: usize) -> HaloMode {
+        self.halo_override
+            .unwrap_or(if n_text <= self.outline_max_labels {
+                HaloMode::Offsets
+            } else {
+                HaloMode::Quad
+            })
+    }
+
+    /// The knobs street names are placed and painted with. Street names do
+    /// not follow `halo_override` or `outline_max_labels` (their halo is a
+    /// cached mesh, see [`crate::layers::line_labels::MeshHalo`]); to make them follow, map those here.
+    pub fn line_knobs(&self) -> BenchKnobs {
+        self.bench
+    }
+
+    /// Apply a `LabelBench` spec (see [`parse_bench`]).
+    pub fn set_bench(&mut self, spec: &str) -> Result<(), String> {
+        let mut k = parse_bench(spec)?;
+        k.repeat = k.repeat.clamp(1, 255);
+        self.bench = k;
+        Ok(())
+    }
+
+    /// Differs between any two settings, so a placement keyed on it is
+    /// redone when a knob changes. Cheap enough to compute every frame.
+    pub fn stamp(&self) -> usize {
+        let halo = match self.halo_override {
+            None => 0,
+            Some(m) => m as u64 + 1,
+        };
+        let h = (self.bench.stamp() as u64)
+            ^ halo.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (self.outline_max_labels as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        (h as usize) << 3
+    }
 }
 
 /// Offsets (in pixels) at which the halo is painted for radius `r`: the four
@@ -1731,10 +1804,77 @@ mod tests {
 
     #[test]
     fn the_cheap_halo_takes_over_past_the_outline_budget() {
-        if forced_halo_mode().is_none() {
-            assert_eq!(halo_for(OUTLINE_MAX_LABELS), HaloMode::Offsets);
-            assert_eq!(halo_for(OUTLINE_MAX_LABELS + 1), HaloMode::Quad);
+        let t = LabelTuning::default();
+        assert_eq!(t.halo_for(OUTLINE_MAX_LABELS), HaloMode::Offsets);
+        assert_eq!(t.halo_for(OUTLINE_MAX_LABELS + 1), HaloMode::Quad);
+        let tight = LabelTuning {
+            outline_max_labels: 3,
+            ..t
+        };
+        assert_eq!(tight.halo_for(3), HaloMode::Offsets);
+        assert_eq!(tight.halo_for(4), HaloMode::Quad);
+    }
+
+    #[test]
+    fn a_halo_override_wins_over_the_label_count() {
+        let t = LabelTuning {
+            halo_override: HaloMode::from_name("shadow"),
+            ..LabelTuning::default()
+        };
+        assert_eq!(t.halo_for(0), HaloMode::Shadow);
+        assert_eq!(t.halo_for(10_000), HaloMode::Shadow);
+        assert_eq!(HaloMode::from_name("off"), Some(HaloMode::Off));
+        assert_eq!(HaloMode::from_name("wat"), None);
+    }
+
+    #[test]
+    fn the_tuning_stamp_changes_with_every_knob() {
+        let base = LabelTuning::default();
+        let mut seen = vec![base.stamp()];
+        let mut check = |t: LabelTuning| {
+            let s = t.stamp();
+            assert!(!seen.contains(&s), "stamp {s} repeated for {t:?}");
+            seen.push(s);
+        };
+        for spec in [
+            "off",
+            "halo=none",
+            "halo=stroke",
+            "halo=offset4",
+            "repeat=4",
+            "offset=0",
+            "offset=9",
+        ] {
+            let mut t = base;
+            t.set_bench(spec).unwrap();
+            check(t);
         }
+        check(LabelTuning {
+            halo_override: Some(HaloMode::Quad),
+            ..base
+        });
+        check(LabelTuning {
+            halo_override: Some(HaloMode::Off),
+            ..base
+        });
+        check(LabelTuning {
+            outline_max_labels: 5,
+            ..base
+        });
+        // Setting the defaults explicitly is not a change.
+        let mut same = base;
+        same.set_bench("on halo=coarse repeat=1").unwrap();
+        assert_eq!(same.stamp(), base.stamp());
+        assert!(LabelTuning::default().set_bench("halo=wat").is_err());
+    }
+
+    #[test]
+    fn bench_repeat_is_kept_within_what_the_stamp_can_tell_apart() {
+        let mut t = LabelTuning::default();
+        t.set_bench("repeat=0").unwrap();
+        assert_eq!(t.bench.repeat, 1);
+        t.set_bench("repeat=1000").unwrap();
+        assert_eq!(t.bench.repeat, 255);
     }
 
     #[test]
