@@ -585,6 +585,7 @@ pub struct ChunkRequest {
 /// What came back for a [`ChunkRequest`]: the token step and the send step
 /// together.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ChunkOutcome {
     /// No usable token (the message); nothing was sent.
     TokenFailed(String),
@@ -602,6 +603,7 @@ pub struct Stopped {
 
 /// What the caller does after [`UploadDriver::record`].
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// The server accepted this part: apply it to local state, then ask for
     /// the next request. `last` on the chunk says whether it was the final one.
@@ -1484,5 +1486,104 @@ mod tests {
         // The diff was sent once, never retried.
         assert_eq!(upload_bodies(&client).len(), 2);
         assert_eq!(client.request_count(), 6);
+    }
+
+    fn two_part_responses() -> FakeClient {
+        FakeClient::new(vec![
+            ok(200, "101"),
+            ok(200, diff_result(&[(-1, 5001), (-2, 5002)], &[])),
+            ok(200, ""),
+            ok(200, "102"),
+            ok(200, diff_result(&[(-3, 5003)], &[(-1, 6001)])),
+            ok(200, ""),
+        ])
+    }
+
+    #[test]
+    fn the_last_part_is_marked_last_exactly_once_and_ids_reach_the_next_request() {
+        let client = two_part_responses();
+        let diff = node_way_diff();
+        let mut driver = UploadDriver::plan(&[&diff], 2, "c").unwrap();
+        assert_eq!((driver.total(), driver.accepted()), (2, 0));
+        let mut lasts = Vec::new();
+        let mut ways = Vec::new();
+        while let Some(request) = driver.next_request() {
+            ways.extend(request.chunk.created_ways.iter().map(|w| w.nodes.clone()));
+            let outcome = send(
+                request,
+                &client,
+                BASE,
+                &mut || Ok("t".into()),
+                &mut |_, _| {},
+            );
+            match driver.record(outcome) {
+                Step::Apply(done) => lasts.push(done.last),
+                Step::Stop(stopped) => panic!("{stopped:?}"),
+            }
+        }
+        assert_eq!(lasts, vec![false, true]);
+        assert_eq!(ways, vec![vec![5001, 5002, -3]]);
+        assert_eq!(driver.partial(), Some((2, 2)));
+        assert_eq!(driver.last_changeset(), 102);
+    }
+
+    #[test]
+    fn a_token_failure_stops_the_driver_and_hands_out_nothing_more() {
+        let client = two_part_responses();
+        let diff = node_way_diff();
+        let mut driver = UploadDriver::plan(&[&diff], 2, "c").unwrap();
+        let request = driver.next_request().unwrap();
+        assert_eq!(request.part, Some((1, 2)));
+        let outcome = send(
+            request,
+            &client,
+            BASE,
+            &mut || Err("no login".into()),
+            &mut |_, _| {},
+        );
+        match driver.record(outcome) {
+            Step::Stop(Stopped {
+                reason: UploadStop::Failed(message),
+                failure: None,
+            }) => assert_eq!(message, "no login"),
+            other => panic!("{other:?}"),
+        }
+        assert!(driver.next_request().is_none());
+        assert_eq!(client.request_count(), 0, "nothing was sent");
+        assert_eq!(driver.partial(), Some((0, 2)));
+    }
+
+    #[test]
+    fn an_unknown_outcome_is_its_own_stop_and_the_part_is_not_handed_out_again() {
+        let client = FakeClient::new(vec![
+            ok(200, "101"),
+            ok(200, diff_result(&[(-1, 5001), (-2, 5002)], &[])),
+            ok(200, ""),
+            ok(200, "102"),
+            crate::http::fake::transport_err("connection reset"),
+            ok(200, ""),
+        ]);
+        let diff = node_way_diff();
+        let mut driver = UploadDriver::plan(&[&diff], 2, "c").unwrap();
+        for expect_stop in [false, true] {
+            let request = driver.next_request().unwrap();
+            let outcome = send(
+                request,
+                &client,
+                BASE,
+                &mut || Ok("t".into()),
+                &mut |_, _| {},
+            );
+            match (driver.record(outcome), expect_stop) {
+                (Step::Apply(_), false) => {}
+                (Step::Stop(stopped), true) => {
+                    assert!(matches!(stopped.reason, UploadStop::OutcomeUnknown(_)))
+                }
+                (other, _) => panic!("{other:?}"),
+            }
+        }
+        assert!(driver.next_request().is_none());
+        assert_eq!(driver.accepted(), 1);
+        assert_eq!(upload_bodies(&client).len(), 2);
     }
 }

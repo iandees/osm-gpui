@@ -6632,10 +6632,16 @@ impl MapViewer {
                             // then). A refusal stops the upload with the edits
                             // and the saved login untouched.
                             &mut || {
-                                auth::ensure_fresh_token_notify(http.as_ref(), &oauth_base, &mut || {
-                                    progress
-                                        .set_upload_phase(None, TransferPhase::WaitingForKeychain)
-                                })
+                                auth::ensure_fresh_token_notify(
+                                    http.as_ref(),
+                                    &oauth_base,
+                                    &mut || {
+                                        progress.set_upload_phase(
+                                            None,
+                                            TransferPhase::WaitingForKeychain,
+                                        )
+                                    },
+                                )
                                 .map(|token| token.access_token)
                                 .map_err(|e| e.to_string())
                             },
