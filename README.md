@@ -195,6 +195,15 @@ Off macOS the menus drop the macOS-only items (Services, Hide, Hide Others, Show
 
 **Releases.** The version is `version` in `Cargo.toml`; it is also used in the HTTP User-Agent and the changeset `created_by` tag. To release, bump it, write the `## X.Y.Z` section of `CHANGELOG.md` from the pull requests merged since the last tag (one line each, with a link; feature pull requests do not edit the changelog), merge to `main`, then push a matching tag (`git tag vX.Y.Z`, `git push origin vX.Y.Z`). `.github/workflows/release.yml` builds the macOS, Windows, and Linux packages and publishes a GitHub Release with checksums, using the changelog section as the release notes. To build the macOS app locally, run `cargo build --release` then `scripts/bundle-macos.sh`, which writes `dist/osm-gpui.app`.
 
+**Signing and notarizing macOS builds.** Releases are ad-hoc signed unless the repository has the secrets below; then the tag-push build signs the app with a Developer ID certificate and the hardened runtime, notarizes it with Apple, and staples the ticket, so Gatekeeper opens a downloaded copy without the right-click workaround. Pull request and manual builds never use these secrets. Add them under Settings > Secrets and variables > Actions (this needs a paid Apple Developer Program account):
+
+- `MACOS_CERTIFICATE_P12_BASE64`: a "Developer ID Application" certificate with its private key, exported from Keychain Access as a `.p12` and base64-encoded (`base64 -i cert.p12 | pbcopy`).
+- `MACOS_CERTIFICATE_PASSWORD`: the password you set on that export.
+- `MACOS_SIGNING_IDENTITY`: the certificate's full name, such as `Developer ID Application: Your Name (TEAMID)` (see `security find-identity -v -p codesigning`).
+- Notarization credentials, either an App Store Connect API key (preferred): `APPLE_API_KEY_BASE64` (the `.p8` file, base64-encoded), `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER_ID`. Create the key in App Store Connect > Users and Access > Integrations with the Developer role; the issuer ID is shown on that page. Or an Apple ID: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` (from appleid.apple.com), and `APPLE_TEAM_ID`.
+
+With the certificate secrets but no notarization credentials the app is signed but not notarized. With none of them the build behaves as before and the log says signing was skipped. To sign a local build, set `MACOS_SIGNING_IDENTITY` to a certificate in your keychain when running `scripts/bundle-macos.sh`. The Gatekeeper workaround in Install applies only to builds that were not notarized.
+
 ## Known limitations
 
 - Only multipolygon, boundary, route and turn restriction relations are drawn. Other relations show only as highlighted members when selected, and can only be selected through one of their members. Route overlays do not follow the order of a route's ways and show one route per way; restriction markers have no per-type arrows.
