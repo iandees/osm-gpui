@@ -16,7 +16,7 @@ use gpui_component::{
 use std::collections::HashMap;
 
 use crate::preset_recents::{self, Section};
-use crate::preset_translations::PresetTranslations;
+use crate::catalogue::Catalogue;
 use crate::presets::{Geometry, Preset};
 use crate::tr;
 use crate::ui::modal;
@@ -72,14 +72,10 @@ struct PickerRow {
 }
 
 impl PickerRow {
-    fn from_preset(
-        p: &Preset,
-        translations: Option<&PresetTranslations>,
-        section: Option<Section>,
-    ) -> Self {
+    fn from_preset(p: &Preset, catalogue: &Catalogue, section: Option<Section>) -> Self {
         Self {
             id: p.id.clone(),
-            name: p.display_name(translations).to_string(),
+            name: catalogue.preset_name(p).to_string(),
             tags: p.tags.clone(),
             geometry: p.geometry.clone(),
             icon: p.icon.clone(),
@@ -127,21 +123,21 @@ impl PresetPickerDialog {
     /// `&'static Preset` borrow across renders.
     fn results(&self, cx: &Context<Self>) -> Vec<PickerRow> {
         let text = self.query.read(cx).value().to_string();
-        let translations = crate::preset_translations::active();
-        let index = crate::presets::preset_index();
+        let catalogue = Catalogue::bundled();
         if text.trim().is_empty() {
             // Before any search: recents, then common presets.
             let recents = preset_recents::RecentsStore::load(&preset_recents::SettingsRecents);
-            return preset_recents::default_list(index, &recents, &self.geometries)
+            return catalogue
+                .default_presets(&recents, &self.geometries)
                 .into_iter()
                 .take(MAX_RESULTS)
-                .map(|(section, p)| PickerRow::from_preset(p, translations, Some(section)))
+                .map(|(section, p)| PickerRow::from_preset(p, &catalogue, Some(section)))
                 .collect();
         }
-        index
-            .search_geometries_in(translations, &text, &self.geometries, MAX_RESULTS)
+        catalogue
+            .search_presets(&text, &self.geometries, MAX_RESULTS)
             .into_iter()
-            .map(|p| PickerRow::from_preset(p, translations, None))
+            .map(|p| PickerRow::from_preset(p, &catalogue, None))
             .collect()
     }
 

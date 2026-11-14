@@ -970,18 +970,8 @@ impl MapViewer {
         let tags: std::collections::HashMap<String, String> =
             editable.feature_tags(feat)?.into_iter().collect();
         let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
-        let (mut name, icon_name) =
-            osm_gpui::presets::describe_feature(osm_gpui::presets::preset_index(), &tags, geometry);
-        // Only the catch-all "Relation" preset matches a relation of a kind
-        // the schema doesn't know; its `type` says more than that does.
-        if feat.kind == osm_gpui::selection::FeatureKind::Relation {
-            let matched = osm_gpui::presets::preset_index().match_feature(&tags, geometry);
-            if matched.is_none_or(|p| p.id == "relation") {
-                if let Some(kind) = tags.get("type").filter(|t| !t.trim().is_empty()) {
-                    name = kind.clone();
-                }
-            }
-        }
+        let (name, icon_name) =
+            osm_gpui::catalogue::Catalogue::bundled().describe(&tags, geometry, feat.kind);
         let icon_path = osm_gpui::presets::icon_path_or_fallback(icon_name.as_deref(), geometry);
         Some((name, icon_path))
     }
@@ -1812,8 +1802,11 @@ mod preset_label_tests {
         let geometry = editable
             .feature_geometry(&feature, osm_gpui::presets::area_keys())
             .unwrap();
-        let (name, _icon) =
-            osm_gpui::presets::describe_feature(osm_gpui::presets::preset_index(), &tags, geometry);
+        let (name, _icon) = osm_gpui::catalogue::Catalogue::bundled().describe(
+            &tags,
+            geometry,
+            osm_gpui::selection::FeatureKind::Node,
+        );
         assert_eq!(name, "Cafe");
     }
 }

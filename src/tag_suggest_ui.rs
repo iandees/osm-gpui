@@ -41,10 +41,7 @@ const INPUT_INSET: f32 = 8.0;
 fn schema() -> &'static SchemaIndex {
     static SCHEMA: OnceLock<SchemaIndex> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        SchemaIndex::build(
-            osm_gpui::presets::preset_index(),
-            osm_gpui::fields::field_index(),
-        )
+        osm_gpui::catalogue::Catalogue::bundled().schema_index()
     })
 }
 
@@ -773,13 +770,13 @@ impl MapViewer {
             theme.border,
             theme.popover,
         );
-        let translations = osm_gpui::preset_translations::active();
+        let catalogue = osm_gpui::catalogue::Catalogue::bundled();
 
         let rows = dd.items.iter().enumerate().map(|(i, item)| {
             let label = item.label.as_ref().map(|english| {
                 item.field_id
                     .as_deref()
-                    .and_then(|f| translations.and_then(|t| t.option_label(f, &item.text)))
+                    .and_then(|f| catalogue.translated_option_label(f, &item.text))
                     .unwrap_or(english)
                     .to_string()
             });

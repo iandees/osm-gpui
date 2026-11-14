@@ -93,7 +93,7 @@ impl MapViewer {
     ) -> gpui::AnyElement {
         // Labels, placeholders and option labels follow the UI language;
         // tag keys and values never do.
-        let tr = osm_gpui::preset_translations::active();
+        let cat = osm_gpui::catalogue::Catalogue::bundled();
         let body = osm_gpui::ui::style::current_text_scale().body;
         use osm_gpui::fields::Widget;
         match field.widget() {
@@ -102,7 +102,7 @@ impl MapViewer {
                 let input = self.text_field_input(
                     &field.id,
                     &current,
-                    field.display_placeholder(tr),
+                    cat.field_placeholder(field),
                     feature,
                     field.key.clone(),
                     window,
@@ -112,7 +112,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(field_label(field.display_label(tr).to_string(), cx))
+                    .child(field_label(cat.field_label(field).to_string(), cx))
                     .child(
                         Input::new(&input)
                             .with_size(gpui_component::Size::Size(body / 0.875))
@@ -135,7 +135,7 @@ impl MapViewer {
                     .child(
                         gpui_component::checkbox::Checkbox::new(element_id)
                             .checked(current)
-                            .label(field.display_label(tr).to_string())
+                            .label(cat.field_label(field).to_string())
                             .text_size(body)
                             .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
                                 let value = if *checked { "yes" } else { "no" };
@@ -165,7 +165,7 @@ impl MapViewer {
                     .children(
                         options
                             .iter()
-                            .map(|opt| field.display_option_label(opt, tr).to_string()),
+                            .map(|opt| cat.option_label(field, opt).to_string()),
                     )
                     .selected_index(selected_index)
                     .on_click(cx.listener(move |this, index: &usize, _window, cx| {
@@ -186,7 +186,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(field_label(field.display_label(tr).to_string(), cx))
+                    .child(field_label(cat.field_label(field).to_string(), cx))
                     .child(group)
                     .into_any_element()
             }
@@ -202,7 +202,7 @@ impl MapViewer {
                             .options
                             .iter()
                             .find(|o| &o.value == v)
-                            .map(|o| field.display_option_label(o, tr).to_string())
+                            .map(|o| cat.option_label(field, o).to_string())
                             .unwrap_or_else(|| v.clone())
                     })
                     .unwrap_or_else(|| tr!("panel.fields.none").to_string());
@@ -264,7 +264,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(field_label(field.display_label(tr).to_string(), cx))
+                    .child(field_label(cat.field_label(field).to_string(), cx))
                     .child(header);
 
                 if is_open {
@@ -315,7 +315,7 @@ impl MapViewer {
                                     .cursor_pointer()
                                     .hover(|el| el.bg(cx.theme().accent))
                                     .child(Label::new(
-                                        field.display_option_label(opt, tr).to_string(),
+                                        cat.option_label(field, opt).to_string(),
                                     ))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
@@ -343,8 +343,8 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(field_label(field.display_label(tr).to_string(), cx));
-                for sub in field.sub_fields(tags, tr) {
+                    .child(field_label(cat.field_label(field).to_string(), cx));
+                for sub in cat.sub_fields(field, tags) {
                     column = column.child(self.render_one_field(&sub, tags, feature, window, cx));
                 }
                 column.into_any_element()
@@ -362,7 +362,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(field_label(field.display_label(tr).to_string(), cx));
+                    .child(field_label(cat.field_label(field).to_string(), cx));
                 column = column.child(gpui::div().flex().flex_row().flex_wrap().gap_1().children(
                     set.iter().map(|opt| {
                         let tag_key = format!("{}{}", field.key, opt.value);
@@ -374,7 +374,7 @@ impl MapViewer {
                             .bg(cx.theme().accent)
                             .cursor_pointer()
                             .child(
-                                Label::new(format!("{} ×", field.display_option_label(opt, tr)))
+                                Label::new(format!("{} ×", cat.option_label(field, opt)))
                                     .text_size(muted_text_size()),
                             )
                             .on_mouse_down(
@@ -441,7 +441,7 @@ impl MapViewer {
                                             .cursor_pointer()
                                             .hover(|el| el.bg(cx.theme().accent))
                                             .child(Label::new(
-                                                field.display_option_label(opt, tr).to_string(),
+                                                cat.option_label(field, opt).to_string(),
                                             ))
                                             .on_mouse_down(
                                                 gpui::MouseButton::Left,
@@ -480,7 +480,7 @@ impl MapViewer {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(field_label(field.display_label(tr).to_string(), cx));
+                    .child(field_label(cat.field_label(field).to_string(), cx));
 
                 // Chips for already-selected values, each removable.
                 let chips = gpui::div().flex().flex_row().flex_wrap().gap_1().children(
@@ -496,7 +496,7 @@ impl MapViewer {
                             .options
                             .iter()
                             .find(|o| &o.value == value)
-                            .map(|o| field.display_option_label(o, tr).to_string())
+                            .map(|o| cat.option_label(field, o).to_string())
                             .unwrap_or_else(|| value.clone());
                         gpui::div()
                             .id(format!("field-multicombo-chip-{}", value))
@@ -577,7 +577,7 @@ impl MapViewer {
                                             .cursor_pointer()
                                             .hover(|el| el.bg(cx.theme().accent))
                                             .child(Label::new(
-                                                field.display_option_label(opt, tr).to_string(),
+                                                cat.option_label(field, opt).to_string(),
                                             ))
                                             .on_mouse_down(
                                                 gpui::MouseButton::Left,
@@ -630,8 +630,8 @@ impl MapViewer {
         // Which fields to show was settled when the index loaded (references
         // and inheritance); here only the feature's geometry and tags decide
         // what applies, plus what the user has added.
-        let tr = osm_gpui::preset_translations::active();
-        let resolved = osm_gpui::fields::field_index().for_feature(
+        let cat = osm_gpui::catalogue::Catalogue::bundled();
+        let resolved = cat.fields_for(
             preset,
             geometry,
             &tags,
@@ -648,7 +648,7 @@ impl MapViewer {
         let field_elements: Vec<gpui::AnyElement> = resolved
             .shown
             .into_iter()
-            .map(|field| self.render_one_field(field, &tags, feature, window, cx))
+            .map(|view| self.render_one_field(view.field, &tags, feature, window, cx))
             .collect();
 
         let mut column = gpui::div().flex().flex_col().gap_3();
@@ -693,13 +693,13 @@ impl MapViewer {
                         .border_color(cx.theme().border)
                         .rounded_md()
                         .p_1()
-                        .children(addable.into_iter().map(|f| {
-                            let field_id = f.id.clone();
+                        .children(addable.into_iter().map(|view| {
+                            let field_id = view.field.id.clone();
                             Button::new(gpui::SharedString::from(format!(
                                 "field-add-more-{}",
                                 field_id
                             )))
-                            .label(f.display_label(tr).to_string())
+                            .label(view.label.to_string())
                             .ghost()
                             .small()
                             .on_click(cx.listener(
@@ -733,7 +733,8 @@ impl MapViewer {
         let tags: std::collections::HashMap<String, String> =
             editable.feature_tags(feat)?.into_iter().collect();
         let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
-        let preset = osm_gpui::presets::preset_index().match_feature(&tags, geometry)?;
+        let preset =
+            osm_gpui::catalogue::Catalogue::bundled().match_preset(&tags, geometry)?;
         Some((preset, tags, geometry))
     }
 }
