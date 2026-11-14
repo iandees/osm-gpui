@@ -5762,3 +5762,7 @@ mod tests {
         assert!(message.starts_with("Can't align"), "{message}");
     }
 }
+
+#[cfg(test)]
+#[path = "selection_actions_edit_tests.rs"]
+mod edit_tests;
