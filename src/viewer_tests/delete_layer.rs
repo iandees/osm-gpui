@@ -403,12 +403,7 @@ fn a_step_whose_layer_is_gone_is_skipped_with_a_message(cx: &mut TestAppContext)
             let b = add_second_layer(view);
             // A batch with a part in each layer, then drop B behind the
             // history's back (as no current path does).
-            let create = |layer, id| UndoableAction::CreateNode {
-                layer,
-                id,
-                lat: CENTER_LAT,
-                lon: CENTER_LON,
-            };
+            let create = |layer, id| UndoableAction::create_node(layer, id, CENTER_LAT, CENTER_LON);
             view.undo_stack.push(UndoableAction::Batch {
                 label: "stale".into(),
                 actions: vec![create(a, -100), create(b, -101)],
