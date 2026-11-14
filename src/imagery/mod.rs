@@ -48,13 +48,12 @@ impl ImageryEntry {
     /// geometry is considered global and matches all points.
     pub fn covers(&self, lat: f64, lon: f64) -> bool {
         let Some(bbox) = self.bbox else {
-            return true; // no geometry == global
+            return true;
         };
         if !bbox.contains(lat, lon) {
             return false;
         }
-        // If we have polygon rings, do a more precise test. If any ring
-        // contains the point, it's a match.
+        // The bbox is only a first cut: any ring containing the point matches.
         if let Some(polygons) = &self.polygon {
             return polygons.iter().any(|ring| point_in_ring(lon, lat, ring));
         }
@@ -75,12 +74,9 @@ pub fn fetch_and_cache(client: &dyn crate::http::HttpClient) -> anyhow::Result<S
             if let Some(parent) = cache_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            // Write atomically: a crash or kill mid-write to the real cache
-            // path would leave a truncated file that still passes the
-            // age-based freshness check on the next run, silently loading as
-            // corrupt/empty. Writing to a temp file and renaming into place
-            // means the cache file is always either the old complete
-            // contents or the new complete contents, never partial.
+            // Atomic: a kill mid-write to the real cache path would leave a
+            // truncated file that still passes the age-based freshness check
+            // on the next run and loads as corrupt or empty.
             if let Err(e) = write_cache_atomic(&cache_path, &body) {
                 eprintln!("imagery: failed to write ELI cache: {}", e);
             }

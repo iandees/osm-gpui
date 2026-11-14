@@ -617,7 +617,13 @@ impl MapViewer {
                 let data = Arc::new(data);
                 let id = self.layer_manager.alloc_id();
                 let name = self.layer_manager.unique_name(&rec.manifest.layer_name);
-                let layer = OsmLayer::new_with_edits(id, name, data.clone(), &edits);
+                let layer = OsmLayer::new_with_edits_styled(
+                    id,
+                    name,
+                    data.clone(),
+                    &edits,
+                    osm_gpui::style::custom::active_stylesheet(),
+                );
                 let revision = layer.edit_revision();
                 self.layer_manager.add_layer(Box::new(layer));
                 if self.active_layer.is_none() {

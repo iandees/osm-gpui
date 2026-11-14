@@ -195,8 +195,6 @@ fn format_count(n: u64) -> String {
 }
 
 impl MapViewer {
-    // --- data indexes -----------------------------------------------------
-
     /// Start a background rebuild of the index of every layer whose data
     /// changed since its index was built, and forget indexes of closed
     /// layers. Cheap when nothing changed (one revision compare per layer),
@@ -313,8 +311,6 @@ impl MapViewer {
             .map(|e| e.index.clone())
             .collect()
     }
-
-    // --- the list ---------------------------------------------------------
 
     /// What kind of objects `features` are, for taginfo's `filter=` (none if
     /// they are mixed), and each one's possible geometries (a closed way can
@@ -554,8 +550,6 @@ impl MapViewer {
         self.tag_suggest.taginfo.request(Instant::now(), None);
     }
 
-    // --- taginfo ------------------------------------------------------------
-
     fn schedule_taginfo_poll(&mut self, cx: &mut Context<Self>) {
         let Some(wait) = self.tag_suggest.taginfo.wake_in(Instant::now()) else {
             return;
@@ -601,8 +595,6 @@ impl MapViewer {
         .detach();
     }
 
-    // --- accepting ----------------------------------------------------------
-
     /// Put suggestion `index` into the input it belongs to and close the
     /// list. Does not commit or move focus.
     fn fill_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -642,8 +634,6 @@ impl MapViewer {
         }
         cx.notify();
     }
-
-    // --- keys -----------------------------------------------------------------
 
     /// Down: open the list if it is closed, else move the highlight down.
     fn on_suggest_down(
@@ -691,8 +681,8 @@ impl MapViewer {
     }
 
     /// Enter or Tab: a highlighted suggestion is put into the input first;
-    /// the key then goes on to do what it always did (Enter commits or moves
-    /// to the value, Tab moves on). With nothing highlighted the typed text
+    /// the key then goes on to do what it does with no list (Enter commits or
+    /// moves to the value, Tab moves on). With nothing highlighted the typed text
     /// is left exactly as it is.
     fn on_suggest_accept(
         &mut self,
@@ -713,7 +703,7 @@ impl MapViewer {
     }
 
     /// Escape: close an open list and swallow the key; with no list open
-    /// Escape goes on to abandon the edit as before.
+    /// Escape goes on to abandon the edit.
     fn on_suggest_escape(&mut self, target: TagEditField, cx: &mut Context<Self>) {
         let Some(edit) = self.tag_inline_edit.as_ref() else {
             return;
@@ -725,8 +715,6 @@ impl MapViewer {
         self.close_tag_suggestions();
         cx.notify();
     }
-
-    // --- rendering --------------------------------------------------------------
 
     /// Key handling and placement tracking for one cell of the Tags table
     /// that is an input (`target` says which). Wrap the cell with this.

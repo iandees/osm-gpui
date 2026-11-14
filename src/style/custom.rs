@@ -5,9 +5,10 @@
 //! one is active; the built-in `default.mapcss` is used when none is active
 //! or when the active one cannot be loaded or parsed.
 //!
-//! The resolved stylesheet lives in a process-wide slot so every `OsmLayer`
-//! constructor picks it up; already-open layers are restyled explicitly via
-//! `MapLayer::set_stylesheet`.
+//! The resolved stylesheet lives in a process-wide slot that records the
+//! currently selected style. `OsmLayer` constructors never read it: the app
+//! passes `active_stylesheet()` when it builds a layer, and already-open
+//! layers are restyled explicitly via `MapLayer::set_stylesheet`.
 
 use super::Stylesheet;
 use crate::http::{HttpClient, HttpRequest};

@@ -381,8 +381,7 @@ fn member_kind(t: MemberType) -> FeatureKind {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Text matching. Patterns are lower-cased when parsed; the text under test is
+// Text matching: patterns are lower-cased when parsed; the text under test is
 // compared with ASCII case folding, after lower-casing it first when it holds
 // non-ASCII characters.
 

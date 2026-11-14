@@ -1,8 +1,7 @@
-//! The Fields accordion section: typed widgets (text/combo/check/radio/
-//! multi-combo) for the selected feature's matched preset, built from the
-//! vendored `osm_gpui::fields::FieldIndex`. Only renders when exactly one
-//! feature is selected — multi-select keeps using the raw Tags table.
-//! See docs/superpowers/specs/2026-07-07-id-preset-labels-design.md.
+//! The Fields accordion section: typed widgets (see `fields::Widget`) for the
+//! selected feature's matched preset, built from the vendored
+//! `osm_gpui::fields::FieldIndex`. Only renders when exactly one feature is
+//! selected — multi-select keeps using the raw Tags table.
 
 use gpui::{prelude::*, Context};
 use gpui_component::{
@@ -655,7 +654,6 @@ impl MapViewer {
         let mut column = gpui::div().flex().flex_col().gap_3();
         column = column.children(field_elements);
 
-        // "Add field" control: the optional fields not already shown.
         let addable = resolved.addable;
 
         if !addable.is_empty() {
@@ -721,8 +719,7 @@ impl MapViewer {
 
     /// Resolve the matched `Preset` and current tags for the single
     /// selected feature, or `None` if the feature/layer/tags/geometry
-    /// can't be resolved (mirrors `describe_selected_feature`'s existing
-    /// graceful-`None` pattern in `src/side_panel.rs`).
+    /// can't be resolved (as `describe_selected_feature` does).
     fn matched_preset_for_field_editing(
         &self,
         feat: &osm_gpui::selection::FeatureRef,

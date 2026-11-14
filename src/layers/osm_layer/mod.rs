@@ -6,7 +6,7 @@ use crate::layers::merge::{self, MergeStats};
 use crate::layers::node_markers::{self, NodeForm};
 use crate::layers::resolve;
 use crate::layers::way_stroke::{self, Layer, PathSink};
-use crate::layers::{EditError, EditableLayer, HighlightKind, LayerId, MapLayer};
+use crate::layers::{EditError, EditableLayer, HighlightKind, LayerId, LayerKind, MapLayer};
 use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
 use crate::selection::{
@@ -56,7 +56,7 @@ const CASING_COLOR: u32 = 0x1C1C1E;
 
 /// The zoom at which node styles are resolved into the per-node cache.
 /// Node rules with zoom ranges are evaluated at this zoom only (way styles
-/// are re-resolved per zoom bucket; nodes are not yet).
+/// are re-resolved per zoom bucket; nodes are not).
 const NODE_STYLE_ZOOM: f64 = 18.0;
 
 /// Below this zoom turn-restriction markers aren't drawn or clickable.
@@ -79,11 +79,8 @@ struct Store {
     osm_data: Option<Arc<OsmData>>,
     /// The data as it was when this layer was last loaded/downloaded (or
     /// last reconciled with a successful upload) — the stable "before"
-    /// state `diff_for_upload` compares `osm_data` against. Set in
-    /// `new_with_data` and refreshed in `set_osm_data`/
-    /// `apply_upload_result`; left untouched by in-place edit methods
-    /// (`commit_node_moves`/`set_tag`/`remove_tag`), which only mutate
-    /// `osm_data`.
+    /// state `diff_for_upload` compares `osm_data` against. In-place edits
+    /// only mutate `osm_data` and leave this alone.
     original_data: Option<Arc<OsmData>>,
     /// Whether this layer has had a committed move since it was loaded.
     modified: bool,
@@ -105,9 +102,8 @@ struct Store {
 struct Derived {
     /// OSM way id for each entry of `way_bboxes`/`way_vertices`/`way_styles`,
     /// aligned by index. `osm_data.ways` is a `HashMap` keyed by id (not
-    /// positionally ordered), so this is what lets index-aligned code (e.g.
-    /// `commit_node_moves`) recover a way's id from a position in those
-    /// parallel arrays.
+    /// positionally ordered), so this is what lets index-aligned code
+    /// recover a way's id from a position in those parallel arrays.
     way_ids: Vec<i64>,
     /// Cached bboxes aligned with `osm_data.ways` by index. `None` means the
     /// way had no valid nodes and should be skipped.
@@ -135,8 +131,8 @@ struct Derived {
     /// cached geometry without a linear scan of `osm_data.ways`.
     way_id_to_index: HashMap<i64, usize>,
     /// node id -> indices of ways (into `way_vertices`/`way_bboxes`) that
-    /// reference it. Built once at load time; lets `commit_node_moves`
-    /// recompute only the affected ways' caches instead of every way.
+    /// reference it; lets an edit recompute only the affected ways' caches
+    /// instead of every way.
     node_to_ways: HashMap<i64, HashSet<usize>>,
     /// Union AABB (mercator) of every node in this layer. Used as a cheap
     /// early-out in `render_canvas` so off-screen datasets do zero
@@ -210,7 +206,15 @@ fn compute_next_way_id(data: &OsmData) -> i64 {
 }
 
 impl OsmLayer {
+    /// An empty layer using the built-in default stylesheet. For tests,
+    /// examples and benches; the app builds layers with `new_styled` and the
+    /// currently selected style.
     pub fn new(id: LayerId) -> Self {
+        Self::new_styled(id, crate::style::custom::built_in())
+    }
+
+    /// An empty layer that resolves its styles from `stylesheet`.
+    pub fn new_styled(id: LayerId, stylesheet: Arc<Stylesheet>) -> Self {
         Self {
             id,
             name: "OSM Data".to_string(),
@@ -222,7 +226,7 @@ impl OsmLayer {
                 revision: 0,
                 next_new_id: -1,
                 next_placeholder_way_id: -1,
-                stylesheet: crate::style::custom::active_stylesheet(),
+                stylesheet,
             },
             derived: Derived {
                 way_ids: Vec::new(),
@@ -258,9 +262,20 @@ impl OsmLayer {
         }
     }
 
+    /// A layer over `osm_data` using the built-in default stylesheet. For
+    /// tests, examples and benches; the app uses `new_with_data_styled`.
     pub fn new_with_data<N: Into<String>>(id: LayerId, name: N, osm_data: Arc<OsmData>) -> Self {
+        Self::new_with_data_styled(id, name, osm_data, crate::style::custom::built_in())
+    }
+
+    /// A layer over `osm_data` that resolves its styles from `stylesheet`.
+    pub fn new_with_data_styled<N: Into<String>>(
+        id: LayerId,
+        name: N,
+        osm_data: Arc<OsmData>,
+        stylesheet: Arc<Stylesheet>,
+    ) -> Self {
         let fs_load = crate::frame_stats::start();
-        let stylesheet = crate::style::custom::active_stylesheet();
         let fs_phase = crate::frame_stats::start();
         let node_cache = compute_node_cache(&osm_data, &stylesheet);
         crate::frame_stats::lap("load.node_cache", fs_phase);
@@ -336,8 +351,19 @@ impl OsmLayer {
         osm_data: Arc<OsmData>,
         edits: &FileEdits,
     ) -> Self {
+        Self::new_with_edits_styled(id, name, osm_data, edits, crate::style::custom::built_in())
+    }
+
+    /// `new_with_edits` that resolves its styles from `stylesheet`.
+    pub fn new_with_edits_styled<N: Into<String>>(
+        id: LayerId,
+        name: N,
+        osm_data: Arc<OsmData>,
+        edits: &FileEdits,
+        stylesheet: Arc<Stylesheet>,
+    ) -> Self {
         let baseline = baseline_for_loaded_file(&osm_data, edits);
-        let mut layer = Self::new_with_data(id, name, osm_data.clone());
+        let mut layer = Self::new_with_data_styled(id, name, osm_data.clone(), stylesheet);
         layer.store.modified = !diff_osm_data(&baseline, &osm_data).is_empty();
         layer.store.revision += 1;
         layer.store.original_data = Some(Arc::new(baseline));
@@ -455,6 +481,10 @@ impl MapLayer for OsmLayer {
         self.id
     }
 
+    fn kind(&self) -> LayerKind {
+        LayerKind::Osm
+    }
+
     fn is_visible(&self) -> bool {
         self.visible
     }
@@ -518,7 +548,7 @@ impl MapLayer for OsmLayer {
         // reject offscreen ones with a mercator-space AABB test, and paint
         // visible ones as filled quads on the canvas so we skip GPUI's
         // per-element layout pass. Batching nodes into a single PathBuilder
-        // fill path was tried and turned out much slower — Lyon's fill
+        // fill path is much slower — Lyon's fill
         // tessellator is not tuned for thousands of tiny rectangles. (The
         // simple markers of tagged nodes below are batched as raw triangles,
         // with no tessellation, and are several times cheaper than quads.)

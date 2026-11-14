@@ -1,7 +1,7 @@
-//! Shared scaffold for the app's hand-rolled modal dialogs (tag edit, custom
-//! imagery, quit confirm, and the settings window's field rows): the
-//! full-window scrim, the bordered card chrome (title / body / footer), and
-//! the standard Cancel + primary-confirm footer button row.
+//! Shared scaffold for the app's hand-rolled modal dialogs (and the settings
+//! window's field rows): the full-window scrim, the bordered card chrome
+//! (title / body / footer), and the standard Cancel + primary-confirm footer
+//! button row.
 
 use gpui::{
     div, prelude::*, AnyElement, AnyView, App, ClickEvent, Div, ElementId, FocusHandle, Hsla,
@@ -74,10 +74,6 @@ pub fn ensure_modal_focus(open: &[OpenModal], window: &mut Window, cx: &mut App)
 /// Wrap `content` (typically a [`dialog_frame`]) in the shared modal scrim: a
 /// full-window, click-occluding, semi-transparent backdrop that centers its
 /// child and dispatches key-down events (Escape/Enter) via `on_key_down`.
-///
-/// This is the `div().track_focus(...).on_key_down(...).absolute().inset_0()
-/// .occlude().bg(scrim_color()).flex().justify_center().items_center()`
-/// pattern shared by every dialog's `render`.
 pub fn scrim(
     focus_handle: &FocusHandle,
     on_key_down: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,
@@ -300,14 +296,11 @@ pub fn move_selection(selected: usize, count: usize, key: &str) -> Option<usize>
 /// Classify a key-down event's key as [`ModalKey::Escape`],
 /// [`ModalKey::Enter`], or [`ModalKey::Other`].
 ///
-/// Each dialog still defines its own tiny `on_key_down` method (rather than
-/// sharing one dispatcher parameterized by cancel/submit callbacks): gpui's
-/// `cx.listener` closures each capture `&mut Self` uniquely, so passing both
-/// a cancel closure and a confirm closure into one shared function at the
-/// same time would require two simultaneous mutable borrows of `self` for a
-/// single call site, which the borrow checker rejects. Sharing just the key
-/// classification avoids that gymnastics while still removing the
-/// duplicated string match.
+/// Each dialog defines its own tiny `on_key_down` rather than sharing one
+/// dispatcher parameterized by cancel/submit callbacks: `cx.listener`
+/// closures each capture `&mut Self` uniquely, so passing both a cancel and
+/// a confirm closure to one shared function would need two simultaneous
+/// mutable borrows of `self`. Only the key classification is shared.
 pub fn classify_key(ev: &KeyDownEvent) -> ModalKey {
     match ev.keystroke.key.as_str() {
         "escape" => ModalKey::Escape,

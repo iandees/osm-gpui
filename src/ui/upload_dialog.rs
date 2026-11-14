@@ -1,6 +1,5 @@
 //! Modal dialog to review pending edits and provide a changeset comment
-//! before uploading to the OSM API, with a
-//! `gpui_component::input::{Input, InputState}` for the comment field.
+//! before uploading to the OSM API.
 
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
@@ -1032,7 +1031,6 @@ impl Render for UploadDialog {
             summary_list =
                 summary_list.child(Label::new(tr!("dialog.upload.no_changes")).text_color(muted));
         } else {
-            // Only the layers that have something to upload.
             for s in self.summaries.iter().filter(|s| !s.is_empty()) {
                 summary_list =
                     summary_list.child(Label::new(s.describe()).text_color(cx.theme().foreground));

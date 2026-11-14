@@ -111,8 +111,7 @@ pub(super) fn decimate_into(pts: &[Point<Pixels>], min_px: f32, out: &mut Vec<(u
 }
 
 /// Push one solid triangle into `path`, creating the path on first use and
-/// widening `bounds_min_max`. Same raw-vertex batching approach as
-/// raw vertices, no Lyon tessellation.
+/// widening `bounds_min_max`. Raw vertices, no Lyon tessellation.
 pub(super) fn push_triangle(
     path: &mut Option<Path<Pixels>>,
     bounds_min_max: &mut (f32, f32, f32, f32),
@@ -611,17 +610,18 @@ impl OsmLayer {
         }
         crate::frame_stats::lap("osm.way_fill_build", fs_phase);
 
-        // Ways: bbox-cull in Mercator space, then group visible ways by
-        // `(color, width)` style, one `paint_path` call per group. Vertex lookup is a single contiguous slice per way
+        // Ways: bbox-cull in Mercator space, then batch visible ways by
+        // stroke colour. Vertex lookup is a single contiguous slice per way
         // (`way_vertices[i]`) — no HashMap indirection.
         //
         // Each segment is emitted as two raw triangles (an oriented quad)
         // pushed directly into the group's `Path`, bypassing
         // `PathBuilder::stroke`'s Lyon tessellation pass entirely — that
         // tessellator dominated frame time, since it reruns from scratch
-        // every repaint (e.g. every mouse-move while panning). Joins and end caps are built by hand in `way_stroke`
-        // (mitered where possible, which costs no extra vertices) for
-        // strokes wide enough to show them, at the editing zooms only.
+        // every repaint (e.g. every mouse-move while panning). Joins and end
+        // caps are built by hand in `way_stroke` (mitered where possible,
+        // which costs no extra vertices) for strokes wide enough to show
+        // them, at the editing zooms only.
         //
         // One path per stroke *colour*, whatever the width: every extra path
         // is rasterised and composited over its whole bounding box by the
@@ -690,9 +690,9 @@ impl OsmLayer {
                 continue;
             }
 
-            // Style is resolved once per way at data-load time
-            // (`compute_way_tables`/`commit_node_moves`/`set_stylesheet`),
-            // not here — no stylesheet lookup or tags HashMap access in this
+            // Style is resolved when the way is loaded or edited
+            // (`compute_way_tables`/`reproject_way`/`set_stylesheet`), not
+            // here — no stylesheet lookup or tags HashMap access in this
             // per-frame loop.
             let style = at_zoom(self.render.way_styles[i]);
             if !dragging && !lod.strokes(style.width) {
