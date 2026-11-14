@@ -48,8 +48,7 @@ fn version_attr(id: i64, version: i32) -> String {
     }
 }
 
-/// `<tag>` children in key order (so output is deterministic), each on its
-/// own line at `indent`.
+/// `<tag>` children in key order, so output is deterministic.
 fn write_tags(out: &mut String, tags: &HashMap<String, String>) {
     let mut sorted: Vec<(&String, &String)> = tags.iter().collect();
     sorted.sort();

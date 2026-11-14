@@ -487,9 +487,9 @@ pub struct MergePlan {
 /// otherwise the first selected. Tags are unioned (a conflict names its key).
 /// Ways use the survivor in place of each removed node, and consecutive
 /// repeats that creates collapse into one. Refused if a way would be left with
-/// fewer than two distinct nodes, or a way that was closed with fewer than three.
-/// (Relation memberships are the caller's
-/// business: see `relations::merge_node_members`.)
+/// fewer than two distinct nodes, or a way that was closed with fewer than
+/// three. (Relation memberships are the caller's business: see
+/// `relations::merge_node_members`.)
 pub fn plan_merge_nodes(
     nodes: &[MergeNode],
     ways: &[(i64, Vec<i64>)],
@@ -993,9 +993,8 @@ impl SegmentDeletion {
 
 /// Plan deleting the segment between the adjacent nodes `a` and `b` of the
 /// way `nodes`. The way is cut at the segment and the segment itself is
-/// removed: an open way becomes the
-/// piece before and the piece after; a segment at an end just shortens it;
-/// a closed way is opened at the segment.
+/// removed: an open way becomes the piece before and the piece after; a
+/// segment at an end just shortens it; a closed way is opened at the segment.
 pub fn plan_delete_segment(
     way_id: i64,
     nodes: &[i64],
@@ -1158,8 +1157,7 @@ mod tests {
             way(-3, &[3, 2], &[]),
         ])
         .unwrap();
-        // Walks 1-2-3-4 (the first way is the start of its own direction
-        // only half the time; either direction is acceptable).
+        // Walks 1-2-3-4 in either direction.
         assert!(plan.nodes == vec![1, 2, 3, 4] || plan.nodes == vec![4, 3, 2, 1]);
         assert_eq!(plan.remove.len(), 2);
     }
