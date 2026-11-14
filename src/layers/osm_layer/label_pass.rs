@@ -62,8 +62,7 @@ impl OsmLayer {
     }
 
     /// Identifies what label placement depends on besides the data: the
-    /// stylesheet, and the tuning (so changing a knob forces a new
-    /// placement).
+    /// stylesheet and the tuning, so changing either forces a new placement.
     pub(super) fn label_sheet_id(&self, tuning: &labels::LabelTuning) -> usize {
         Arc::as_ptr(&self.store.stylesheet) as usize ^ tuning.stamp()
     }
@@ -301,9 +300,8 @@ impl OsmLayer {
         out
     }
 
-    /// Whether a node label with the same `text` sits near the located
-    /// area label (within a text's width of it): then the area label would
-    /// only repeat it.
+    /// Whether a node label with the same `text` sits within 60 px (on each
+    /// axis) of the located area label, so the area label would only repeat it.
     pub(super) fn names_a_node_inside(
         node_texts: &HashMap<SharedString, Vec<(f64, f64)>>,
         text: &SharedString,
@@ -636,9 +634,8 @@ impl OsmLayer {
             );
             paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
         }
-        // Likewise a selected or hovered area whose label was not placed
-        // (the selection changed since): shown at its label point, fitted or
-        // not, collision ignored.
+        // Likewise a selected or hovered area whose label was not placed:
+        // shown at its label point, fitted or not, collision ignored.
         let mut forced_area_budget = area_labels::CLIP_BUDGET;
         let view = area_labels::AreaView::new(vmin_x, vmax_x, vmax_y, w, h);
         for f in selected.iter().chain(hovered) {
