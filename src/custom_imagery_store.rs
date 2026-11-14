@@ -17,8 +17,11 @@ pub fn init_store(entries: Vec<CustomImageryEntry>) {
 
 /// Replace the in-memory store contents and persist to disk.
 pub fn update_store(entries: Vec<CustomImageryEntry>) {
-    CUSTOM_IMAGERY_STORE.update("custom_imagery_store", |g| *g = entries.clone());
-    save(&entries);
+    CUSTOM_IMAGERY_STORE.update_and_save(
+        "custom_imagery_store",
+        |g| *g = entries,
+        |current| save(current),
+    );
 }
 
 pub fn snapshot() -> Vec<CustomImageryEntry> {
@@ -27,11 +30,11 @@ pub fn snapshot() -> Vec<CustomImageryEntry> {
 
 /// Append one entry to the in-memory store and persist to disk.
 pub fn append(entry: CustomImageryEntry) {
-    let Some(snapshot) = CUSTOM_IMAGERY_STORE.update("custom_imagery_store", |g| g.push(entry))
-    else {
-        return;
-    };
-    save(&snapshot);
+    CUSTOM_IMAGERY_STORE.update_and_save(
+        "custom_imagery_store",
+        |g| g.push(entry),
+        |current| save(current),
+    );
 }
 
 /// Append one entry to the in-memory store only; nothing is written to disk.

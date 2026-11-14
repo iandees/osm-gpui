@@ -279,12 +279,15 @@ pub fn save_json<T: Serialize + ?Sized>(
 /// manages the shared in-memory copy.
 pub struct JsonStore<T> {
     cell: OnceLock<Arc<Mutex<T>>>,
+    /// Orders [`JsonStore::update_and_save`] calls; see there.
+    save_lock: Mutex<()>,
 }
 
 impl<T> JsonStore<T> {
     pub const fn new() -> Self {
         Self {
             cell: OnceLock::new(),
+            save_lock: Mutex::new(()),
         }
     }
 
@@ -314,6 +317,41 @@ impl<T> JsonStore<T> {
                 None
             }
         }
+    }
+
+    /// [`JsonStore::update`], then `save` with the value as it stands after
+    /// `f`, with concurrent calls serialised so the last `save` to run always
+    /// writes the latest state. Without that, two threads could each apply
+    /// their change, release the store, and write their snapshots in the
+    /// opposite order, leaving the older one on disk.
+    ///
+    /// The snapshot is taken after `save_lock` is acquired, so a `save` always
+    /// sees every change applied before it, including ones from callers still
+    /// queued behind it. The store's own mutex is deliberately not held while
+    /// `save` runs: readers (the UI reads settings every frame) must not wait
+    /// on disk or keychain I/O. Lock order is `save_lock` then the store
+    /// mutex; nothing takes them the other way round, and `f` and `save` must
+    /// not call back into `update_and_save` on the same store.
+    pub fn update_and_save<F, S>(&self, label: &str, f: F, save: S) -> Option<T>
+    where
+        T: Clone,
+        F: FnOnce(&mut T),
+        S: FnOnce(&T),
+    {
+        let store = self.cell.get()?;
+        let _ordering = self.save_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = match store.lock() {
+            Ok(mut g) => {
+                f(&mut g);
+                g.clone()
+            }
+            Err(e) => {
+                eprintln!("{label}: mutex poisoned, skipping update: {e}");
+                return None;
+            }
+        };
+        save(&snapshot);
+        Some(snapshot)
     }
 
     /// A clone of the current in-memory value, or `T::default()` if the

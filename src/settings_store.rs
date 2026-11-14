@@ -351,18 +351,17 @@ fn update_in(
     persist: bool,
     f: impl FnOnce(&mut AppSettings),
 ) -> Option<AppSettings> {
-    let updated = store.update("settings_store", f)?;
-    if persist {
-        match path {
-            Some(p) => {
-                if let Err(e) = save_to(p, &updated) {
-                    eprintln!("settings_store: save {:?} failed: {}", p, e);
-                }
-            }
-            None => eprintln!("settings_store: no config dir, skipping save"),
-        }
+    if !persist {
+        return store.update("settings_store", f);
     }
-    Some(updated)
+    store.update_and_save("settings_store", f, |updated| match path {
+        Some(p) => {
+            if let Err(e) = save_to(p, updated) {
+                eprintln!("settings_store: save {:?} failed: {}", p, e);
+            }
+        }
+        None => eprintln!("settings_store: no config dir, skipping save"),
+    })
 }
 
 pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
@@ -579,6 +578,31 @@ mod tests {
         assert_eq!(on_disk.mapillary_token, "t");
         // The earlier in-memory-only change rode along with the next write.
         assert_eq!(on_disk.last_source, "a");
+    }
+
+    #[test]
+    fn concurrent_persisting_updates_leave_the_latest_state_on_disk() {
+        let dir = tmp_dir("update-concurrent");
+        let path = dir.join("settings.json");
+        let store = local_store();
+        let threads = 16;
+        std::thread::scope(|scope| {
+            for t in 0..threads {
+                let (store, path) = (&store, &path);
+                scope.spawn(move || {
+                    for i in 0..25 {
+                        update_in(store, Some(path), true, |s| match t % 4 {
+                            0 => s.last_source = format!("source {t}-{i}"),
+                            1 => s.cache_budget_mb = (t * 1000 + i) as u64,
+                            2 => s.recent_comments.push(format!("comment {t}-{i}")),
+                            _ => s.custom_api_url = format!("https://x.example/{t}/{i}"),
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(load_from(&path), store.snapshot("t"));
     }
 
     #[test]

@@ -675,27 +675,31 @@ pub fn init_store(store: TokenStore) {
 }
 
 fn set_token(oauth_base_url: &str, token: StoredToken) {
-    let Some(snapshot) = TOKEN_STORE.update("auth", |g| {
-        g.tokens.insert(oauth_base_url.to_string(), token);
-        // A token we were just handed supersedes whatever the keychain holds; there is
-        // nothing left to read lazily for this server.
-        g.pending_keyring.remove(oauth_base_url);
-    }) else {
-        return;
-    };
-    save(&snapshot);
+    TOKEN_STORE.update_and_save(
+        "auth",
+        |g| {
+            g.tokens.insert(oauth_base_url.to_string(), token);
+            // A token we were just handed supersedes whatever the keychain holds; there is
+            // nothing left to read lazily for this server.
+            g.pending_keyring.remove(oauth_base_url);
+        },
+        save,
+    );
 }
 
 /// Remove the stored token for the given OAuth base URL, if any.
 pub fn logout(oauth_base_url: &str) {
-    let Some(snapshot) = TOKEN_STORE.update("auth", |g| {
-        g.tokens.remove(oauth_base_url);
-        g.pending_keyring.remove(oauth_base_url);
-    }) else {
-        return;
-    };
-    SystemKeyring.delete(oauth_base_url);
-    save(&snapshot);
+    TOKEN_STORE.update_and_save(
+        "auth",
+        |g| {
+            g.tokens.remove(oauth_base_url);
+            g.pending_keyring.remove(oauth_base_url);
+        },
+        |snapshot| {
+            SystemKeyring.delete(oauth_base_url);
+            save(snapshot);
+        },
+    );
 }
 
 /// The display name of the account logged in at the given OAuth base URL, if
