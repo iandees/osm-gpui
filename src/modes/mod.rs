@@ -1,17 +1,36 @@
 //! What the map does in each edit mode, one module per mode, plus the key
-//! classifier shared by all of them.
+//! classifier and the pointer arbitration shared by all of them.
+//!
+//! Every mode module provides the hooks that apply to it, with the same names:
+//! `press`, `release`, `click`, `escape`, `cursor` and `paint_preview`, and
+//! `is_drawing` on its state. The `impl MapViewer` block below dispatches each
+//! hook with a `match` on `ModeState` that names every variant, so a new mode
+//! does not compile until every dispatch has an arm for it.
 
+pub(crate) mod add;
+pub(crate) mod arc;
+pub(crate) mod building;
 #[cfg(test)]
 mod escape_tests;
+pub(crate) mod extrude;
+pub(crate) mod improve;
 pub(crate) mod keys;
+pub(crate) mod pointer;
+mod preview;
+pub(crate) mod select;
 #[cfg(test)]
 pub(crate) mod state_tests;
 
+use gpui::{CursorStyle, Pixels, Point, Window};
 use osm_gpui::edit_mode::EditMode;
 
-use crate::{
-    AddProgress, ArcProgress, BuildingPress, BuildingProgress, BuildingReference, ExtrudeDrag,
-};
+pub(crate) use add::{AddProgress, AddState};
+pub(crate) use arc::{ArcPoint, ArcProgress, ArcSnap, ArcState};
+pub(crate) use building::{BuildingPress, BuildingProgress, BuildingReference, BuildingState};
+pub(crate) use extrude::{ExtrudeDrag, ExtrudeResult, ExtrudeState, ExtrudeStyle};
+pub(crate) use improve::ImproveState;
+pub(crate) use preview::PreviewFrame;
+pub(crate) use select::SelectState;
 
 /// The current edit mode together with the state only that mode has. Each
 /// variant owns exactly the in-progress gesture of its mode, so switching
@@ -25,43 +44,6 @@ pub(crate) enum ModeState {
     Arc(ArcState),
     Improve(ImproveState),
 }
-
-/// Select mode's gestures live in `MapViewer::interaction`, which also serves
-/// the other modes' presses, so it holds nothing of its own.
-#[derive(Default)]
-pub(crate) struct SelectState;
-
-/// `progress` is `None` between continuations: the next click starts a new
-/// way.
-#[derive(Default)]
-pub(crate) struct AddState {
-    pub(crate) progress: Option<AddProgress>,
-}
-
-#[derive(Default)]
-pub(crate) struct BuildingState {
-    pub(crate) progress: Option<BuildingProgress>,
-    /// The squared way the buildings are aligned to, if any. Not progress: it
-    /// outlives each building and goes only with the session.
-    pub(crate) reference: Option<BuildingReference>,
-    /// The pending left press in oriented Building mode.
-    pub(crate) press: Option<BuildingPress>,
-}
-
-#[derive(Default)]
-pub(crate) struct ExtrudeState {
-    pub(crate) drag: Option<ExtrudeDrag>,
-}
-
-#[derive(Default)]
-pub(crate) struct ArcState {
-    pub(crate) progress: Option<ArcProgress>,
-}
-
-/// Improve Way mode's target is the selection and its operation the held
-/// modifiers, so it has nothing to remember.
-#[derive(Default)]
-pub(crate) struct ImproveState;
 
 impl ModeState {
     /// The state of `mode` with no gesture started.
@@ -93,10 +75,7 @@ impl ModeState {
         match self {
             ModeState::Select(_) | ModeState::Improve(_) => {}
             ModeState::Add(s) => *s = AddState::default(),
-            ModeState::Building(s) => {
-                s.progress = None;
-                s.press = None;
-            }
+            ModeState::Building(s) => s.reset_progress(),
             ModeState::Extrude(s) => *s = ExtrudeState::default(),
             ModeState::Arc(s) => *s = ArcState::default(),
         }
@@ -108,9 +87,9 @@ impl ModeState {
     pub(crate) fn is_drawing(&self) -> bool {
         match self {
             ModeState::Select(_) | ModeState::Improve(_) | ModeState::Extrude(_) => false,
-            ModeState::Add(s) => s.progress.is_some(),
-            ModeState::Building(s) => s.progress.is_some(),
-            ModeState::Arc(s) => s.progress.is_some(),
+            ModeState::Add(s) => s.is_drawing(),
+            ModeState::Building(s) => s.is_drawing(),
+            ModeState::Arc(s) => s.is_drawing(),
         }
     }
 }
@@ -167,6 +146,18 @@ mode_slot!(Extrude, drag, ExtrudeDrag, get extrude_drag);
 mode_slot!(Extrude, drag, ExtrudeDrag, take take_extrude_drag);
 mode_slot!(Extrude, drag, ExtrudeDrag, set set_extrude_drag);
 
+/// The mouse cursor over the map in `mode`.
+pub(crate) fn cursor(mode: EditMode, hovering: bool) -> CursorStyle {
+    match mode {
+        EditMode::Select => select::cursor(hovering),
+        EditMode::Add => add::cursor(),
+        EditMode::Building => building::cursor(),
+        EditMode::Extrude => extrude::cursor(),
+        EditMode::Arc => arc::cursor(),
+        EditMode::Improve => improve::cursor(),
+    }
+}
+
 impl crate::MapViewer {
     pub(crate) fn mode(&self) -> EditMode {
         self.mode_state.mode()
@@ -176,5 +167,122 @@ impl crate::MapViewer {
     /// things a user's mode switch does (see `on_set_mode`).
     pub(crate) fn enter_mode(&mut self, mode: EditMode) {
         self.mode_state = ModeState::fresh(mode);
+    }
+
+    /// A left press on the map that no cross-mode owner took (see
+    /// `pointer::press_owner`). A mode that owns the left button takes the
+    /// press; for any other the shared select/box-select/move gesture starts.
+    pub(crate) fn mode_press(&mut self, position: Point<Pixels>, modifiers: gpui::Modifiers) {
+        let took_press = match self.mode_state {
+            ModeState::Building(_) => building::press(self, position),
+            ModeState::Extrude(_) => {
+                extrude::press(self, position, modifiers);
+                true
+            }
+            ModeState::Select(_)
+            | ModeState::Add(_)
+            | ModeState::Arc(_)
+            | ModeState::Improve(_) => false,
+        };
+        if !took_press {
+            let grab_vertices = matches!(self.mode_state, ModeState::Select(_));
+            select::press_gesture(self, position, modifiers, grab_vertices);
+        }
+    }
+
+    /// A left release whose press a mode owned. Returns whether it finished
+    /// such a press (the shared gesture then has nothing to do).
+    pub(crate) fn mode_release(&mut self, click_count: usize, up_pos: Point<Pixels>) -> bool {
+        match self.mode_state {
+            ModeState::Building(_) => building::release(self, up_pos),
+            ModeState::Extrude(_) => extrude::release(self, click_count, up_pos),
+            ModeState::Select(_)
+            | ModeState::Add(_)
+            | ModeState::Arc(_)
+            | ModeState::Improve(_) => false,
+        }
+    }
+
+    /// Whether the pointer's hover highlight and vertex preview are live.
+    pub(crate) fn hover_tracking(&self, button_down: bool) -> bool {
+        match self.mode_state {
+            ModeState::Select(_) => select::hover_enabled(self, button_down),
+            ModeState::Add(_)
+            | ModeState::Building(_)
+            | ModeState::Extrude(_)
+            | ModeState::Arc(_)
+            | ModeState::Improve(_) => false,
+        }
+    }
+
+    /// A plain click on the map (after notes and street imagery had their
+    /// say), by the current mode.
+    pub(crate) fn mode_click(
+        &mut self,
+        at: Point<Pixels>,
+        shift_held: bool,
+        click_count: usize,
+        snapping_off: bool,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        match self.mode_state {
+            ModeState::Select(_) => select::click(self, at, shift_held, click_count),
+            ModeState::Add(_) => add::click(self, at, snapping_off),
+            ModeState::Building(_) => building::click(self, at),
+            ModeState::Arc(_) => arc::click(self, at, snapping_off),
+            ModeState::Improve(_) => improve::click(self, at, cx),
+            ModeState::Extrude(_) => extrude::click(),
+        }
+    }
+
+    /// Escape's step in the current mode: the unfinished gesture first, then
+    /// the mode itself. `cancelled_drag` says Escape already cancelled a
+    /// move-drag.
+    pub(crate) fn mode_escape(&mut self, cancelled_drag: bool) {
+        match self.mode_state {
+            ModeState::Select(_) => select::escape(self, cancelled_drag),
+            ModeState::Add(_) => add::escape(self),
+            ModeState::Building(_) => building::escape(self),
+            ModeState::Extrude(_) => extrude::escape(self),
+            ModeState::Arc(_) => arc::escape(self),
+            ModeState::Improve(_) => improve::escape(self),
+        }
+    }
+
+    /// Paint the current mode's live preview, and the snap highlight. The Add
+    /// rubber band goes over the highlight; every other preview goes under
+    /// it.
+    pub(crate) fn paint_mode_preview(&self, frame: &PreviewFrame<'_>, window: &mut Window) {
+        let paint_snap = |window: &mut Window| {
+            if let Some(target) = &self.snap_preview {
+                preview::paint_snap_target(target, frame, window);
+            }
+        };
+        match self.mode_state {
+            ModeState::Add(_) => {
+                paint_snap(window);
+                add::paint_preview(self, frame, window);
+            }
+            ModeState::Select(_) => {
+                select::paint_preview(self, frame, window);
+                paint_snap(window);
+            }
+            ModeState::Building(_) => {
+                building::paint_preview(self, frame, window);
+                paint_snap(window);
+            }
+            ModeState::Extrude(_) => {
+                extrude::paint_preview(self, frame, window);
+                paint_snap(window);
+            }
+            ModeState::Arc(_) => {
+                arc::paint_preview(self, frame, window);
+                paint_snap(window);
+            }
+            ModeState::Improve(_) => {
+                improve::paint_preview(self, frame, window);
+                paint_snap(window);
+            }
+        }
     }
 }

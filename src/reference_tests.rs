@@ -49,13 +49,13 @@ fn has_unsaved_changes_in(view: &MapViewer) -> bool {
 fn clicking_a_reference_line_shows_it_in_the_status_bar(cx: &mut TestAppContext) {
     with_view(cx, |view, _w, cx| {
         view.add_reference_dataset("walk".into(), track(), cx);
-        view.handle_select_click(point(px(400.0), px(302.0)), false, 1);
+        crate::modes::select::click(view, point(px(400.0), px(302.0)), false, 1);
         let status = view.status_message.as_ref().unwrap().0.to_string();
         assert!(status.contains("Walk"), "{status}");
         assert!(view.selected.is_empty());
         // Away from the line: no new message.
         view.status_message = None;
-        view.handle_select_click(point(px(400.0), px(500.0)), false, 1);
+        crate::modes::select::click(view, point(px(400.0), px(500.0)), false, 1);
         assert!(view.status_message.is_none());
     });
 }

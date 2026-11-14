@@ -14,13 +14,13 @@ fn three_clicks_make_one_arc_and_one_undo_removes_it(cx: &mut TestAppContext) {
         let end = c + point(px(100.0), px(0.0));
         let bulge = c + point(px(0.0), px(-60.0));
 
-        view.handle_arc_click(start, false);
+        crate::modes::arc::click(view, start, false);
         assert!(view.arc_progress().is_some_and(|p| p.end.is_none()));
-        view.handle_arc_click(end, false);
+        crate::modes::arc::click(view, end, false);
         assert!(view.arc_progress().is_some_and(|p| p.end.is_some()));
         assert_eq!(osm_counts(view, layer), (0, 0), "nothing is created early");
 
-        view.handle_arc_click(bulge, false);
+        crate::modes::arc::click(view, bulge, false);
         assert!(view.arc_progress().is_none());
         let (nodes, ways) = osm_counts(view, layer);
         assert_eq!(ways, 1);
@@ -75,10 +75,10 @@ fn three_clicks_make_one_arc_and_one_undo_removes_it(cx: &mut TestAppContext) {
 fn a_collinear_third_click_is_ignored(cx: &mut TestAppContext) {
     with_osm(cx, empty_data(), EditMode::Arc, |view, _w, _cx, layer| {
         let c = view.viewport.geo_to_screen(LAT, LON);
-        view.handle_arc_click(c + point(px(-100.0), px(0.0)), false);
-        view.handle_arc_click(c + point(px(100.0), px(0.0)), false);
+        crate::modes::arc::click(view, c + point(px(-100.0), px(0.0)), false);
+        crate::modes::arc::click(view, c + point(px(100.0), px(0.0)), false);
         // On the chord itself: no circle, so the arc stays pending.
-        view.handle_arc_click(c, false);
+        crate::modes::arc::click(view, c, false);
         assert!(view.arc_progress().is_some_and(|p| p.end.is_some()));
         assert_eq!(osm_counts(view, layer), (0, 0));
     });
@@ -95,9 +95,9 @@ fn endpoints_snap_onto_a_way_and_are_spliced_into_it(cx: &mut TestAppContext) {
         let c = view.viewport.geo_to_screen(LAT, LON);
         // Start and end a few pixels off the horizontal way; the bulge
         // is far from it.
-        view.handle_arc_click(c + point(px(-100.0), px(4.0)), false);
-        view.handle_arc_click(c + point(px(100.0), px(-4.0)), false);
-        view.handle_arc_click(c + point(px(0.0), px(-60.0)), false);
+        crate::modes::arc::click(view, c + point(px(-100.0), px(4.0)), false);
+        crate::modes::arc::click(view, c + point(px(100.0), px(-4.0)), false);
+        crate::modes::arc::click(view, c + point(px(0.0), px(-60.0)), false);
 
         let editable = view
             .layer_manager
@@ -132,9 +132,9 @@ fn endpoints_snap_onto_a_way_and_are_spliced_into_it(cx: &mut TestAppContext) {
                 .len()
         };
         assert_eq!(host_len(view), 2, "undo removes the splices too");
-        view.handle_arc_click(c + point(px(-100.0), px(4.0)), true);
-        view.handle_arc_click(c + point(px(100.0), px(-4.0)), true);
-        view.handle_arc_click(c + point(px(0.0), px(-60.0)), true);
+        crate::modes::arc::click(view, c + point(px(-100.0), px(4.0)), true);
+        crate::modes::arc::click(view, c + point(px(100.0), px(-4.0)), true);
+        crate::modes::arc::click(view, c + point(px(0.0), px(-60.0)), true);
         assert_eq!(host_len(view), 2);
     });
 }
@@ -150,9 +150,9 @@ fn endpoints_snap_onto_existing_vertices_and_reuse_them(cx: &mut TestAppContext)
         let a = view.viewport.geo_to_screen(LAT, LON - 0.0005);
         let b = view.viewport.geo_to_screen(LAT, LON + 0.0005);
         let c = view.viewport.geo_to_screen(LAT, LON);
-        view.handle_arc_click(a + point(px(2.0), px(2.0)), false);
-        view.handle_arc_click(b + point(px(-2.0), px(1.0)), false);
-        view.handle_arc_click(c + point(px(0.0), px(-60.0)), false);
+        crate::modes::arc::click(view, a + point(px(2.0), px(2.0)), false);
+        crate::modes::arc::click(view, b + point(px(-2.0), px(1.0)), false);
+        crate::modes::arc::click(view, c + point(px(0.0), px(-60.0)), false);
 
         let editable = view
             .layer_manager

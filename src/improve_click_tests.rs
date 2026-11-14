@@ -32,7 +32,7 @@ fn a_plain_click_moves_the_nearest_node_to_the_cursor(cx: &mut TestAppContext) {
         let c = view.viewport.geo_to_screen(LAT, LON);
         // Nearest to node 2 (about 47 px left of centre).
         let click = c + point(px(-40.0), px(30.0));
-        view.handle_improve_click(click, cx);
+        crate::modes::improve::click(view, click, cx);
 
         assert_eq!(way_node_ids(view, layer, 10).unwrap(), vec![1, 2, 3, 4]);
         let (lat, lon) = node_lat_lon(view, layer, 2).unwrap();
@@ -56,7 +56,7 @@ fn the_add_modifier_inserts_a_node_on_the_way(cx: &mut TestAppContext) {
         };
         let c = view.viewport.geo_to_screen(LAT, LON);
         let click = c + point(px(0.0), px(40.0));
-        view.handle_improve_click(click, cx);
+        crate::modes::improve::click(view, click, cx);
 
         let nodes = way_node_ids(view, layer, 10).unwrap();
         assert_eq!(nodes.len(), 5);
@@ -80,7 +80,7 @@ fn shift_deletes_the_nearest_node(cx: &mut TestAppContext) {
             ..Default::default()
         };
         let c = view.viewport.geo_to_screen(LAT, LON);
-        view.handle_improve_click(c + point(px(50.0), px(10.0)), cx);
+        crate::modes::improve::click(view, c + point(px(50.0), px(10.0)), cx);
 
         assert_eq!(way_node_ids(view, layer, 10).unwrap(), vec![1, 2, 4]);
         assert!(node_lat_lon(view, layer, 3).is_none());
@@ -97,7 +97,7 @@ fn shift_deletes_the_nearest_node(cx: &mut TestAppContext) {
 fn without_a_selected_way_a_click_picks_the_way_under_it(cx: &mut TestAppContext) {
     with_osm(cx, data(), EditMode::Improve, |view, _w, cx, layer| {
         let c = view.viewport.geo_to_screen(LAT, LON);
-        view.handle_improve_click(c + point(px(0.0), px(2.0)), cx);
+        crate::modes::improve::click(view, c + point(px(0.0), px(2.0)), cx);
         assert_eq!(view.improve_target(), Some((layer, 10)));
         assert_eq!(view.undo_stack.cursor, 0, "picking edits nothing");
     });

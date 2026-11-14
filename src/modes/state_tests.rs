@@ -1,12 +1,12 @@
 //! `ModeState`: entering a mode yields that mode's fresh state, and no other
 //! mode's state can be reached from it.
 
-use super::ModeState;
-use crate::test_support::*;
-use crate::{
+use super::{
     AddProgress, ArcPoint, ArcProgress, BuildingProgress, BuildingReference, ExtrudeDrag,
-    ExtrudeStyle, MapViewer, SetMode,
+    ExtrudeStyle, ModeState,
 };
+use crate::test_support::*;
+use crate::{MapViewer, SetMode};
 use gpui::{point, px, TestAppContext};
 use osm_gpui::edit_mode::EditMode;
 use osm_gpui::layers::LayerId;

@@ -72,7 +72,7 @@ fn building_redo_recreates_the_ring_with_its_ids_and_tags(cx: &mut TestAppContex
     with_session_in(cx, empty(), EditMode::Building, |s| {
         let edited = round_trip(s, |s| {
             for p in [off(s, -60.0, 0.0), off(s, 60.0, 0.0), off(s, 60.0, 50.0)] {
-                s.view.handle_building_click(p);
+                crate::modes::building::click(s.view, p);
             }
         });
         let [way] = s.new_ways()[..] else {
@@ -91,7 +91,7 @@ fn arc_redo_recreates_the_way_and_its_nodes(cx: &mut TestAppContext) {
         round_trip(s, |s| {
             let (a, b, c) = (off(s, -100.0, 0.0), off(s, 100.0, 0.0), off(s, 0.0, -60.0));
             for p in [a, b, c] {
-                s.view.handle_arc_click(p, false);
+                crate::modes::arc::click(s.view, p, false);
             }
         });
         s.assert_no_dangling();
@@ -109,7 +109,7 @@ fn arc_starting_on_a_way_redoes_the_splice_too(cx: &mut TestAppContext) {
                 off(s, 0.0, -120.0),
             );
             for p in [a, b, c] {
-                s.view.handle_arc_click(p, false);
+                crate::modes::arc::click(s.view, p, false);
             }
         });
         assert_eq!(

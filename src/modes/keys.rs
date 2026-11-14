@@ -135,43 +135,7 @@ impl MapViewer {
             return;
         }
         let cancelled_drag = self.cancel_move_drag(cx);
-        match self.mode() {
-            EditMode::Add => {
-                if self.take_add_progress().is_none() {
-                    self.enter_mode(EditMode::Select);
-                }
-            }
-            EditMode::Building => {
-                self.set_building_press(None);
-                if self.take_building_progress().is_none() {
-                    self.enter_mode(EditMode::Select);
-                }
-            }
-            EditMode::Extrude => {
-                if self.take_extrude_drag().is_none() {
-                    self.enter_mode(EditMode::Select);
-                }
-            }
-            EditMode::Arc => {
-                if self.take_arc_progress().is_none() {
-                    self.enter_mode(EditMode::Select);
-                }
-            }
-            // First Esc lets go of the way (to pick another), the second
-            // leaves the mode.
-            EditMode::Improve => {
-                if self.improve_target().is_some() {
-                    self.set_selection(Vec::new());
-                } else {
-                    self.enter_mode(EditMode::Select);
-                }
-            }
-            EditMode::Select => {
-                if !cancelled_drag {
-                    self.set_selection(Vec::new());
-                }
-            }
-        }
+        self.mode_escape(cancelled_drag);
         cx.notify();
     }
 }
