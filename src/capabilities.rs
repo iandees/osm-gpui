@@ -226,7 +226,7 @@ pub fn last_error(base_url: &str) -> Option<CapabilitiesError> {
 }
 
 /// Whether the server at `base_url` accepts a download of `bounds`. The one
-/// shared download gate (status bar hint, Download action, `fetch_bbox`).
+/// shared download gate (status bar hint, Download action, `osm_api::check_area`).
 pub fn allows_download(base_url: &str, bounds: &GeoBounds) -> bool {
     for_server(base_url).allows_download(bounds)
 }

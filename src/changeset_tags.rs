@@ -62,8 +62,7 @@ impl ChangesetTags {
     }
 }
 
-/// Just `created_by` and the comment: what the editor wrote before the
-/// upload dialog gained its extras.
+/// Just `created_by` and the comment.
 impl From<&str> for ChangesetTags {
     fn from(comment: &str) -> Self {
         build_changeset_tags(&TagInputs {

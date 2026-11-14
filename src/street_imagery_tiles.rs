@@ -318,7 +318,7 @@ mod tests {
     /// A test point: `(x, y, [(key, value)])`.
     type TestPoint<'a> = (i32, i32, Vec<(&'a str, Prop<'a>)>);
 
-    /// One layer of point features: `(x, y, [(key, value)])`.
+    /// A tile of one layer of point features.
     fn encode_tile(layer: &str, extent: u32, points: &[TestPoint]) -> Vec<u8> {
         let zigzag = |v: i32| ((v << 1) ^ (v >> 31)) as u64;
         let mut keys: Vec<String> = Vec::new();

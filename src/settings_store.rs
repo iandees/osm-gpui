@@ -101,8 +101,7 @@ pub struct AppSettings {
     pub custom_api_url: String,
     /// OAuth client IDs, keyed by OAuth base URL (see `auth::oauth_base_for`). OSM's
     /// primary and dev instances have entirely separate app registrations, so a
-    /// client_id registered on one is unknown to the other; this lets each server use
-    /// its own registered app instead of sharing a single hardcoded client_id.
+    /// client_id registered on one is unknown to the other.
     pub client_ids: HashMap<String, String>,
     #[serde(deserialize_with = "persist::lenient")]
     pub text_size_preset: TextSizePreset,
@@ -365,9 +364,6 @@ fn update_in(
     }
     Some(updated)
 }
-
-// The `set_*` helpers below each change one field through `update`; `persist`
-// is passed on to it (written to disk when true).
 
 pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
     update(persist, |s| s.welcome_dismissed = dismissed);

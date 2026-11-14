@@ -40,7 +40,7 @@
 //! chunk count is the same either way (chunks are cut by element count), so
 //! it costs nothing. Nodes no new way uses come after the ways, before the
 //! relations. When everything fits in one chunk the diffs are passed through
-//! untouched, so a small upload is byte for byte what it always was.
+//! untouched.
 //!
 //! A new object keeps a negative placeholder id until the server answers, and
 //! the answer to chunk *k* is the first time later chunks can learn the real
@@ -84,7 +84,6 @@ impl std::fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
-/// Number of elements in `diff`.
 fn element_count(diff: &LayerDiff) -> usize {
     let (created, modified, deleted) = diff.counts();
     created + modified + deleted
@@ -268,7 +267,6 @@ fn sequence(diffs: &[&LayerDiff]) -> Vec<Atom> {
         );
     }
 
-    // Modifies.
     for d in diffs {
         atoms.extend(
             d.modified_nodes
@@ -291,7 +289,6 @@ fn sequence(diffs: &[&LayerDiff]) -> Vec<Atom> {
         );
     }
 
-    // Deletes.
     for d in diffs {
         atoms.extend(
             d.deleted_relation_ids
@@ -442,8 +439,8 @@ pub struct CompletedChunk {
 }
 
 /// Reflect an accepted chunk in `layer`, right away. The last chunk goes
-/// through the layer's ordinary post-upload reconciliation (so a
-/// single-changeset upload behaves exactly as it always did); an earlier one
+/// through the layer's ordinary post-upload reconciliation (the path a
+/// single-changeset upload takes); an earlier one
 /// advances the layer's baseline by just its own objects and leaves the rest
 /// pending.
 pub fn apply_to_layer(layer: &mut dyn crate::layers::MapLayer, done: &CompletedChunk) {
@@ -1118,8 +1115,6 @@ mod tests {
         assert_eq!(all.len(), unique.len());
         assert_eq!(all.len(), element_count(&d));
     }
-
-    // --- id rewriting and the upload loop ---------------------------------
 
     fn rewritten_ids() -> IdMap {
         let mut ids = IdMap::default();

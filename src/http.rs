@@ -1,11 +1,10 @@
 //! Minimal HTTP client seam shared by every networking call site (osm_api, auth,
 //! tile_cache, imagery) so request/retry logic can be tested against a scripted
-//! `FakeClient` instead of hitting the real network. Modeled after the `AppHandle`
-//! trait in `script::runner`: a trait for production code plus a fake for tests.
+//! `FakeClient` instead of hitting the real network.
 
 use std::time::Duration;
 
-/// HTTP method used by a request. Only the methods the app actually needs.
+/// HTTP method used by a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,

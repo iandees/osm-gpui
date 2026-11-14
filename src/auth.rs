@@ -31,12 +31,11 @@ const DEFAULT_CLIENT_ID: &str = "8cdZSV_ejt5jaqy4MYOMFrlOQgsR56PpIVI3RK0knf4";
 // application as a public/PKCE client, not to bring the secret back.
 //
 // `write_api` is required to create/upload/close changesets (see `osm_upload.rs`).
-// Existing logins made before this scope was added won't have write access; the user
-// will need to log in again (re-authorizing grants the new scope) before uploading.
+// A login granted without it can't upload; signing in again grants it.
 //
 // `write_notes` is required to comment on, close, reopen and create notes (see
-// `notes.rs`). A login made before it was added lacks it: the server answers 403 to a
-// note write, the note panel says so, and signing in again grants it.
+// `notes.rs`). A login granted without it gets 403 on a note write, the note panel
+// says so, and signing in again grants it.
 const SCOPES: &str = "read_prefs write_api write_notes";
 
 /// The client_id to use for a given OAuth base URL: the user's configured override for
@@ -513,14 +512,6 @@ fn fetch_user_details_with(
 
     Ok((display_name, id))
 }
-
-//
-// Secrets (access_token, refresh_token) live in the platform keyring, one entry per
-// OAuth base URL under the `osm-gpui` service. Non-secret bookkeeping (display name,
-// user id, expiry) is cached in a small JSON file so we know which servers have a login
-// without querying the keyring for all of them. If the keyring can't be used (e.g. no
-// platform secret store available), the secrets fall back into that same file, which is
-// then chmod'd 0600.
 
 /// A secret payload for one OAuth base URL, as stored in the keyring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
