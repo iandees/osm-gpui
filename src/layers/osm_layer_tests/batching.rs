@@ -109,3 +109,24 @@ fn finish_sorted_drops_empty_batches() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].0, 2);
 }
+
+#[test]
+fn a_way_bbox_intersects_the_view_when_it_overlaps_or_touches() {
+    use super::super::WayBbox;
+    let b = WayBbox {
+        min_x: 0.0,
+        max_x: 10.0,
+        min_y: 0.0,
+        max_y: 10.0,
+    };
+    assert!(b.intersects((5.0, 6.0, 5.0, 6.0)));
+    assert!(b.intersects((10.0, 20.0, 10.0, 20.0)));
+    assert!(!b.intersects((10.5, 20.0, 0.0, 10.0)));
+    assert!(!b.intersects((0.0, 10.0, -5.0, -0.5)));
+    let flat = WayBbox {
+        max_x: 0.0,
+        max_y: 0.0,
+        ..b
+    };
+    assert!(flat.intersects((-1.0, 0.0, -1.0, 0.0)));
+}

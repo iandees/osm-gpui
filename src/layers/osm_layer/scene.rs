@@ -110,42 +110,6 @@ pub(super) fn decimate_into(pts: &[Point<Pixels>], min_px: f32, out: &mut Vec<(u
     }
 }
 
-/// Push one solid triangle into `path`, creating the path on first use and
-/// widening `bounds_min_max`. Raw vertices, no Lyon tessellation.
-pub(super) fn push_triangle(
-    path: &mut Option<Path<Pixels>>,
-    bounds_min_max: &mut (f32, f32, f32, f32),
-    a: Point<Pixels>,
-    b: Point<Pixels>,
-    c: Point<Pixels>,
-) {
-    let (min_x, max_x, min_y, max_y) = bounds_min_max;
-    for p in [a, b, c] {
-        let (x, y) = (f32::from(p.x), f32::from(p.y));
-        if x < *min_x {
-            *min_x = x;
-        }
-        if x > *max_x {
-            *max_x = x;
-        }
-        if y < *min_y {
-            *min_y = y;
-        }
-        if y > *max_y {
-            *max_y = y;
-        }
-    }
-    let st = point(0., 1.);
-    let p = path.get_or_insert_with(|| Path::new(a));
-    for xy in [a, b, c] {
-        p.vertices.push(PathVertex {
-            xy_position: xy,
-            st_position: st,
-            content_mask: Default::default(),
-        });
-    }
-}
-
 /// The triangle for a direction arrow centered on the segment `p0`-`p1`,
 /// pointing from `p0` to `p1` (or the other way if `reverse`): tip first,
 /// then the two base corners. `half_length` is measured along the segment
@@ -253,12 +217,7 @@ impl Batch {
             z,
             key,
             path,
-            bounds: (
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-            ),
+            bounds: EMPTY_BOUNDS,
         }
     }
 
@@ -270,11 +229,7 @@ impl Batch {
             return None;
         }
         hints.insert(self.key, path.vertices.len());
-        let (min_x, max_x, min_y, max_y) = self.bounds;
-        path.bounds = Bounds {
-            origin: point(px(min_x), px(min_y)),
-            size: size(px(max_x - min_x), px(max_y - min_y)),
-        };
+        set_path_bounds(&mut path, self.bounds);
         Some((self.rgba, path))
     }
 }
@@ -457,7 +412,7 @@ impl OsmLayer {
         let origin_x = bounds.origin.x;
         let origin_y = bounds.origin.y;
         let (ox, oy) = (f32::from(origin_x), f32::from(origin_y));
-        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        let view = viewport.mercator_view_bounds();
         let proj = viewport.projector();
         let (ppm_x, ppm_y) = proj.pixels_per_meter();
         let zoom = viewport.zoom_level();
@@ -514,7 +469,7 @@ impl OsmLayer {
                 continue;
             };
             let b = &entry.bbox;
-            if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
+            if !b.intersects(view) {
                 continue;
             }
             let alpha = (fill.opacity * 255.0).round() as u32;
@@ -529,8 +484,7 @@ impl OsmLayer {
             let group = &mut fills[group_idx];
             for polygon in &entry.polygons {
                 let pb = &polygon.bbox;
-                if pb.max_x < vmin_x || pb.min_x > vmax_x || pb.max_y < vmin_y || pb.min_y > vmax_y
-                {
+                if !pb.intersects(view) {
                     continue;
                 }
                 if !dragging && !lod.fills(bbox_extent_px(pb, ppm_x, ppm_y)) {
@@ -560,11 +514,7 @@ impl OsmLayer {
                 Some(b) => b,
                 None => continue,
             };
-            if bbox.max_x < vmin_x
-                || bbox.min_x > vmax_x
-                || bbox.max_y < vmin_y
-                || bbox.min_y > vmax_y
-            {
+            if !bbox.intersects(view) {
                 continue;
             }
             if !dragging && !lod.fills(bbox_extent_px(bbox, ppm_x, ppm_y)) {
@@ -671,11 +621,7 @@ impl OsmLayer {
                 Some(b) => b,
                 None => continue,
             };
-            if bbox.max_x < vmin_x
-                || bbox.min_x > vmax_x
-                || bbox.max_y < vmin_y
-                || bbox.min_y > vmax_y
-            {
+            if !bbox.intersects(view) {
                 continue;
             }
             ways_in_view += 1;
