@@ -195,7 +195,7 @@ fn parse_line(line_no: usize, line: &str) -> Result<Op, ParseError> {
             }),
             _ => Err(err(
                 line_no,
-                "action: want ACTION_NAME like UploadToOsm, optionally followed by JSON data",
+                "action: want ACTION_NAME like UploadToOsm or layers::DeleteLayer, optionally followed by JSON data",
             )),
         },
         "log" => Ok(Op::Log {
@@ -1260,13 +1260,20 @@ fn parse_assert_selected(line_no: usize, rest: &[&str]) -> Result<Op, ParseError
     }
     Err(err(
         line_no,
-        "assert_selected: want 'none' or 'node|way ID'",
+        "assert_selected: want none | node|way|relation ID",
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assert_selected_usage_lists_every_kind_it_accepts() {
+        let e = parse("assert_selected node").unwrap_err();
+        assert!(e.message.contains("node|way|relation ID"), "{}", e.message);
+        assert!(parse("assert_selected relation 5").is_ok());
+    }
 
     #[test]
     fn skips_blanks_and_comments() {
