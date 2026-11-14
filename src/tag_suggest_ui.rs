@@ -21,7 +21,9 @@ use osm_gpui::presets::Geometry;
 use osm_gpui::selection::FeatureKind;
 use osm_gpui::selection::FeatureRef;
 use osm_gpui::settings_store;
-use osm_gpui::tag_suggest::{suggest_keys, suggest_values, DataIndex, SchemaIndex, Source};
+use osm_gpui::tag_suggest::{
+    suggest_keys, suggest_values, DataIndex, SchemaIndex, Source, SuggestInput,
+};
 use osm_gpui::taginfo::{self, Lookup, ObjectType, TaginfoItem, TaginfoState, Target};
 use osm_gpui::ui::style::muted_text_size;
 use osm_gpui::ui::tag_edit::TagEditField;
@@ -371,15 +373,13 @@ impl MapViewer {
                 if key_text.is_empty() {
                     Vec::new()
                 } else {
-                    suggest_values(
-                        &key_text,
-                        &typed,
-                        &selection_values,
-                        &refs,
-                        schema(),
-                        &edit.suggest.taginfo,
-                        LIST_LIMIT,
-                    )
+                    suggest_values(SuggestInput {
+                        key: &key_text,
+                        selection: &selection_values,
+                        data: &refs,
+                        taginfo: &edit.suggest.taginfo,
+                        ..SuggestInput::new(&typed, schema(), LIST_LIMIT)
+                    })
                 }
             }
             _ => {
@@ -396,25 +396,20 @@ impl MapViewer {
                     if typed.trim().is_empty() {
                         // Nothing typed: only taginfo's keys that go with
                         // the feature's main tag, never the whole local list.
-                        suggest_keys(
-                            "",
-                            &[],
-                            schema(),
-                            &edit.suggest.taginfo,
-                            &exclude,
-                            &geometries,
-                            LIST_LIMIT,
-                        )
+                        suggest_keys(SuggestInput {
+                            taginfo: &edit.suggest.taginfo,
+                            exclude: &exclude,
+                            features: &geometries,
+                            ..SuggestInput::new("", schema(), LIST_LIMIT)
+                        })
                     } else {
-                        suggest_keys(
-                            &typed,
-                            &refs,
-                            schema(),
-                            &edit.suggest.taginfo,
-                            &exclude,
-                            &geometries,
-                            LIST_LIMIT,
-                        )
+                        suggest_keys(SuggestInput {
+                            data: &refs,
+                            taginfo: &edit.suggest.taginfo,
+                            exclude: &exclude,
+                            features: &geometries,
+                            ..SuggestInput::new(&typed, schema(), LIST_LIMIT)
+                        })
                     }
                 }
             }
