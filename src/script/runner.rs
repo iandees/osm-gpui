@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::idle_tracker::IdleTracker;
 use crate::script::{AutosaveCmd, Check, Op, Step};
 
-/// Interface to the live app. Implemented by a shim in main.rs that holds the
+/// Interface to the live app. Implemented by `LiveApp` in `script_harness.rs`, which holds the
 /// gpui `WindowHandle` and the `MapViewer` entity. Keeps the runner testable
 /// and free of gpui imports.
 pub trait AppHandle {
