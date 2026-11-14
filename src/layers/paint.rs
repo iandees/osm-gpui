@@ -2,7 +2,7 @@
 //! to window coordinates, batching triangles into one path, and the small
 //! polygons notes and photos are drawn with.
 
-use gpui::{point, px, rgba, size, Bounds, Path, PathBuilder, Pixels, Window};
+use gpui::{point, px, rgba, size, Bounds, Path, PathBuilder, PathVertex, Pixels, Point, Window};
 
 use crate::layers::way_stroke::PathSink;
 use crate::viewport::Viewport;
@@ -48,11 +48,68 @@ impl<'a> PaintFrame<'a> {
     }
 }
 
+/// Bounds of a path being built, `(min_x, max_x, min_y, max_y)`, before
+/// anything has widened them.
+pub const EMPTY_BOUNDS: (f32, f32, f32, f32) = (
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+);
+
+/// Give `path` the bounds accumulated in `(min_x, max_x, min_y, max_y)`; a
+/// `Path` must have them set before it is painted.
+#[inline]
+pub fn set_path_bounds(
+    path: &mut Path<Pixels>,
+    (min_x, max_x, min_y, max_y): (f32, f32, f32, f32),
+) {
+    path.bounds = Bounds {
+        origin: point(px(min_x), px(min_y)),
+        size: size(px(max_x - min_x), px(max_y - min_y)),
+    };
+}
+
+/// Push one solid triangle into `path`, creating the path on first use and
+/// widening `bounds_min_max`. Raw vertices, no Lyon tessellation.
+pub fn push_triangle(
+    path: &mut Option<Path<Pixels>>,
+    bounds_min_max: &mut (f32, f32, f32, f32),
+    a: Point<Pixels>,
+    b: Point<Pixels>,
+    c: Point<Pixels>,
+) {
+    let (min_x, max_x, min_y, max_y) = bounds_min_max;
+    for p in [a, b, c] {
+        let (x, y) = (f32::from(p.x), f32::from(p.y));
+        if x < *min_x {
+            *min_x = x;
+        }
+        if x > *max_x {
+            *max_x = x;
+        }
+        if y < *min_y {
+            *min_y = y;
+        }
+        if y > *max_y {
+            *max_y = y;
+        }
+    }
+    let st = point(0., 1.);
+    let p = path.get_or_insert_with(|| Path::new(a));
+    for xy in [a, b, c] {
+        p.vertices.push(PathVertex {
+            xy_position: xy,
+            st_position: st,
+            content_mask: Default::default(),
+        });
+    }
+}
+
 /// Raw triangles painted in one colour, with the bounds accumulated as they
 /// are pushed (a `Path` needs its bounds set before it is painted).
 pub struct PathBatch {
     path: Option<Path<Pixels>>,
-    /// `(min_x, max_x, min_y, max_y)`.
     bounds: (f32, f32, f32, f32),
 }
 
@@ -60,12 +117,7 @@ impl PathBatch {
     pub fn new() -> Self {
         PathBatch {
             path: None,
-            bounds: (
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-                f32::INFINITY,
-                f32::NEG_INFINITY,
-            ),
+            bounds: EMPTY_BOUNDS,
         }
     }
 
@@ -77,17 +129,19 @@ impl PathBatch {
         }
     }
 
+    /// Push one triangle (see [`push_triangle`]).
+    #[inline]
+    pub fn triangle(&mut self, a: Point<Pixels>, b: Point<Pixels>, c: Point<Pixels>) {
+        push_triangle(&mut self.path, &mut self.bounds, a, b, c);
+    }
+
     /// The path with its bounds set, or `None` if nothing was pushed.
     pub fn finish(self) -> Option<Path<Pixels>> {
         let mut path = self.path?;
         if path.vertices.is_empty() {
             return None;
         }
-        let (min_x, max_x, min_y, max_y) = self.bounds;
-        path.bounds = Bounds {
-            origin: point(px(min_x), px(min_y)),
-            size: size(px(max_x - min_x), px(max_y - min_y)),
-        };
+        set_path_bounds(&mut path, self.bounds);
         Some(path)
     }
 }
@@ -100,7 +154,8 @@ impl Default for PathBatch {
 
 /// Whether a box intersects the view; both are `(min_x, max_x, min_y, max_y)`
 /// in Web Mercator meters (the order of `Viewport::mercator_view_bounds`).
-/// Touching counts.
+/// Touching counts; a NaN edge never excludes the box.
+#[inline]
 pub fn intersects_view(bbox: (f64, f64, f64, f64), view: (f64, f64, f64, f64)) -> bool {
     let (min_x, max_x, min_y, max_y) = bbox;
     let (vmin_x, vmax_x, vmin_y, vmax_y) = view;
@@ -185,6 +240,49 @@ mod tests {
         assert!(intersects_view((10.0, 12.0, 0.0, 1.0), view));
         assert!(!intersects_view((10.5, 12.0, 0.0, 1.0), view));
         assert!(!intersects_view((2.0, 3.0, -4.0, -1.0), view));
+    }
+
+    #[test]
+    fn zero_size_and_nan_boxes_follow_the_comparison_rules() {
+        let view = (0.0, 10.0, 0.0, 10.0);
+        assert!(intersects_view((0.0, 0.0, 10.0, 10.0), view));
+        assert!(!intersects_view((-1.0, -1.0, 5.0, 5.0), view));
+        assert!(!intersects_view((11.0, 11.0, 5.0, 5.0), view));
+        assert!(intersects_view((f64::NAN, f64::NAN, 5.0, 5.0), view));
+        // A box that surrounds the view intersects it.
+        assert!(intersects_view((-5.0, 15.0, -5.0, 15.0), view));
+    }
+
+    #[test]
+    fn a_triangle_batch_tracks_bounds_like_a_sink() {
+        let mut a = PathBatch::new();
+        a.triangle(
+            point(px(1.0), px(2.0)),
+            point(px(5.0), px(3.0)),
+            point(px(2.0), px(9.0)),
+        );
+        let mut b = PathBatch::new();
+        b.sink().tri((1.0, 2.0), (5.0, 3.0), (2.0, 9.0));
+        let (a, b) = (a.finish().unwrap(), b.finish().unwrap());
+        assert_eq!(a.bounds, b.bounds);
+        assert_eq!(a.vertices.len(), b.vertices.len());
+    }
+
+    #[test]
+    fn empty_bounds_widen_to_the_first_point() {
+        let mut path = None;
+        let mut bounds = EMPTY_BOUNDS;
+        push_triangle(
+            &mut path,
+            &mut bounds,
+            point(px(3.0), px(4.0)),
+            point(px(3.0), px(4.0)),
+            point(px(3.0), px(4.0)),
+        );
+        assert_eq!(bounds, (3.0, 3.0, 4.0, 4.0));
+        let mut path = path.unwrap();
+        set_path_bounds(&mut path, bounds);
+        assert_eq!(path.bounds.size, size(px(0.0), px(0.0)));
     }
 
     #[test]

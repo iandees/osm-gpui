@@ -1128,6 +1128,16 @@ impl MapViewer {
         self.show_downloaded_area
     }
 
+    /// The View checkmarks and Upload's enabled state, as this viewer has them.
+    pub(crate) fn menu_toggles(&self) -> menu::MenuToggles {
+        menu::MenuToggles {
+            show_downloaded_area: self.shows_downloaded_area(),
+            show_notes: self.shows_notes(),
+            show_imagery: osm_gpui::street_imagery::Provider::ALL.map(|p| self.shows_imagery(p)),
+            can_upload: self.has_uploadable_changes(),
+        }
+    }
+
     /// Load the Editor Layer Index in the background; the viewer is told when
     /// it finishes.
     fn load_imagery_index(&mut self, cx: &mut Context<Self>) {
@@ -1187,14 +1197,7 @@ impl MapViewer {
         }
         // Only refresh when the imagery index has reached a terminal state
         // (Ready or Failed). In Loading we don't have entries yet.
-        rebuild_menus(
-            &mut *cx,
-            lat,
-            lon,
-            current_state,
-            self.show_downloaded_area,
-            self.has_uploadable_changes(),
-        );
+        rebuild_menus(&mut *cx, lat, lon, current_state, self.menu_toggles());
         self.last_menu_center = Some((lat, lon));
         self.last_imagery_load_state = Some(current_state);
     }
@@ -5312,14 +5315,7 @@ impl MapViewer {
         }
         self.show_downloaded_area = show;
         let (lat, lon, state) = self.imagery_menu_context();
-        rebuild_menus(
-            &mut *cx,
-            lat,
-            lon,
-            state,
-            show,
-            self.has_uploadable_changes(),
-        );
+        rebuild_menus(&mut *cx, lat, lon, state, self.menu_toggles());
         cx.notify();
     }
 
@@ -7411,7 +7407,11 @@ fn main() {
         custom_imagery_store::init_store(loaded);
         // Remembered imagery offsets. Scripted runs neither read nor write the
         // user's file: their offsets live for the run only.
-        osm_gpui::imagery_offset::init_store(!script_harness::script_mode());
+        osm_gpui::imagery_offset::init_store(if script_harness::script_mode() {
+            Default::default()
+        } else {
+            osm_gpui::imagery_offset::load()
+        });
 
         // Load persisted app settings (OSM API server choice, cache budget) and
         // OAuth login. Seed the tile cache's live budget from the persisted value
@@ -7445,8 +7445,7 @@ fn main() {
             40.7128,
             -74.0060,
             ImageryLoadState::Loading,
-            true,
-            false,
+            menu::MenuToggles::default(),
         );
 
         let startup_http = osm_gpui::http::default_client();
