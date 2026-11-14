@@ -48,7 +48,6 @@ menu:
     custom: "Custom Imagery"
     custom_add: "Add…"
     osm_carto: "OpenStreetMap Carto"
-    coordinate_grid: "Coordinate Grid"
     loading: "(Loading imagery index…)"
     unavailable: "(Imagery index unavailable)"
     # A recommended imagery source in the menu.

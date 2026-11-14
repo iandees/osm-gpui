@@ -9,7 +9,7 @@ This is early software. It can upload edits to the live OpenStreetMap database, 
 **Viewing and imagery**
 - Pan and zoom with trackpad scroll and pinch, mouse wheel, drags, and the keyboard.
 - Raster imagery from OpenStreetMap Carto, the [Editor Layer Index](https://github.com/osmlab/editor-layer-index) (filtered to the current view), and custom tile URL templates you add yourself. Attribution is shown on the map, and tiles are cached on disk within a size limit you can set and clear in Settings > Imagery.
-- A lat/lon grid layer, and a layer list in the side panel with per-layer visibility, ordering, and an "active layer" that the editing tools write into.
+- A layer list in the side panel with per-layer visibility, ordering, and an "active layer" that the editing tools write into.
 - OSM data is drawn for tracing over imagery: thin cased ways, round node markers, direction arrows, area fills, and hover highlighting.
 
 **Editing modes**

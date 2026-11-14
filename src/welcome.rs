@@ -27,7 +27,7 @@ pub(crate) fn needs_default_imagery(layers: &LayerManager) -> bool {
 
 /// Whether the welcome card shows: until some layer holds editable OSM data
 /// (downloaded or opened), and never once the user has dismissed it.
-/// Imagery and grid layers don't count as data.
+/// Imagery layers don't count as data.
 pub(crate) fn show_welcome(layers: &LayerManager, dismissed: bool) -> bool {
     !dismissed
         && !layers
@@ -215,7 +215,7 @@ impl MapViewer {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
-    use osm_gpui::layers::{grid_layer::GridLayer, osm_layer::OsmLayer};
+    use osm_gpui::layers::osm_layer::OsmLayer;
 
     fn osm_layer(layers: &mut LayerManager) -> osm_gpui::layers::LayerId {
         let id = layers.alloc_id();
@@ -228,7 +228,11 @@ mod tests {
         let mut layers = LayerManager::new();
         assert!(show_welcome(&layers, false));
         let id = layers.alloc_id();
-        layers.add_layer(Box::new(GridLayer::new(id)));
+        layers.add_layer(Box::new(osm_gpui::layers::notes_layer::NotesLayer::new(
+            id,
+            "notes".into(),
+            osm_gpui::notes::NoteStore::default(),
+        )));
         assert!(show_welcome(&layers, false));
     }
 
