@@ -1434,3 +1434,224 @@ fn a_refusal_on_part_two_stops_as_refused_with_part_one_applied(cx: &mut TestApp
         assert_eq!(s.counts(), (0, 1, 0));
     });
 }
+
+// ---------------------------------------------------------------------------
+// A crash between the server accepting a changeset and the app applying it
+// ---------------------------------------------------------------------------
+
+fn temp_root(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "osm-gpui-marker-{tag}-{}-{:08x}",
+        std::process::id(),
+        rand::random::<u32>()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Send the driver's next request the way the app's upload task does: the
+/// marker is made durable first, then the changeset goes out.
+fn send_with_marker(
+    view: &mut MapViewer,
+    driver: &mut osm_gpui::upload_chunks::UploadDriver,
+    server: &Server,
+) -> osm_gpui::upload_chunks::Step {
+    let request = driver.next_request().expect("a request is left");
+    view.upload_marker_prepare(osm_gpui::autosave::UploadMarker::for_request(
+        BASE, &request, 1_000,
+    ))
+    .expect("autosave is on")
+    .run();
+    let outcome = osm_gpui::upload_chunks::send(
+        request,
+        server,
+        BASE,
+        &mut || Ok("tok".to_string()),
+        &mut |_, _| {},
+    );
+    driver.record(outcome)
+}
+
+#[gpui::test]
+fn a_crash_after_part_two_was_accepted_but_before_it_was_applied_is_flagged_on_restore(
+    cx: &mut TestAppContext,
+) {
+    use osm_gpui::autosave::{read_upload_marker, Session as AutosaveSession};
+    use osm_gpui::ui::upload_dialog::{ConfirmKind, FailureKind};
+    use osm_gpui::upload_chunks::{marker_after, MarkerAfter, Step, UploadDriver};
+
+    let live_root = temp_root("live");
+    let dead_root = temp_root("dead");
+    let data = ways_net();
+    let server = Server::holding(&data);
+    let nodes_before = server.visible_nodes();
+    cx.update(gpui_component::init);
+
+    // The run that dies: five new nodes, sent two at a time.
+    let window = cx.add_window(MapViewer::new);
+    let (layer, mut driver) = window
+        .update(cx, |view, _window, cx| {
+            view.init_autosave(Some(live_root.clone()), cx);
+            let layer = add_osm_layer(view, "Net", data.clone());
+            let editable = view
+                .layer_manager
+                .find_layer_mut(layer)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap();
+            for i in 0..5 {
+                editable.add_node(40.5 + i as f64 * 0.001, -74.5);
+            }
+            view.autosave_now(cx);
+            let diff = view
+                .layer_manager
+                .find_layer(layer)
+                .unwrap()
+                .as_osm()
+                .unwrap()
+                .diff_for_upload();
+            let driver = UploadDriver::plan(&[&diff], 2, "Add benches").unwrap();
+            assert_eq!(driver.total(), 3);
+            (layer, driver)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    // Part 1: accepted, applied, autosaved; its marker goes once the
+    // autosave has landed.
+    let session_dir = window
+        .update(cx, |view, _window, cx| {
+            let step = send_with_marker(view, &mut driver, &server);
+            let after = marker_after(&step);
+            assert_eq!(after, MarkerAfter::Release);
+            let Step::Apply(done) = step else {
+                panic!("part 1 is accepted");
+            };
+            apply_to_layer(view.layer_manager.find_layer_mut(layer).unwrap(), &done);
+            view.autosave_now(cx);
+            view.upload_marker_after(after, cx);
+            view.autosave.as_ref().unwrap().session_dir().unwrap()
+        })
+        .unwrap();
+    assert!(
+        read_upload_marker(&session_dir).is_some(),
+        "kept until the autosave of part 1 is on disk"
+    );
+    cx.run_until_parked();
+    assert_eq!(read_upload_marker(&session_dir), None);
+
+    // Part 2: accepted by the server; the app dies before applying it.
+    window
+        .update(cx, |view, _window, _cx| {
+            let step = send_with_marker(view, &mut driver, &server);
+            assert!(matches!(step, Step::Apply(_)));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(server.visible_nodes(), nodes_before + 4);
+    let marker = read_upload_marker(&session_dir).expect("the marker survives");
+    assert_eq!(
+        (marker.part, marker.total, marker.objects),
+        (2, 3, 2),
+        "{marker:?}"
+    );
+    assert_eq!(marker.comment, "Add benches");
+    assert_eq!(marker.api_base, BASE);
+
+    // What is on disk now is what a crash leaves: copy it under a session
+    // whose lock is gone.
+    let dead = AutosaveSession::start(&dead_root).unwrap();
+    for entry in std::fs::read_dir(&session_dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        if name != "session.lock" && name != "heartbeat" {
+            std::fs::copy(&path, dead.dir().join(&name)).unwrap();
+        }
+    }
+    let dead_dir = dead.dir().to_path_buf();
+    drop(dead);
+
+    // The next run offers the layers with the warning in front.
+    let window = cx.add_window(MapViewer::new);
+    window
+        .update(cx, |view, _window, cx| {
+            view.init_autosave(Some(dead_root.clone()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            view.check_for_pending_restore(window, cx);
+            let dialog = view.restore_dialog.clone().expect("the offer is shown");
+            let notices = dialog.read(cx).upload_notices().to_vec();
+            assert_eq!(notices.len(), 1);
+            assert!(
+                notices[0][0].contains("An upload was in progress"),
+                "{notices:?}"
+            );
+            assert!(
+                notices[0][1].contains("changeset 2 of 3 (2 changes)"),
+                "{notices:?}"
+            );
+            // The three edits still listed are parts 2 and 3 (part 1 was applied).
+            assert_eq!(dialog.read(cx).items()[0].edits, 3);
+            dialog.update(cx, |dialog, cx| dialog.press_restore(cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, window, cx| {
+            let restored = view
+                .layer_manager
+                .layers()
+                .iter()
+                .find(|l| l.name() == "Net")
+                .unwrap()
+                .id();
+            assert_eq!(
+                view.layer_manager
+                    .find_layer(restored)
+                    .unwrap()
+                    .as_osm()
+                    .unwrap()
+                    .diff_for_upload()
+                    .counts(),
+                (3, 0, 0)
+            );
+            let (status, _) = view.status_message.clone().expect("a reminder is shown");
+            assert!(status.contains("upload was in progress"), "{status}");
+            // The warning moved into this run's session, so a second crash
+            // still carries it.
+            let dir = view.autosave.as_ref().unwrap().session_dir().unwrap();
+            assert_eq!(read_upload_marker(&dir).map(|m| m.part), Some(2));
+            assert!(!dead_dir.exists());
+
+            // The upload dialog opens on the same "may have gone through" stop.
+            view.open_upload_dialog_with(Some("tester"), false, window, cx);
+            let dialog = view.upload_dialog.clone().expect("the dialog opens");
+            assert_eq!(
+                dialog.read(cx).failure_kind(),
+                Some(FailureKind::OutcomeUnknown)
+            );
+            assert_eq!(
+                dialog.read(cx).confirm_button_kind(),
+                ConfirmKind::UploadAgainAfterCheck
+            );
+
+            // Uploading again (after the user's check) ends the reminder.
+            assert!(view.restored_upload_warning().is_some());
+            let request = osm_gpui::upload_chunks::ChunkRequest {
+                part: None,
+                tags: "Add benches".into(),
+                chunk: LayerDiff::default(),
+            };
+            view.upload_marker_prepare(osm_gpui::autosave::UploadMarker::for_request(
+                BASE, &request, 2_000,
+            ));
+            assert!(view.restored_upload_warning().is_none());
+        })
+        .unwrap();
+    let _ = std::fs::remove_dir_all(live_root);
+    let _ = std::fs::remove_dir_all(dead_root);
+}

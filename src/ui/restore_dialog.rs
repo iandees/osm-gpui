@@ -14,6 +14,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _,
 };
 
+use crate::autosave::UploadMarker;
 use crate::ui::modal;
 use crate::ui::style::muted_text_size;
 use crate::{tr, tr_count};
@@ -77,8 +78,48 @@ impl RestoreItem {
     }
 }
 
+/// What to tell the user about a session that died while uploading: that
+/// the server may already hold some of these edits, what was being sent, and
+/// where to look. The first line is the warning itself; the rest is detail.
+pub fn interrupted_upload_lines(marker: &UploadMarker, now: u64) -> Vec<String> {
+    let mut lines = vec![tr!("dialog.restore.upload_interrupted").to_string()];
+    if marker.objects > 0 || marker.total > 0 {
+        let objects = tr_count!("dialog.restore.upload_objects", marker.objects).to_string();
+        let server = marker.api_base.as_str();
+        let when = age_phrase(now, marker.started_at);
+        lines.push(if marker.total > 1 {
+            tr!(
+                "dialog.restore.upload_detail_part",
+                part = marker.part,
+                total = marker.total,
+                objects = objects,
+                server = server,
+                when = when
+            )
+            .to_string()
+        } else {
+            tr!(
+                "dialog.restore.upload_detail",
+                objects = objects,
+                server = server,
+                when = when
+            )
+            .to_string()
+        });
+    }
+    if !marker.comment.is_empty() {
+        lines.push(tr!("dialog.restore.upload_comment", comment = marker.comment).to_string());
+    }
+    if let (Some(id), Some(url)) = (marker.changeset_id, marker.changeset_url()) {
+        lines.push(tr!("dialog.restore.upload_changeset", id = id, url = url).to_string());
+    }
+    lines
+}
+
 pub struct RestoreDialog {
     items: Vec<RestoreItem>,
+    /// One block of lines per crashed session that died mid-upload.
+    upload_notices: Vec<Vec<String>>,
     focus_handle: FocusHandle,
 }
 
@@ -90,8 +131,21 @@ impl RestoreDialog {
         window.focus(&focus_handle, cx);
         Self {
             items,
+            upload_notices: Vec::new(),
             focus_handle,
         }
+    }
+
+    /// Warn that these sessions died with an upload in flight (see
+    /// [`interrupted_upload_lines`]).
+    pub fn set_upload_notices(&mut self, notices: Vec<Vec<String>>, cx: &mut Context<Self>) {
+        self.upload_notices = notices;
+        cx.notify();
+    }
+
+    /// The upload warnings the dialog shows.
+    pub fn upload_notices(&self) -> &[Vec<String>] {
+        &self.upload_notices
     }
 
     /// The layers the dialog lists.
@@ -179,8 +233,21 @@ impl Render for RestoreDialog {
             list = list.child(entry);
         }
 
-        let body = v_flex()
-            .gap_3()
+        let mut body = v_flex().gap_3();
+        for lines in &self.upload_notices {
+            let mut notice = v_flex().gap_0p5();
+            for (i, line) in lines.iter().enumerate() {
+                notice = notice.child(
+                    div()
+                        .when(i == 0, |d| d.font_weight(gpui::FontWeight::BOLD))
+                        .when(i > 0, |d| d.text_size(muted_text_size()))
+                        .text_color(cx.theme().warning)
+                        .child(line.clone()),
+                );
+            }
+            body = body.child(notice);
+        }
+        let body = body
             .child(
                 div()
                     .text_color(cx.theme().foreground)
@@ -238,6 +305,55 @@ mod tests {
         assert_eq!(item.server_note(), None);
         let one = RestoreItem { edits: 1, ..item };
         assert_eq!(one.line(1_000_000), "Downtown: 1 edit, 5 minutes ago");
+    }
+
+    #[test]
+    fn an_interrupted_upload_is_named_with_what_a_person_needs_to_check_it() {
+        let marker = UploadMarker {
+            format: 1,
+            api_base: "https://api.openstreetmap.org".into(),
+            comment: "Fix bus stops".into(),
+            started_at: 1_000_000 - 300,
+            part: 2,
+            total: 3,
+            objects: 1,
+            changeset_id: Some(4242),
+        };
+        let lines = interrupted_upload_lines(&marker, 1_000_000);
+        assert!(lines[0].contains("upload was in progress"), "{lines:?}");
+        assert!(
+            lines[0].contains("may already be on the server"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("recent changesets"), "{lines:?}");
+        assert_eq!(
+            lines[1],
+            "It was sending changeset 2 of 3 (1 change) to https://api.openstreetmap.org, 5 minutes ago."
+        );
+        assert_eq!(lines[2], "Changeset comment: \"Fix bus stops\"");
+        assert_eq!(
+            lines[3],
+            "Changeset 4242: https://www.openstreetmap.org/changeset/4242"
+        );
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn an_interrupted_upload_with_nothing_known_still_warns() {
+        let lines = interrupted_upload_lines(&UploadMarker::default(), 1_000_000);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("may already be on the server"));
+        // One changeset, no id yet: no "part", no link.
+        let single = UploadMarker {
+            api_base: "https://x.test".into(),
+            objects: 5,
+            total: 1,
+            part: 1,
+            ..Default::default()
+        };
+        let lines = interrupted_upload_lines(&single, single.started_at);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].starts_with("It was sending 5 changes to https://x.test"));
     }
 
     #[test]

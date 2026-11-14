@@ -254,6 +254,8 @@ status:
       one: "%{count} local edit kept"
       other: "%{count} local edits kept"
     separator: ", "
+  # After restoring layers from a session that died while uploading.
+  restored_upload_interrupted: "An upload was in progress when the app stopped. Some of the restored edits may already be on the server: check your recent changesets before uploading again."
 
 # The OSM server's size limits (way nodes, relation members, elements per
 # changeset). Counts arrive already formatted with digit grouping.
@@ -953,6 +955,18 @@ dialog:
     restore: "Restore"
     discard: "Discard"
     later: "Ask Me Next Time"
+    # The app stopped while sending a changeset: some of the edits above may
+    # already be on the server. Shown above the list, before restoring.
+    upload_interrupted: "An upload was in progress when the app stopped. Some of these edits may already be on the server. Check your recent changesets on the OpenStreetMap website before uploading again; restoring does not upload anything."
+    # `%{objects}` is `upload_objects`, `%{server}` the API server, `%{when}`
+    # an age phrase such as "5 minutes ago".
+    upload_detail: "It was sending %{objects} to %{server}, %{when}."
+    upload_detail_part: "It was sending changeset %{part} of %{total} (%{objects}) to %{server}, %{when}."
+    upload_objects:
+      one: "%{count} change"
+      other: "%{count} changes"
+    upload_comment: "Changeset comment: \"%{comment}\""
+    upload_changeset: "Changeset %{id}: %{url}"
   age:
     just_now: "just now"
     minutes:
