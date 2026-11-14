@@ -24,18 +24,18 @@ impl GridLayer {
         self.grid_color = color;
     }
 
-    /// Determine appropriate grid spacing based on zoom level
+    /// Grid spacing in degrees for a zoom level.
     fn calculate_grid_spacing(zoom_level: f64) -> f64 {
         match zoom_level {
-            z if z <= 3.0 => 10.0,   // 10 degree grid
-            z if z <= 6.0 => 5.0,    // 5 degree grid
-            z if z <= 8.0 => 1.0,    // 1 degree grid
-            z if z <= 10.0 => 0.5,   // 0.5 degree grid
-            z if z <= 12.0 => 0.1,   // 0.1 degree grid
-            z if z <= 14.0 => 0.05,  // 0.05 degree grid
-            z if z <= 16.0 => 0.01,  // 0.01 degree grid
-            z if z <= 18.0 => 0.005, // 0.005 degree grid
-            _ => 0.001,              // 0.001 degree grid for very high zoom
+            z if z <= 3.0 => 10.0,
+            z if z <= 6.0 => 5.0,
+            z if z <= 8.0 => 1.0,
+            z if z <= 10.0 => 0.5,
+            z if z <= 12.0 => 0.1,
+            z if z <= 14.0 => 0.05,
+            z if z <= 16.0 => 0.01,
+            z if z <= 18.0 => 0.005,
+            _ => 0.001,
         }
     }
 }
@@ -86,7 +86,6 @@ impl MapLayer for GridLayer {
                 if is_point_valid(screen_point) {
                     let x = screen_point.x;
 
-                    // Only draw if the line is within screen bounds
                     if x >= px(-10.0) && x <= bounds.size.width + px(10.0) {
                         let mut builder = PathBuilder::stroke(px(1.0));
                         builder.move_to(point(x, px(0.0)));
@@ -112,7 +111,6 @@ impl MapLayer for GridLayer {
                 if is_point_valid(screen_point) {
                     let y = screen_point.y;
 
-                    // Only draw if the line is within screen bounds
                     if y >= px(-10.0) && y <= bounds.size.height + px(10.0) {
                         let mut builder = PathBuilder::stroke(px(1.0));
                         builder.move_to(point(px(0.0), y));

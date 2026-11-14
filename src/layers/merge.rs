@@ -12,7 +12,7 @@
 //! - **Known and locally untouched** — replaced in both snapshots with the
 //!   server's copy, picking up anyone else's changes.
 //! - **Locally modified or deleted** — left alone in both snapshots. The
-//!   local edit wins for now; if the server's copy has moved on, the upload
+//!   local edit wins; if the server's copy has moved on, the upload
 //!   will be rejected with a version conflict rather than silently
 //!   overwriting either side.
 //!

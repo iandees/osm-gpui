@@ -701,7 +701,7 @@ mod tests {
         };
         assert_eq!(straighten(&quarter), Err(StraightenError::TooCurved));
 
-        // A 15 m kink in the middle of a 100 m line is under 10% of the length.
+        // An 8 m kink in the middle of a 100 m line is under 10% of the length.
         let kinked = line_with(100.0, &[(50.0, 8.0)]);
         assert!(straighten(&kinked).is_ok());
         // 25 m is not.
