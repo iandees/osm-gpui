@@ -69,7 +69,7 @@ struct Outcome {
 
 fn state(view: &MapViewer, layer: LayerId) -> Outcome {
     let l = view.layer_manager.find_layer(layer).unwrap();
-    let osm = l.as_any().downcast_ref::<OsmLayer>().unwrap();
+    let osm = l.as_osm().unwrap();
     let data = osm.get_osm_data().unwrap();
     Outcome {
         nodes: data.nodes.len(),
@@ -80,7 +80,12 @@ fn state(view: &MapViewer, layer: LayerId) -> Outcome {
 }
 
 fn is_modified(view: &MapViewer, layer: LayerId) -> bool {
-    view.layer_manager.find_layer(layer).unwrap().is_modified()
+    view.layer_manager
+        .find_layer(layer)
+        .unwrap()
+        .as_osm()
+        .unwrap()
+        .is_modified()
 }
 
 /// The screen position of the data's centre. The test window is laid out

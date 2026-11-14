@@ -73,7 +73,7 @@ use osm_gpui::imagery::{self, ImageryEntry};
 use osm_gpui::interaction::{self, Interaction, NodeMoveTargets};
 use osm_gpui::layers::{
     grid_layer::GridLayer, osm_layer::OsmLayer, tile_layer::TileLayer, HighlightKind, LayerId,
-    LayerManager,
+    LayerManager, MapLayer,
 };
 use osm_gpui::osm::OsmData;
 use osm_gpui::osm_api;
@@ -726,6 +726,7 @@ pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
                 .layer_manager
                 .layers()
                 .iter()
+                .filter_map(|l| l.as_osm())
                 .any(|l| l.is_modified())
         })
         .unwrap_or(false)
@@ -1567,10 +1568,10 @@ impl MapViewer {
     /// The layer's unsaved edits, counted as the status bar's "N unsaved
     /// edits" does (and so the quit warning's `is_modified`).
     fn unsaved_edit_count(layer: &dyn osm_gpui::layers::MapLayer) -> usize {
-        if !layer.is_modified() {
+        let Some(osm) = layer.as_osm().filter(|osm| osm.is_modified()) else {
             return 0;
-        }
-        let (created, modified, deleted) = layer.diff_for_upload().counts();
+        };
+        let (created, modified, deleted) = osm.diff_for_upload().counts();
         created + modified + deleted
     }
 
@@ -1876,7 +1877,7 @@ impl MapViewer {
         if self.mode == EditMode::Extrude {
             if let Some(layer_id) = self.active_layer {
                 if let Some(layer) = self.layer_manager.find_layer(layer_id) {
-                    if let Some(osm_layer) = layer.as_any().downcast_ref::<OsmLayer>() {
+                    if let Some(osm_layer) = layer.as_osm() {
                         // A segment of the selected way wins over a nearer
                         // segment of an overlapping one.
                         let selected_way = self
@@ -2044,7 +2045,11 @@ impl MapViewer {
         // must stop reporting itself as modified (layer dot, quit warning,
         // delete-layer confirmation).
         for id in action.layers() {
-            if let Some(layer) = self.layer_manager.find_layer_mut(id) {
+            if let Some(layer) = self
+                .layer_manager
+                .find_layer_mut(id)
+                .and_then(|l| l.as_osm_mut())
+            {
                 layer.refresh_modified();
             }
         }
@@ -3027,7 +3032,11 @@ impl MapViewer {
         session.angle = 0.0;
         self.apply_rotation();
         if let Some(session) = self.rotate_session.take() {
-            if let Some(layer) = self.layer_manager.find_layer_mut(session.layer) {
+            if let Some(layer) = self
+                .layer_manager
+                .find_layer_mut(session.layer)
+                .and_then(|l| l.as_osm_mut())
+            {
                 layer.refresh_modified();
             }
         }
@@ -3050,7 +3059,11 @@ impl MapViewer {
             .map(|(&(id, b), &a)| (id, b, a))
             .collect();
         if entries.is_empty() {
-            if let Some(layer) = self.layer_manager.find_layer_mut(session.layer) {
+            if let Some(layer) = self
+                .layer_manager
+                .find_layer_mut(session.layer)
+                .and_then(|l| l.as_osm_mut())
+            {
                 layer.refresh_modified();
             }
             return;
@@ -3510,11 +3523,7 @@ impl MapViewer {
                 .layers()
                 .iter()
                 .filter(|layer| layer.is_visible())
-                .filter_map(|layer| {
-                    layer
-                        .as_any()
-                        .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
-                })
+                .filter_map(|layer| layer.as_reference())
                 .filter_map(|layer| layer.data().extent())
                 .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3)));
             match extents {
@@ -4036,7 +4045,7 @@ impl MapViewer {
         with_nodes: bool,
     ) -> Option<SnapTarget> {
         let layer = self.layer_manager.find_layer(layer_id)?;
-        let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+        let osm_layer = layer.as_osm()?;
         let editable = layer.as_editable()?;
         if with_nodes {
             let hit = osm_layer.snap_to_node_where(
@@ -4815,7 +4824,7 @@ impl MapViewer {
         let sources: Vec<Tags> = Vec::new();
         // An existing node close by wins over a way.
         let node_hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
-            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let osm_layer = layer.as_osm()?;
             let editable = layer.as_editable()?;
             let id = osm_layer.snap_to_node_where(
                 &self.viewport,
@@ -4832,7 +4841,7 @@ impl MapViewer {
             };
         }
         let hit = self.layer_manager.find_layer(layer_id).and_then(|layer| {
-            let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+            let osm_layer = layer.as_osm()?;
             let editable = layer.as_editable()?;
             osm_layer.snap_to_way_where(
                 &self.viewport,
@@ -5521,7 +5530,7 @@ impl MapViewer {
                 .or_else(|| {
                     self.layer_manager
                         .find_layer(layer_id)
-                        .and_then(|layer| layer.as_any().downcast_ref::<OsmLayer>())
+                        .and_then(|layer| layer.as_osm())
                         .and_then(|osm_layer| {
                             osm_layer.snap_to_node_where(
                                 &self.viewport,
@@ -5556,7 +5565,7 @@ impl MapViewer {
         } else {
             let sources = self.add_snap_sources(layer_id);
             self.layer_manager.find_layer(layer_id).and_then(|layer| {
-                let osm_layer = layer.as_any().downcast_ref::<OsmLayer>()?;
+                let osm_layer = layer.as_osm()?;
                 let editable = layer.as_editable()?;
                 osm_layer.snap_to_way_where(
                     &self.viewport,
@@ -6114,11 +6123,7 @@ impl MapViewer {
             .iter()
             .rev()
             .filter(|layer| layer.is_visible())
-            .filter_map(|layer| {
-                layer
-                    .as_any()
-                    .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
-            })
+            .filter_map(|layer| layer.as_reference())
             .find_map(|layer| layer.hit(&self.viewport, screen_pt))
             .map(osm_gpui::reference::describe)
     }
@@ -6132,11 +6137,7 @@ impl MapViewer {
             .iter()
             .rev()
             .filter(|layer| layer.is_visible())
-            .filter_map(|layer| {
-                layer
-                    .as_any()
-                    .downcast_ref::<osm_gpui::layers::reference_layer::ReferenceLayer>()
-            })
+            .filter_map(|layer| layer.as_reference())
             .find_map(|layer| {
                 layer.snap(
                     &self.viewport,
@@ -6159,7 +6160,7 @@ impl MapViewer {
                     .iter()
                     .map(|layer| layer.as_ref()),
             )
-            .find_map(|layer| Some((layer.name().to_string(), layer.export_xml()?)))
+            .find_map(|layer| Some((layer.name().to_string(), layer.as_osm()?.export_xml()?)))
     }
 
     /// File > Export…: write a layer (see `exportable_layer`) to a
@@ -6258,21 +6259,11 @@ impl MapViewer {
     }
 
     fn get_layer_stats(&self) -> (usize, usize, usize) {
-        let mut cached_files = 0;
-        let mut osm_nodes = 0;
-        let mut osm_ways = 0;
-
-        for layer in self.layer_manager.layers() {
-            let stats = layer.stats();
-            for (key, value) in stats {
-                match key.as_str() {
-                    "Cached Files" => cached_files = value.parse().unwrap_or(0),
-                    "Nodes" => osm_nodes = value.parse().unwrap_or(0),
-                    "Ways" => osm_ways = value.parse().unwrap_or(0),
-                    _ => {}
-                }
-            }
-        }
+        let osm_gpui::layers::LayerStats {
+            cached_files,
+            osm_nodes,
+            osm_ways,
+        } = self.layer_manager.layer_stats();
 
         // Calculate visible tiles
         let zoom_level = self.viewport.zoom_level();
@@ -6449,7 +6440,12 @@ impl MapViewer {
     /// re-acquisition is needed.
     fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
         use osm_gpui::transfer::{quit_decision, QuitDecision};
-        let unsaved = self.layer_manager.layers().iter().any(|l| l.is_modified());
+        let unsaved = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+            .any(|l| l.is_modified());
         match quit_decision(
             osm_gpui::transfer::blocks_edits(self.transfer.as_ref()),
             unsaved,
@@ -6535,7 +6531,11 @@ impl MapViewer {
 
     /// Whether any layer has changes to upload (enables File > Upload to OSM).
     pub(crate) fn has_uploadable_changes(&self) -> bool {
-        self.layer_manager.layers().iter().any(|l| l.is_modified())
+        self.layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+            .any(|l| l.is_modified())
     }
 
     /// Keep File > Upload to OSM disabled while no layer has changes. The
@@ -6562,15 +6562,16 @@ impl MapViewer {
     /// Only created and modified objects (and what they affect) are checked.
     pub(crate) fn validation_report(&self) -> osm_gpui::validator::Report {
         let mut report = osm_gpui::validator::Report::default();
-        for layer in self.layer_manager.layers() {
+        for layer in self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+        {
             if !layer.is_modified() {
                 continue;
             }
-            let Some(data) = layer
-                .as_any()
-                .downcast_ref::<OsmLayer>()
-                .and_then(|l| l.get_osm_data())
-            else {
+            let Some(data) = layer.get_osm_data() else {
                 continue;
             };
             report.add_layer(layer.id(), &data, &layer.diff_for_upload());
@@ -6635,6 +6636,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| l.is_modified())
             .map(|l| (l.id(), l.diff_for_upload()))
             .collect();
@@ -6642,6 +6644,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| l.is_modified())
             .zip(&pending)
             .map(|(l, (_, diff))| {
@@ -6896,6 +6899,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| l.is_modified())
             .map(|l| (l.id(), l.name().to_string()))
             .collect();
@@ -6904,6 +6908,7 @@ impl MapViewer {
             .filter_map(|(id, _)| {
                 self.layer_manager
                     .find_layer(*id)
+                    .and_then(|l| l.as_osm())
                     .map(|l| l.diff_for_upload())
             })
             .collect();
@@ -7131,8 +7136,9 @@ impl MapViewer {
             .iter()
             .filter(|l| {
                 l.is_visible()
-                    && l.imagery_offset().is_some()
-                    && l.imagery_id() != Some(osm_gpui::layers::tile_layer::OSM_CARTO_IMAGERY_ID)
+                    && l.as_imagery().is_some_and(|i| {
+                        i.imagery_id() != osm_gpui::layers::tile_layer::OSM_CARTO_IMAGERY_ID
+                    })
             })
             .map(|l| l.name().to_string())
             .collect()
@@ -7149,6 +7155,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| l.is_modified())
             .map(|l| (l.name().to_string(), l.diff_for_upload()))
             .collect();
@@ -7563,7 +7570,12 @@ impl MapViewer {
     /// one when no custom style is active) and repaint.
     pub(crate) fn apply_map_style(&mut self, cx: &mut Context<Self>) {
         let sheet = osm_gpui::style::custom::active_stylesheet();
-        for layer in self.layer_manager.layers_mut() {
+        for layer in self
+            .layer_manager
+            .layers_mut()
+            .iter_mut()
+            .filter_map(|l| l.as_osm_mut())
+        {
             layer.set_stylesheet(sheet.clone());
         }
         cx.notify();
@@ -7739,8 +7751,6 @@ impl Render for MapViewer {
             window.focus(&self.focus_handle, cx);
         }
 
-        // Update all layers
-        self.layer_manager.update_all();
         self.sync_selection_to_layers();
 
         let (center_lat, center_lon) = self.viewport.center();
@@ -8554,7 +8564,10 @@ impl Render for MapViewer {
                             if !layer.is_visible() {
                                 return None;
                             }
-                            layer.attribution().map(|a| (a.text.clone(), a.url.clone()))
+                            layer
+                                .as_imagery()?
+                                .attribution()
+                                .map(|a| (a.text.clone(), a.url.clone()))
                         });
                         let credits = interaction::dedupe_attributions(raw_credits);
                         if credits.is_empty() {
@@ -9432,8 +9445,7 @@ mod tests {
         let id = view.active_layer?;
         view.layer_manager
             .find_layer(id)?
-            .as_any()
-            .downcast_ref::<OsmLayer>()?
+            .as_osm()?
             .vertex_preview_way()
     }
 
@@ -9876,8 +9888,9 @@ mod tests {
                     "local move kept"
                 );
                 // Still exactly one pending edit: the move.
-                assert_eq!(layer.diff_for_upload().counts(), (0, 1, 0));
-                assert!(layer.is_modified());
+                let osm = layer.as_osm().unwrap();
+                assert_eq!(osm.diff_for_upload().counts(), (0, 1, 0));
+                assert!(osm.is_modified());
                 let (message, _) = view.status_message.clone().unwrap();
                 assert_eq!(message, "Downloaded OSM data: 1 new, 1 local edit kept");
             })
@@ -9898,7 +9911,7 @@ mod tests {
                 assert_eq!(layers.len(), 1);
                 assert_eq!(layers[0].name(), DOWNLOAD_LAYER_NAME);
                 assert_eq!(view.active_layer, Some(layers[0].id()));
-                assert!(!layers[0].is_modified());
+                assert!(!layers[0].as_osm().unwrap().is_modified());
             })
             .unwrap();
     }
@@ -9984,6 +9997,8 @@ mod tests {
                 let b_created = |view: &MapViewer| {
                     view.layer_manager
                         .find_layer(b)
+                        .unwrap()
+                        .as_osm()
                         .unwrap()
                         .diff_for_upload()
                         .counts()
@@ -10570,6 +10585,8 @@ mod tests {
                     .layer_manager
                     .find_layer(layer_id)
                     .unwrap()
+                    .as_osm()
+                    .unwrap()
                     .diff_for_upload()
                     .counts();
                 assert_eq!(pending, (1, 1, 0));
@@ -10583,7 +10600,12 @@ mod tests {
                     .unwrap();
                 view.add_osm_dataset("reopened".to_string(), data, &edits, cx);
 
-                let reopened = view.layer_manager.layer_named("reopened").unwrap();
+                let reopened = view
+                    .layer_manager
+                    .layer_named("reopened")
+                    .unwrap()
+                    .as_osm()
+                    .unwrap();
                 assert_eq!(reopened.diff_for_upload().counts(), pending);
                 assert!(reopened.is_modified());
             })
@@ -10806,6 +10828,8 @@ mod tests {
         // Way -1, way 8202 and relation 9101.
         let counts = layers
             .find_layer(LayerId(1))
+            .unwrap()
+            .as_osm()
             .unwrap()
             .diff_for_upload()
             .counts();
@@ -12502,6 +12526,8 @@ mod tests {
                     .layer_manager
                     .find_layer(layer_id)
                     .unwrap()
+                    .as_osm()
+                    .unwrap()
                     .is_modified());
             })
             .unwrap();
@@ -12663,6 +12689,8 @@ mod tests {
         let layer_id = view.active_layer.unwrap();
         view.layer_manager
             .find_layer(layer_id)
+            .unwrap()
+            .as_osm()
             .unwrap()
             .diff_for_upload()
             .counts()
@@ -13858,6 +13886,8 @@ mod tests {
                     .layer_manager
                     .find_layer(layer_id)
                     .unwrap()
+                    .as_osm()
+                    .unwrap()
                     .diff_for_upload();
                 assert!(diff.modified_ways.is_empty());
                 let limits = osm_gpui::limits::Limits::for_server(&settings_store::api_base_url());
@@ -14961,6 +14991,8 @@ mod tests {
                     .layer_manager
                     .find_layer(layer_id)
                     .unwrap()
+                    .as_osm()
+                    .unwrap()
                     .diff_for_upload();
                 assert_eq!(diff.modified_nodes.len(), 1);
                 assert_eq!(diff.modified_nodes[0].version, 5);
@@ -15518,7 +15550,12 @@ mod autosave_tests {
         // an immediate write, as it does after each applied changeset.
         window
             .update(cx, |view, _window, cx| {
-                let layer = view.layer_manager.find_layer_mut(id).unwrap();
+                let layer = view
+                    .layer_manager
+                    .find_layer_mut(id)
+                    .unwrap()
+                    .as_osm_mut()
+                    .unwrap();
                 layer.apply_upload_result(&osm_gpui::osm_upload::UploadResult {
                     node_id_remap: HashMap::new(),
                     way_id_remap: HashMap::from([(10, (10, 4))]),
@@ -15571,9 +15608,10 @@ mod autosave_tests {
                     .iter()
                     .find(|l| l.name() == "Downtown")
                     .expect("the layer is back");
+                let restored_osm = restored.as_osm().unwrap();
                 // Edits pending, and the layer counts as unsaved.
-                assert!(restored.is_modified());
-                assert_eq!(restored.diff_for_upload().counts(), before);
+                assert!(restored_osm.is_modified());
+                assert_eq!(restored_osm.diff_for_upload().counts(), before);
                 assert_eq!(pending(view, restored.id()), before.0 + before.1 + before.2);
                 assert_eq!(view.active_layer, Some(restored.id()));
                 assert!(view.script_autosave_idle().is_ok());

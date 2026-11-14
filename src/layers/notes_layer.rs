@@ -131,10 +131,6 @@ impl MapLayer for NotesLayer {
         self.id
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn is_visible(&self) -> bool {
         self.visible
     }
@@ -240,12 +236,10 @@ mod tests {
         // each look at: none of it exists for this layer.
         let (layer, _) = layer_with(vec![note(1, 10.0, 20.0, NoteStatus::Open)]);
         assert!(layer.as_editable().is_none(), "search/validator/selection");
-        assert!(!layer.is_modified(), "pending edits, quit prompt, upload");
-        assert!(layer.diff_for_upload().is_empty(), "upload");
-        assert!(layer.autosave_snapshot().is_none(), "autosave");
-        assert!(layer.export_xml().is_none(), "export");
-        assert!(layer.download_rects().is_empty());
-        assert_eq!(layer.edit_revision(), 0);
+        assert!(
+            layer.as_osm().is_none(),
+            "pending edits, quit prompt, upload, autosave, export, download bounds"
+        );
         assert_eq!(layer.id(), LayerId(7));
     }
 

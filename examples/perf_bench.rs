@@ -9,7 +9,7 @@
 
 use gpui::{point, px, size, Path, PathVertex, Pixels, Point};
 use osm_gpui::layers::osm_layer::OsmLayer;
-use osm_gpui::layers::{EditableLayer, LayerId, MapLayer};
+use osm_gpui::layers::{EditableLayer, LayerId};
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
 use osm_gpui::style::Stylesheet;
 use osm_gpui::viewport::Viewport;

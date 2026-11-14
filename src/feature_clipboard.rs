@@ -635,7 +635,6 @@ mod tests {
     use super::*;
     use crate::coordinates::MERCATOR_HALF_WORLD_M;
     use crate::layers::osm_layer::OsmLayer;
-    use crate::layers::MapLayer;
     use crate::osm::{OsmData, OsmNode, OsmRelation, OsmWay};
     use std::sync::Arc;
 

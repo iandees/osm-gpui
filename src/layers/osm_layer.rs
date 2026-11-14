@@ -1617,6 +1617,34 @@ impl OsmLayer {
         self.revision += 1;
     }
 
+    /// The rectangles (Web Mercator meters) this layer's data was downloaded
+    /// for; empty when that is not known. See `render_all_download_bounds`.
+    pub fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
+        &self.download_rects
+    }
+
+    /// Whether the layer has edits not yet written to a file or uploaded.
+    pub fn is_modified(&self) -> bool {
+        self.modified
+    }
+
+    /// Re-derive `is_modified` from the layer's actual difference to its
+    /// server baseline. Edits (and the undo of one) set the flag without
+    /// looking at the diff, so after an undo back to the baseline this is
+    /// what clears it.
+    pub fn refresh_modified(&mut self) {
+        if self.modified {
+            self.modified = !self.diff_for_upload().is_empty();
+        }
+    }
+
+    /// How many nodes and ways the layer holds; `None` before any data is
+    /// loaded.
+    pub fn feature_counts(&self) -> Option<(usize, usize)> {
+        let data = self.osm_data.as_ref()?;
+        Some((data.nodes.len(), data.ways.len()))
+    }
+
     /// The layer's change counter; see the `revision` field.
     pub fn edit_revision(&self) -> u64 {
         self.revision
@@ -3716,9 +3744,12 @@ impl OsmLayer {
         }
     }
 
-    /// Paint labels and icons: place when the camera has settled (or the
-    /// data changed), otherwise just re-project the last placement.
-    fn paint_labels(
+    /// Paint labels and POI icons above everything `render_canvas` and the
+    /// highlights drew; `selected` and `hovered` keep their labels even when
+    /// collision would drop them. Places when the camera has settled (or the
+    /// data changed), otherwise just re-projects the last placement.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_labels(
         &self,
         viewport: &Viewport,
         bounds: Bounds<Pixels>,
@@ -5490,10 +5521,6 @@ impl MapLayer for OsmLayer {
         self.id
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn is_visible(&self) -> bool {
         self.visible
     }
@@ -5502,14 +5529,12 @@ impl MapLayer for OsmLayer {
         self.visible = visible;
     }
 
-    fn is_modified(&self) -> bool {
-        self.modified
+    fn as_osm(&self) -> Option<&OsmLayer> {
+        Some(self)
     }
 
-    fn refresh_modified(&mut self) {
-        if self.modified {
-            self.modified = !OsmLayer::diff_for_upload(self).is_empty();
-        }
+    fn as_osm_mut(&mut self) -> Option<&mut OsmLayer> {
+        Some(self)
     }
 
     fn as_editable(&self) -> Option<&dyn EditableLayer> {
@@ -5518,34 +5543,6 @@ impl MapLayer for OsmLayer {
 
     fn as_editable_mut(&mut self) -> Option<&mut dyn EditableLayer> {
         Some(self)
-    }
-
-    fn set_stylesheet(&mut self, stylesheet: Arc<Stylesheet>) {
-        OsmLayer::set_stylesheet(self, stylesheet);
-    }
-
-    fn diff_for_upload(&self) -> LayerDiff {
-        OsmLayer::diff_for_upload(self)
-    }
-
-    fn apply_upload_result(&mut self, result: &UploadResult) {
-        OsmLayer::apply_upload_result(self, result);
-    }
-
-    fn apply_chunk_result(&mut self, result: &UploadResult, chunk: &LayerDiff) {
-        OsmLayer::apply_chunk_result(self, result, chunk);
-    }
-
-    fn export_xml(&self) -> Option<String> {
-        OsmLayer::export_xml(self)
-    }
-
-    fn edit_revision(&self) -> u64 {
-        OsmLayer::edit_revision(self)
-    }
-
-    fn autosave_snapshot(&self) -> Option<(Arc<OsmData>, Arc<OsmData>)> {
-        OsmLayer::autosave_snapshot(self)
     }
 
     fn render_elements(
@@ -5558,22 +5555,6 @@ impl MapLayer for OsmLayer {
         // per-node GPUI element layout cost. The selection ring is drawn in
         // `render_highlight` as a canvas outline.
         Vec::new()
-    }
-
-    fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
-        &self.download_rects
-    }
-
-    fn render_labels(
-        &self,
-        viewport: &Viewport,
-        bounds: Bounds<Pixels>,
-        selected: &[FeatureRef],
-        hovered: Option<&FeatureRef>,
-        window: &mut Window,
-        cx: &App,
-    ) {
-        self.paint_labels(viewport, bounds, selected, hovered, window, cx);
     }
 
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window) {

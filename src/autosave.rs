@@ -1062,7 +1062,7 @@ mod tests {
         let restored = restore(&layer, &root);
         let after = facts(&restored.diff_for_upload());
         assert_eq!(after, before);
-        assert!(crate::layers::MapLayer::is_modified(&restored));
+        assert!(restored.is_modified());
 
         // Same data, byte for byte, including the downloaded bounds.
         let current = layer.autosave_snapshot().unwrap().0;

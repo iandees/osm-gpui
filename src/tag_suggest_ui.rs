@@ -16,7 +16,7 @@ use gpui::{
 };
 use gpui_component::ActiveTheme;
 
-use osm_gpui::layers::LayerId;
+use osm_gpui::layers::{LayerId, MapLayer};
 use osm_gpui::presets::Geometry;
 use osm_gpui::selection::FeatureKind;
 use osm_gpui::selection::FeatureRef;
@@ -207,14 +207,19 @@ impl MapViewer {
         self.tag_suggest.layers.retain(|id, _| live.contains(id));
 
         let mut jobs: Vec<(LayerId, u64, Arc<osm_gpui::osm::OsmData>)> = Vec::new();
-        for layer in self.layer_manager.layers() {
+        for layer in self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+        {
             let id = layer.id();
             let revision = layer.edit_revision();
             let known = self.tag_suggest.layers.get(&id);
             if known.is_some_and(|e| e.revision == revision || e.building == Some(revision)) {
                 continue;
             }
-            // Only OSM data layers have a snapshot (a refcount bump).
+            // A snapshot is a refcount bump.
             let Some((data, _baseline)) = layer.autosave_snapshot() else {
                 continue;
             };
@@ -257,6 +262,7 @@ impl MapViewer {
         self.layer_manager
             .layers()
             .iter()
+            .filter_map(|l| l.as_osm())
             .filter(|l| {
                 self.tag_suggest
                     .layers
@@ -279,6 +285,7 @@ impl MapViewer {
             let Some(revision) = self
                 .layer_manager
                 .find_layer(*id)
+                .and_then(|l| l.as_osm())
                 .map(|l| l.edit_revision())
             else {
                 continue;

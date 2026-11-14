@@ -6,7 +6,7 @@ use crate::coordinates::MAX_MAP_ZOOM;
 use crate::download_bounds::MercRect;
 use crate::imagery::AttributionInfo;
 use crate::imagery_offset::{offset_to_mercator, ImageryOffset};
-use crate::layers::{LayerId, MapLayer};
+use crate::layers::{ImageryLayer, LayerId, MapLayer};
 use crate::tile_cache::TileCache;
 use crate::tiles::{tiles_covering, url_from_template, TileCoord};
 use crate::viewport::Viewport;
@@ -298,6 +298,30 @@ fn tile_screen_rect_shifted(
     )
 }
 
+impl ImageryLayer for TileLayer {
+    fn attribution(&self) -> Option<&AttributionInfo> {
+        self.attribution.as_ref()
+    }
+
+    fn imagery_offset(&self) -> ImageryOffset {
+        self.offset
+    }
+
+    fn set_imagery_offset(&mut self, offset: ImageryOffset) {
+        self.offset = offset;
+    }
+
+    fn imagery_id(&self) -> &str {
+        &self.imagery_id
+    }
+
+    fn cached_file_count(&self) -> usize {
+        self.tile_cache
+            .try_lock()
+            .map_or(0, |tile_cache| tile_cache.stats().0)
+    }
+}
+
 impl MapLayer for TileLayer {
     fn name(&self) -> &str {
         &self.name
@@ -305,10 +329,6 @@ impl MapLayer for TileLayer {
 
     fn id(&self) -> LayerId {
         self.id
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     fn is_visible(&self) -> bool {
@@ -319,20 +339,12 @@ impl MapLayer for TileLayer {
         self.visible = visible;
     }
 
-    fn attribution(&self) -> Option<&AttributionInfo> {
-        self.attribution.as_ref()
+    fn as_imagery(&self) -> Option<&dyn ImageryLayer> {
+        Some(self)
     }
 
-    fn imagery_offset(&self) -> Option<ImageryOffset> {
-        Some(self.offset)
-    }
-
-    fn set_imagery_offset(&mut self, offset: ImageryOffset) {
-        self.offset = offset;
-    }
-
-    fn imagery_id(&self) -> Option<&str> {
-        Some(&self.imagery_id)
+    fn as_imagery_mut(&mut self) -> Option<&mut dyn ImageryLayer> {
+        Some(self)
     }
 
     fn render_elements(
