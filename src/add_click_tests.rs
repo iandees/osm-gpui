@@ -392,10 +392,10 @@ fn second_click_on_an_osm_node_under_a_reference_vertex_connects_to_the_osm_node
             .layer_manager
             .find_layer(layer)
             .and_then(|l| l.as_editable())
-            .and_then(|e| e.way_node_ids(way))
+            .and_then(|e| e.way_node_ids(WayId(way)))
             .unwrap();
         assert_eq!(nodes.len(), 2);
-        assert_eq!(nodes[1], 3);
+        assert_eq!(nodes[1], NodeId(3));
         assert_eq!(second.steps, first.steps + 1);
         // Undo the connect: the OSM node stays.
         view.on_undo(&Undo, w, cx);
@@ -404,7 +404,7 @@ fn second_click_on_an_osm_node_under_a_reference_vertex_connects_to_the_osm_node
             .layer_manager
             .find_layer(layer)
             .and_then(|l| l.as_editable())
-            .and_then(|e| e.node_lat_lon(3))
+            .and_then(|e| e.node_lat_lon(NodeId(3)))
             .is_some());
         let _ = base_pending;
     });

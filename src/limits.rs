@@ -9,6 +9,7 @@
 //! network.
 
 use crate::capabilities;
+use crate::ids::{RelationId, WayId};
 use crate::layers::diff::LayerDiff;
 use crate::tr;
 
@@ -64,14 +65,14 @@ pub enum LimitViolation {
     /// diffs passed to `check_upload`.
     WayTooLong {
         layer: usize,
-        id: i64,
+        id: WayId,
         nodes: usize,
         max: usize,
     },
     /// A created or modified relation has too many members.
     RelationTooLarge {
         layer: usize,
-        id: i64,
+        id: RelationId,
         members: usize,
         max: usize,
     },
@@ -236,6 +237,7 @@ fn group_digits_with(n: usize, sep: char) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::NodeId;
     use crate::osm::{MemberType, OsmMember, OsmRelation, OsmWay};
     use std::collections::HashMap;
 
@@ -260,16 +262,16 @@ mod tests {
 
     fn way(id: i64, len: usize) -> OsmWay {
         OsmWay {
-            id,
+            id: WayId(id),
             version: 1,
-            nodes: (1..=len as i64).collect(),
+            nodes: (1..=len as i64).map(NodeId).collect(),
             tags: HashMap::new(),
         }
     }
 
     fn relation(id: i64, len: usize) -> OsmRelation {
         OsmRelation {
-            id,
+            id: RelationId(id),
             version: 1,
             members: (1..=len as i64)
                 .map(|n| OsmMember {
@@ -303,7 +305,7 @@ mod tests {
             check_upload(&[&diff(6)], &l),
             Err(LimitViolation::WayTooLong {
                 layer: 0,
-                id: -1,
+                id: WayId(-1),
                 nodes: 6,
                 max: 5
             })
@@ -317,7 +319,7 @@ mod tests {
             check_upload(&[&diff(1), &modified], &l),
             Err(LimitViolation::WayTooLong {
                 layer: 1,
-                id: 77,
+                id: WayId(77),
                 nodes: 6,
                 max: 5
             })
@@ -346,14 +348,17 @@ mod tests {
             check_upload(&[&diff(4, true)], &l),
             Err(LimitViolation::RelationTooLarge {
                 layer: 0,
-                id: -9,
+                id: RelationId(-9),
                 members: 4,
                 max: 3
             })
         );
         assert!(matches!(
             check_upload(&[&diff(4, false)], &l),
-            Err(LimitViolation::RelationTooLarge { id: 9, .. })
+            Err(LimitViolation::RelationTooLarge {
+                id: RelationId(9),
+                ..
+            })
         ));
     }
 
@@ -378,7 +383,7 @@ mod tests {
         };
         assert!(matches!(
             check_upload(&[&diff], &l),
-            Err(LimitViolation::WayTooLong { id: -1, .. })
+            Err(LimitViolation::WayTooLong { id: WayId(-1), .. })
         ));
     }
 
@@ -389,8 +394,8 @@ mod tests {
         let l = limits(5, 5, 100);
         let diff = LayerDiff {
             created_ways: vec![way(-1, 3)],
-            deleted_way_ids: vec![(50, 1)],
-            deleted_relation_ids: vec![(60, 1)],
+            deleted_way_ids: vec![(WayId(50), 1)],
+            deleted_relation_ids: vec![(RelationId(60), 1)],
             ..Default::default()
         };
         assert_eq!(check_upload(&[&diff], &l), Ok(()));
@@ -406,7 +411,7 @@ mod tests {
     fn messages_name_the_object_and_the_counts() {
         let m = LimitViolation::WayTooLong {
             layer: 0,
-            id: 123,
+            id: WayId(123),
             nodes: 2104,
             max: 2000,
         }
@@ -417,7 +422,7 @@ mod tests {
         );
         let m = LimitViolation::RelationTooLarge {
             layer: 0,
-            id: 7,
+            id: RelationId(7),
             members: 40,
             max: 32,
         }

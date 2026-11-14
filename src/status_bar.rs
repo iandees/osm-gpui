@@ -118,7 +118,11 @@ impl MapViewer {
                 .layer_manager
                 .find_layer(only.layer_id)
                 .and_then(|layer| layer.as_editable())
-                .is_some_and(|editable| !editable.relations_containing_way(only.id).is_empty())
+                .is_some_and(|editable| {
+                    !editable
+                        .relations_containing_way(osm_gpui::ids::WayId(only.id))
+                        .is_empty()
+                })
     }
 
     /// Total created + modified + deleted objects across all layers. The

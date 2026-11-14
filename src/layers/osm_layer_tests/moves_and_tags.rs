@@ -3,6 +3,7 @@
 use super::{data_with, empty_tags, viewport_centered_on};
 use crate::coordinates::LatLon;
 use crate::coordinates::Mercator;
+use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
 use crate::layers::{EditError, EditableLayer};
@@ -60,36 +61,39 @@ fn download_rects_follow_loading_and_merging() {
 #[test]
 fn way_node_ids_returns_members_in_order() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.001,
         lon: -74.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
     let data = data_with(vec![n1, n2], vec![way]);
     let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    assert_eq!(layer.way_node_ids(10), Some(vec![1, 2]));
-    assert_eq!(layer.way_node_ids(999), None);
+    assert_eq!(
+        layer.way_node_ids(WayId(10)),
+        Some(vec![NodeId(1), NodeId(2)])
+    );
+    assert_eq!(layer.way_node_ids(WayId(999)), None);
 }
 
 #[test]
 fn node_lat_lon_reflects_current_data() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -98,21 +102,21 @@ fn node_lat_lon_reflects_current_data() {
     let data = data_with(vec![n1], vec![]);
     let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    assert_eq!(layer.node_lat_lon(1), Some((40.0, -74.0)));
-    assert_eq!(layer.node_lat_lon(999), None);
+    assert_eq!(layer.node_lat_lon(NodeId(1)), Some((40.0, -74.0)));
+    assert_eq!(layer.node_lat_lon(NodeId(999)), None);
 }
 
 #[test]
 fn commit_node_moves_updates_data_and_marks_modified() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 41.0,
         lon: -75.0,
         version: 1,
@@ -122,17 +126,19 @@ fn commit_node_moves_updates_data_and_marks_modified() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     assert!(!layer.is_modified());
-    layer.commit_node_moves(&[(1, 40.5, -74.5)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(1), 40.5, -74.5)])
+        .unwrap();
 
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
-        updated.nodes.get(&1).map(|n| (n.lat, n.lon)),
+        updated.nodes.get(&NodeId(1)).map(|n| (n.lat, n.lon)),
         Some((40.5, -74.5))
     );
     // Untouched node is unaffected.
     assert_eq!(
-        updated.nodes.get(&2).map(|n| (n.lat, n.lon)),
+        updated.nodes.get(&NodeId(2)).map(|n| (n.lat, n.lon)),
         Some((41.0, -75.0))
     );
 }
@@ -140,7 +146,7 @@ fn commit_node_moves_updates_data_and_marks_modified() {
 #[test]
 fn commit_node_moves_empty_is_noop() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -156,7 +162,7 @@ fn commit_node_moves_empty_is_noop() {
 #[test]
 fn set_tag_inserts_and_overwrites_on_node() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -171,7 +177,7 @@ fn set_tag_inserts_and_overwrites_on_node() {
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
-        updated.nodes.get(&1).unwrap().tags.get("highway"),
+        updated.nodes.get(&NodeId(1)).unwrap().tags.get("highway"),
         Some(&"residential".to_string())
     );
 
@@ -180,7 +186,7 @@ fn set_tag_inserts_and_overwrites_on_node() {
         .unwrap();
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
-        updated.nodes.get(&1).unwrap().tags.get("highway"),
+        updated.nodes.get(&NodeId(1)).unwrap().tags.get("highway"),
         Some(&"trunk".to_string())
     );
 }
@@ -188,22 +194,22 @@ fn set_tag_inserts_and_overwrites_on_node() {
 #[test]
 fn set_tag_on_way() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.001,
         lon: -74.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -216,7 +222,7 @@ fn set_tag_on_way() {
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
-        updated.ways[&10].tags.get("surface"),
+        updated.ways[&WayId(10)].tags.get("surface"),
         Some(&"paved".to_string())
     );
 }
@@ -224,7 +230,7 @@ fn set_tag_on_way() {
 #[test]
 fn set_tag_missing_feature_id_is_noop() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -235,7 +241,7 @@ fn set_tag_missing_feature_id_is_noop() {
 
     assert_eq!(
         layer.set_tag(FeatureKind::Node, 999, "highway", "residential"),
-        Err(EditError::UnknownNode(999))
+        Err(EditError::UnknownNode(NodeId(999)))
     );
     assert!(!layer.is_modified());
 }
@@ -245,7 +251,7 @@ fn remove_tag_removes_existing_key() {
     let mut tags = empty_tags();
     tags.insert("highway".to_string(), "residential".to_string());
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -257,13 +263,16 @@ fn remove_tag_removes_existing_key() {
     layer.remove_tag(FeatureKind::Node, 1, "highway").unwrap();
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
-    assert_eq!(updated.nodes.get(&1).unwrap().tags.get("highway"), None);
+    assert_eq!(
+        updated.nodes.get(&NodeId(1)).unwrap().tags.get("highway"),
+        None
+    );
 }
 
 #[test]
 fn remove_tag_missing_feature_id_is_noop() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -274,7 +283,7 @@ fn remove_tag_missing_feature_id_is_noop() {
 
     assert_eq!(
         layer.remove_tag(FeatureKind::Node, 999, "highway"),
-        Err(EditError::UnknownNode(999))
+        Err(EditError::UnknownNode(NodeId(999)))
     );
     assert!(!layer.is_modified());
 }
@@ -282,7 +291,7 @@ fn remove_tag_missing_feature_id_is_noop() {
 #[test]
 fn drag_preview_does_not_mutate_data() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -292,20 +301,23 @@ fn drag_preview_does_not_mutate_data() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     let mut ids = std::collections::HashSet::new();
-    ids.insert(1);
+    ids.insert(NodeId(1));
     layer.set_drag_preview(&ids, point(px(50.0), px(0.0)));
 
     assert!(!layer.is_modified());
     let unchanged = layer.get_osm_data().unwrap();
     assert_eq!(
-        unchanged.nodes.get(&1).map(|n| (n.lat, n.lon)),
+        unchanged.nodes.get(&NodeId(1)).map(|n| (n.lat, n.lon)),
         Some((40.0, -74.0))
     );
 
     layer.clear_drag_preview();
     let still_unchanged = layer.get_osm_data().unwrap();
     assert_eq!(
-        still_unchanged.nodes.get(&1).map(|n| (n.lat, n.lon)),
+        still_unchanged
+            .nodes
+            .get(&NodeId(1))
+            .map(|n| (n.lat, n.lon)),
         Some((40.0, -74.0))
     );
 }
@@ -322,7 +334,7 @@ fn drag_preview_does_not_mutate_data() {
 #[test]
 fn snapshot_taken_before_edit_is_unaffected_by_make_mut() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -336,22 +348,24 @@ fn snapshot_taken_before_edit_is_unaffected_by_make_mut() {
     // for rather than mutate in place.
     let snapshot = layer.get_osm_data().unwrap();
     assert_eq!(
-        snapshot.nodes.get(&1).map(|n| (n.lat, n.lon)),
+        snapshot.nodes.get(&NodeId(1)).map(|n| (n.lat, n.lon)),
         Some((40.0, -74.0))
     );
 
-    layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(1), 41.0, -75.0)])
+        .unwrap();
 
     // The live layer sees the move...
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
-        updated.nodes.get(&1).map(|n| (n.lat, n.lon)),
+        updated.nodes.get(&NodeId(1)).map(|n| (n.lat, n.lon)),
         Some((41.0, -75.0))
     );
     // ...but the old snapshot, held separately, still sees the original
     // position: it was never mutated in place.
     assert_eq!(
-        snapshot.nodes.get(&1).map(|n| (n.lat, n.lon)),
+        snapshot.nodes.get(&NodeId(1)).map(|n| (n.lat, n.lon)),
         Some((40.0, -74.0))
     );
 
@@ -359,14 +373,17 @@ fn snapshot_taken_before_edit_is_unaffected_by_make_mut() {
     let snapshot2 = layer.get_osm_data().unwrap();
     layer.set_tag(FeatureKind::Node, 1, "name", "Test").unwrap();
     assert_eq!(
-        snapshot2.nodes.get(&1).and_then(|n| n.tags.get("name")),
+        snapshot2
+            .nodes
+            .get(&NodeId(1))
+            .and_then(|n| n.tags.get("name")),
         None
     );
     let updated2 = layer.get_osm_data().unwrap();
     assert_eq!(
         updated2
             .nodes
-            .get(&1)
+            .get(&NodeId(1))
             .and_then(|n| n.tags.get("name"))
             .map(String::as_str),
         Some("Test")
@@ -376,21 +393,21 @@ fn snapshot_taken_before_edit_is_unaffected_by_make_mut() {
 #[test]
 fn commit_node_moves_updates_both_referencing_ways_and_indices() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         tags: empty_tags(),
         version: 1,
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.001,
         lon: -74.001,
         tags: empty_tags(),
         version: 1,
     };
     let n3 = OsmNode {
-        id: 3,
+        id: NodeId(3),
         lat: 40.002,
         lon: -74.002,
         tags: empty_tags(),
@@ -398,14 +415,14 @@ fn commit_node_moves_updates_both_referencing_ways_and_indices() {
     };
     // Both ways reference node 1.
     let way_a = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         tags: empty_tags(),
         version: 1,
     };
     let way_b = OsmWay {
-        id: 20,
-        nodes: vec![1, 3],
+        id: WayId(20),
+        nodes: vec![NodeId(1), NodeId(3)],
         tags: empty_tags(),
         version: 1,
     };
@@ -417,7 +434,9 @@ fn commit_node_moves_updates_both_referencing_ways_and_indices() {
 
     let new_lat = 41.0;
     let new_lon = -75.0;
-    layer.commit_node_moves(&[(1, new_lat, new_lon)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(1), new_lat, new_lon)])
+        .unwrap();
 
     assert!(layer.is_modified());
 
@@ -441,7 +460,7 @@ fn commit_node_moves_updates_both_referencing_ways_and_indices() {
         &layer.derived.way_vertices[0],
         &layer.derived.way_vertices[1],
     ] {
-        let &(_, mx, my) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();
+        let &(_, mx, my) = verts.iter().find(|&&(id, _, _)| id == NodeId(1)).unwrap();
         assert!((mx - new_mx).abs() < 1e-6);
         assert!((my - new_my).abs() < 1e-6);
     }
@@ -484,28 +503,28 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
     // dropped `node_to_ways` entry bug when one of the two ways is
     // dragged and the move is committed.
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         tags: empty_tags(),
         version: 1,
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.001,
         lon: -74.001,
         tags: empty_tags(),
         version: 1,
     };
     let n3 = OsmNode {
-        id: 3,
+        id: NodeId(3),
         lat: 40.002,
         lon: -74.0,
         tags: empty_tags(),
         version: 1,
     };
     let n4 = OsmNode {
-        id: 4,
+        id: NodeId(4),
         lat: 40.001,
         lon: -73.999,
         tags: empty_tags(),
@@ -513,15 +532,15 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
     };
     // way_a: ring 1 -> 2 -> 3 -> 1 (closed).
     let way_a = OsmWay {
-        id: 10,
-        nodes: vec![1, 2, 3, 1],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(1)],
         tags: empty_tags(),
         version: 1,
     };
     // way_b: ring 1 -> 4 -> 2 -> 1 (closed), sharing the 1-2 edge with way_a.
     let way_b = OsmWay {
-        id: 20,
-        nodes: vec![1, 4, 2, 1],
+        id: WayId(20),
+        nodes: vec![NodeId(1), NodeId(4), NodeId(2), NodeId(1)],
         tags: empty_tags(),
         version: 1,
     };
@@ -533,7 +552,7 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
 
     // Drag+commit both shared nodes (1 and 2), as a whole-way move would.
     layer
-        .commit_node_moves(&[(1, 41.0, -75.0), (2, 41.001, -75.001)])
+        .commit_node_moves(&[(NodeId(1), 41.0, -75.0), (NodeId(2), 41.001, -75.001)])
         .unwrap();
 
     assert!(layer.is_modified());
@@ -550,19 +569,19 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
     // reference it, with no duplicates and none dropped, despite each
     // way listing its ring-closing node twice.
     assert_eq!(
-        layer.derived.node_to_ways.get(&1).cloned(),
+        layer.derived.node_to_ways.get(&NodeId(1)).cloned(),
         Some([0usize, 1usize].into_iter().collect())
     );
     assert_eq!(
-        layer.derived.node_to_ways.get(&2).cloned(),
+        layer.derived.node_to_ways.get(&NodeId(2)).cloned(),
         Some([0usize, 1usize].into_iter().collect())
     );
     assert_eq!(
-        layer.derived.node_to_ways.get(&3).cloned(),
+        layer.derived.node_to_ways.get(&NodeId(3)).cloned(),
         Some([0usize].into_iter().collect())
     );
     assert_eq!(
-        layer.derived.node_to_ways.get(&4).cloned(),
+        layer.derived.node_to_ways.get(&NodeId(4)).cloned(),
         Some([1usize].into_iter().collect())
     );
 }
@@ -570,7 +589,7 @@ fn adjacent_closed_ways_sharing_two_nodes_keep_node_to_ways_consistent() {
 #[test]
 fn commit_node_moves_new_position_hit_testable_by_point_and_rect() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         tags: empty_tags(),
@@ -581,7 +600,9 @@ fn commit_node_moves_new_position_hit_testable_by_point_and_rect() {
 
     let new_lat = 50.0;
     let new_lon = -80.0;
-    layer.commit_node_moves(&[(1, new_lat, new_lon)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(1), new_lat, new_lon)])
+        .unwrap();
 
     let viewport = viewport_centered_on(new_lat, new_lon);
 
@@ -609,14 +630,14 @@ fn commit_node_moves_new_position_hit_testable_by_point_and_rect() {
 #[test]
 fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         tags: empty_tags(),
         version: 1,
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.001,
         lon: -74.001,
         tags: empty_tags(),
@@ -624,15 +645,15 @@ fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
     };
     // n3 is a standalone POI node, not referenced by any way.
     let n3 = OsmNode {
-        id: 3,
+        id: NodeId(3),
         lat: 41.0,
         lon: -75.0,
         tags: empty_tags(),
         version: 1,
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         tags: empty_tags(),
         version: 1,
     };
@@ -644,7 +665,9 @@ fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
 
     let new_lat = 42.0;
     let new_lon = -76.0;
-    layer.commit_node_moves(&[(3, new_lat, new_lon)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(3), new_lat, new_lon)])
+        .unwrap();
 
     assert!(layer.is_modified());
     assert_eq!(
@@ -658,7 +681,12 @@ fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
 
     let Mercator { x: mx, y: my } =
         crate::coordinates::lat_lon_to_mercator(LatLon::new(new_lat, new_lon));
-    let idx = *layer.derived.node_cache.index_by_id.get(&3).unwrap();
+    let idx = *layer
+        .derived
+        .node_cache
+        .index_by_id
+        .get(&NodeId(3))
+        .unwrap();
     let (_, cached_mx, cached_my) = layer.derived.node_cache.flat[idx];
     assert!((cached_mx - mx).abs() < 1e-6);
     assert!((cached_my - my).abs() < 1e-6);
@@ -667,22 +695,22 @@ fn commit_node_moves_node_not_in_any_way_only_touches_node_cache() {
 #[test]
 fn set_tag_refreshes_cached_way_style() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         tags: empty_tags(),
         version: 1,
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.001,
         lon: -74.001,
         tags: empty_tags(),
         version: 1,
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         tags: empty_tags(),
         version: 1,
     };
@@ -704,7 +732,7 @@ fn set_tag_refreshes_cached_way_style() {
 #[test]
 fn set_tag_refreshes_cached_node_style() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         tags: empty_tags(),
@@ -713,7 +741,12 @@ fn set_tag_refreshes_cached_node_style() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    let idx = *layer.derived.node_cache.index_by_id.get(&1).unwrap();
+    let idx = *layer
+        .derived
+        .node_cache
+        .index_by_id
+        .get(&NodeId(1))
+        .unwrap();
     let default_style = layer.derived.node_cache.styles[idx];
     layer
         .set_tag(FeatureKind::Node, 1, "amenity", "cafe")

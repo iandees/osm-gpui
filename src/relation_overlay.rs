@@ -11,6 +11,7 @@
 //!   middle of the `via` way, or the node shared by the `from` and `to` ways
 //!   when there is no `via`).
 
+use crate::ids::{NodeId, WayId};
 use crate::osm::{MemberType, OsmData, OsmRelation};
 use std::collections::HashMap;
 
@@ -118,7 +119,7 @@ pub struct RouteEntry {
     pub colour: u32,
     /// Member way ids, sorted and deduplicated. Includes ways that aren't
     /// loaded; the renderer simply never finds them.
-    pub ways: Vec<i64>,
+    pub ways: Vec<WayId>,
 }
 
 /// Build the entry for `relation`, or `None` if it isn't a drawn route.
@@ -126,11 +127,11 @@ pub fn build_route(relation: &OsmRelation) -> Option<RouteEntry> {
     if !is_route(&relation.tags) {
         return None;
     }
-    let mut ways: Vec<i64> = relation
+    let mut ways: Vec<WayId> = relation
         .members
         .iter()
         .filter(|m| m.member_type == MemberType::Way)
-        .map(|m| m.reference)
+        .map(|m| WayId(m.reference))
         .collect();
     ways.sort_unstable();
     ways.dedup();
@@ -149,9 +150,9 @@ pub struct RestrictionEntry {
     /// `only_*` (blue disc) rather than `no_*` (red ring).
     pub only: bool,
     /// Node ids whose movement can move the marker (the `via` node).
-    pub via_node: Option<i64>,
+    pub via_node: Option<NodeId>,
     /// Way ids whose reshaping can move the marker.
-    pub ways: Vec<i64>,
+    pub ways: Vec<WayId>,
 }
 
 /// The restriction value: `restriction`, else the first `restriction:<mode>`
@@ -174,7 +175,7 @@ fn restriction_value(tags: &HashMap<String, String>) -> Option<&str> {
 pub fn build_restriction(
     data: &OsmData,
     relation: &OsmRelation,
-    position: &dyn Fn(i64) -> Option<(f64, f64)>,
+    position: &dyn Fn(NodeId) -> Option<(f64, f64)>,
 ) -> Option<RestrictionEntry> {
     if !is_restriction(&relation.tags) {
         return None;
@@ -193,13 +194,13 @@ pub fn build_restriction(
             .filter(move |m| m.role == role && m.member_type == ty)
     }
     let by_role = |role: &'static str, ty: MemberType| by(relation, role, ty);
-    let way_nodes = |id: i64| data.ways.get(&id).map(|w| w.nodes.as_slice());
+    let way_nodes = |id: i64| data.ways.get(&WayId(id)).map(|w| w.nodes.as_slice());
 
-    let mut ways: Vec<i64> = relation
+    let mut ways: Vec<WayId> = relation
         .members
         .iter()
         .filter(|m| m.member_type == MemberType::Way)
-        .map(|m| m.reference)
+        .map(|m| WayId(m.reference))
         .collect();
     ways.sort_unstable();
     ways.dedup();
@@ -207,8 +208,8 @@ pub fn build_restriction(
     let has_via = relation.members.iter().any(|m| m.role == "via");
     let mut via_node = None;
     let (x, y) = if let Some(m) = by_role("via", MemberType::Node).next() {
-        via_node = Some(m.reference);
-        position(m.reference)?
+        via_node = Some(NodeId(m.reference));
+        position(NodeId(m.reference))?
     } else if let Some(m) = by_role("via", MemberType::Way).next() {
         let nodes = way_nodes(m.reference)?;
         let (a, b) = (position(*nodes.first()?)?, position(*nodes.last()?)?);
@@ -236,6 +237,7 @@ pub fn build_restriction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{NodeId, RelationId, WayId};
     use crate::osm::{OsmMember, OsmWay};
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -255,7 +257,7 @@ mod tests {
 
     fn relation(id: i64, t: &[(&str, &str)], members: Vec<OsmMember>) -> OsmRelation {
         OsmRelation {
-            id,
+            id: RelationId(id),
             members,
             version: 1,
             tags: tags(t),
@@ -271,10 +273,10 @@ mod tests {
         };
         for (id, nodes) in ways {
             d.ways.insert(
-                *id,
+                WayId(*id),
                 OsmWay {
-                    id: *id,
-                    nodes: nodes.to_vec(),
+                    id: WayId(*id),
+                    nodes: nodes.iter().copied().map(NodeId).collect(),
                     version: 1,
                     tags: HashMap::new(),
                 },
@@ -283,7 +285,8 @@ mod tests {
         d
     }
 
-    fn pos(id: i64) -> Option<(f64, f64)> {
+    fn pos(id: NodeId) -> Option<(f64, f64)> {
+        let id = id.get();
         (id < 100).then_some((id as f64, id as f64 * 10.0))
     }
 
@@ -327,7 +330,7 @@ mod tests {
             ],
         );
         let e = build_route(&r).unwrap();
-        assert_eq!(e.ways, vec![3, 9]);
+        assert_eq!(e.ways, vec![WayId(3), WayId(9)]);
         assert_eq!(e.colour, 0x9B30D9);
     }
 
@@ -353,8 +356,8 @@ mod tests {
         let e = build_restriction(&d, &r, &pos).unwrap();
         assert_eq!((e.x, e.y), (11.0, 110.0));
         assert!(!e.only);
-        assert_eq!(e.via_node, Some(11));
-        assert_eq!(e.ways, vec![1, 2]);
+        assert_eq!(e.via_node, Some(NodeId(11)));
+        assert_eq!(e.ways, vec![WayId(1), WayId(2)]);
     }
 
     #[test]

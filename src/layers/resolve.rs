@@ -11,6 +11,7 @@
 //! - **Use theirs** puts the server's copy into both snapshots, so the object
 //!   no longer differs and drops out of the diff: the local change is gone.
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::{MemberType, OsmData, OsmNode};
 use crate::osm_api::ServerElement;
 use crate::selection::FeatureKind;
@@ -30,19 +31,19 @@ pub fn set_base_version(
     for data in [original, current] {
         match kind {
             FeatureKind::Node => {
-                if let Some(n) = data.nodes.get_mut(&id) {
+                if let Some(n) = data.nodes.get_mut(&NodeId(id)) {
                     n.version = version;
                     found = true;
                 }
             }
             FeatureKind::Way => {
-                if let Some(w) = data.ways.get_mut(&id) {
+                if let Some(w) = data.ways.get_mut(&WayId(id)) {
                     w.version = version;
                     found = true;
                 }
             }
             FeatureKind::Relation => {
-                if let Some(r) = data.relations.iter_mut().find(|r| r.id == id) {
+                if let Some(r) = data.relations.iter_mut().find(|r| r.id.get() == id) {
                     r.version = version;
                     found = true;
                 }
@@ -53,12 +54,12 @@ pub fn set_base_version(
 }
 
 /// Whether anything uses node `id`: a way's node list or a relation member.
-fn node_in_use(data: &OsmData, id: i64) -> bool {
+fn node_in_use(data: &OsmData, id: NodeId) -> bool {
     data.ways.values().any(|w| w.nodes.contains(&id))
         || data.relations.iter().any(|r| {
             r.members
                 .iter()
-                .any(|m| m.member_type == MemberType::Node && m.reference == id)
+                .any(|m| m.member_type == MemberType::Node && m.reference == id.get())
         })
 }
 
@@ -85,6 +86,7 @@ pub fn adopt_server_element(
     };
     match kind {
         FeatureKind::Node => {
+            let id = NodeId(id);
             let Some(node) = data.nodes.get(&id) else {
                 return false;
             };
@@ -93,10 +95,11 @@ pub fn adopt_server_element(
             true
         }
         FeatureKind::Way => {
+            let id = WayId(id);
             let Some(way) = data.ways.get(&id) else {
                 return false;
             };
-            let old_local_nodes: Vec<i64> = current
+            let old_local_nodes: Vec<NodeId> = current
                 .ways
                 .get(&id)
                 .map(|w| w.nodes.clone())
@@ -107,7 +110,7 @@ pub fn adopt_server_element(
                 adopt_node_unless_edited(original, current, node);
             }
             for node_id in old_local_nodes {
-                let orphan = node_id < 0
+                let orphan = node_id.is_new()
                     && current
                         .nodes
                         .get(&node_id)
@@ -120,6 +123,7 @@ pub fn adopt_server_element(
             true
         }
         FeatureKind::Relation => {
+            let id = RelationId(id);
             let Some(relation) = data.relations.iter().find(|r| r.id == id) else {
                 return false;
             };
@@ -156,11 +160,11 @@ fn remove_element(
     let mut removed = false;
     for data in [original, current] {
         match kind {
-            FeatureKind::Node => removed |= data.nodes.remove(&id).is_some(),
-            FeatureKind::Way => removed |= data.ways.remove(&id).is_some(),
+            FeatureKind::Node => removed |= data.nodes.remove(&NodeId(id)).is_some(),
+            FeatureKind::Way => removed |= data.ways.remove(&WayId(id)).is_some(),
             FeatureKind::Relation => {
                 let before = data.relations.len();
-                data.relations.retain(|r| r.id != id);
+                data.relations.retain(|r| r.id.get() != id);
                 removed |= data.relations.len() != before;
             }
         }
@@ -179,19 +183,19 @@ pub fn forget_local_delete(
     id: i64,
 ) -> bool {
     let present_locally = match kind {
-        FeatureKind::Node => current.nodes.contains_key(&id),
-        FeatureKind::Way => current.ways.contains_key(&id),
-        FeatureKind::Relation => current.relations.iter().any(|r| r.id == id),
+        FeatureKind::Node => current.nodes.contains_key(&NodeId(id)),
+        FeatureKind::Way => current.ways.contains_key(&WayId(id)),
+        FeatureKind::Relation => current.relations.iter().any(|r| r.id.get() == id),
     };
     if present_locally {
         return false;
     }
     match kind {
-        FeatureKind::Node => original.nodes.remove(&id).is_some(),
-        FeatureKind::Way => original.ways.remove(&id).is_some(),
+        FeatureKind::Node => original.nodes.remove(&NodeId(id)).is_some(),
+        FeatureKind::Way => original.ways.remove(&WayId(id)).is_some(),
         FeatureKind::Relation => {
             let before = original.relations.len();
-            original.relations.retain(|r| r.id != id);
+            original.relations.retain(|r| r.id.get() != id);
             original.relations.len() != before
         }
     }
@@ -206,7 +210,7 @@ mod tests {
 
     fn node(id: i64, lat: f64, version: i32) -> OsmNode {
         OsmNode {
-            id,
+            id: NodeId(id),
             lat,
             lon: 0.0,
             version,
@@ -216,8 +220,8 @@ mod tests {
 
     fn way(id: i64, nodes: Vec<i64>, version: i32) -> OsmWay {
         OsmWay {
-            id,
-            nodes,
+            id: WayId(id),
+            nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version,
             tags: HashMap::new(),
         }
@@ -236,7 +240,7 @@ mod tests {
     fn keep_mine_moves_the_base_version_of_a_modified_object() {
         let mut original = data(vec![node(1, 1.0, 3)], vec![]);
         let mut current = original.clone();
-        current.nodes.get_mut(&1).unwrap().lat = 9.0;
+        current.nodes.get_mut(&NodeId(1)).unwrap().lat = 9.0;
 
         assert!(set_base_version(
             &mut original,
@@ -255,18 +259,18 @@ mod tests {
     fn keep_mine_moves_the_base_version_of_a_deleted_object() {
         let mut original = data(vec![node(1, 1.0, 3)], vec![]);
         let mut current = original.clone();
-        current.nodes.remove(&1);
+        current.nodes.remove(&NodeId(1));
 
         set_base_version(&mut original, &mut current, FeatureKind::Node, 1, 7);
         let diff = diff_osm_data(&original, &current);
-        assert_eq!(diff.deleted_node_ids, vec![(1, 7)]);
+        assert_eq!(diff.deleted_node_ids, vec![(NodeId(1), 7)]);
     }
 
     #[test]
     fn keep_mine_on_a_relation() {
         let mut original = data(vec![], vec![]);
         original.relations.push(OsmRelation {
-            id: 5,
+            id: RelationId(5),
             members: vec![],
             version: 2,
             tags: HashMap::new(),
@@ -297,7 +301,7 @@ mod tests {
     fn use_theirs_replaces_a_node_in_both_snapshots() {
         let mut original = data(vec![node(1, 1.0, 3)], vec![]);
         let mut current = original.clone();
-        current.nodes.get_mut(&1).unwrap().lat = 9.0;
+        current.nodes.get_mut(&NodeId(1)).unwrap().lat = 9.0;
 
         let server = ServerElement::Present(data(vec![node(1, 2.0, 4)], vec![]));
         assert!(adopt_server_element(
@@ -307,9 +311,9 @@ mod tests {
             1,
             server
         ));
-        assert_eq!(current.nodes[&1].lat, 2.0);
-        assert_eq!(current.nodes[&1].version, 4);
-        assert_eq!(original.nodes[&1], current.nodes[&1]);
+        assert_eq!(current.nodes[&NodeId(1)].lat, 2.0);
+        assert_eq!(current.nodes[&NodeId(1)].version, 4);
+        assert_eq!(original.nodes[&NodeId(1)], current.nodes[&NodeId(1)]);
         assert!(diff_osm_data(&original, &current).is_empty());
     }
 
@@ -317,10 +321,10 @@ mod tests {
     fn use_theirs_undoes_a_local_delete() {
         let mut original = data(vec![node(1, 1.0, 3)], vec![]);
         let mut current = original.clone();
-        current.nodes.remove(&1);
+        current.nodes.remove(&NodeId(1));
         let server = ServerElement::Present(data(vec![node(1, 1.5, 4)], vec![]));
         adopt_server_element(&mut original, &mut current, FeatureKind::Node, 1, server);
-        assert_eq!(current.nodes[&1].version, 4);
+        assert_eq!(current.nodes[&NodeId(1)].version, 4);
         assert!(diff_osm_data(&original, &current).is_empty());
     }
 
@@ -328,7 +332,7 @@ mod tests {
     fn use_theirs_gone_removes_the_object_everywhere() {
         let mut original = data(vec![node(1, 1.0, 3)], vec![]);
         let mut current = original.clone();
-        current.nodes.get_mut(&1).unwrap().lat = 9.0;
+        current.nodes.get_mut(&NodeId(1)).unwrap().lat = 9.0;
         assert!(adopt_server_element(
             &mut original,
             &mut current,
@@ -349,9 +353,9 @@ mod tests {
             vec![way(10, vec![1, 2], 5)],
         );
         let mut current = original.clone();
-        current.nodes.get_mut(&1).unwrap().lat = 8.0;
-        current.nodes.insert(-1, node(-1, 5.0, 0));
-        current.ways.get_mut(&10).unwrap().nodes = vec![1, 2, -1];
+        current.nodes.get_mut(&NodeId(1)).unwrap().lat = 8.0;
+        current.nodes.insert(NodeId(-1), node(-1, 5.0, 0));
+        current.ways.get_mut(&WayId(10)).unwrap().nodes = vec![NodeId(1), NodeId(2), NodeId(-1)];
 
         let server = ServerElement::Present(data(
             vec![node(1, 1.0, 1), node(3, 3.0, 2)],
@@ -364,11 +368,14 @@ mod tests {
             10,
             server
         ));
-        assert_eq!(current.ways[&10].nodes, vec![1, 3]);
-        assert_eq!(current.ways[&10].version, 6);
-        assert_eq!(original.ways[&10], current.ways[&10]);
-        assert!(current.nodes.contains_key(&3) && original.nodes.contains_key(&3));
-        assert!(!current.nodes.contains_key(&-1), "stray new node dropped");
+        assert_eq!(current.ways[&WayId(10)].nodes, vec![NodeId(1), NodeId(3)]);
+        assert_eq!(current.ways[&WayId(10)].version, 6);
+        assert_eq!(original.ways[&WayId(10)], current.ways[&WayId(10)]);
+        assert!(current.nodes.contains_key(&NodeId(3)) && original.nodes.contains_key(&NodeId(3)));
+        assert!(
+            !current.nodes.contains_key(&NodeId(-1)),
+            "stray new node dropped"
+        );
         let diff = diff_osm_data(&original, &current);
         assert!(diff.modified_ways.is_empty());
         assert_eq!(
@@ -386,21 +393,21 @@ mod tests {
             vec![way(10, vec![1, 2], 5)],
         );
         let mut current = original.clone();
-        current.ways.remove(&10);
-        current.nodes.remove(&2);
+        current.ways.remove(&WayId(10));
+        current.nodes.remove(&NodeId(2));
         let server = ServerElement::Present(data(
             vec![node(1, 1.0, 1), node(2, 2.0, 1)],
             vec![way(10, vec![1, 2], 6)],
         ));
         adopt_server_element(&mut original, &mut current, FeatureKind::Way, 10, server);
-        assert!(current.nodes.contains_key(&2));
+        assert!(current.nodes.contains_key(&NodeId(2)));
         assert!(diff_osm_data(&original, &current).is_empty());
     }
 
     #[test]
     fn use_theirs_relation_replaces_or_removes() {
         let rel = |version, role: &str| OsmRelation {
-            id: 5,
+            id: RelationId(5),
             members: vec![crate::osm::OsmMember {
                 member_type: MemberType::Way,
                 reference: 10,
@@ -440,7 +447,7 @@ mod tests {
     fn forget_local_delete_only_acts_on_locally_deleted_objects() {
         let mut original = data(vec![node(1, 1.0, 3), node(2, 2.0, 3)], vec![]);
         let mut current = original.clone();
-        current.nodes.remove(&1);
+        current.nodes.remove(&NodeId(1));
 
         assert!(forget_local_delete(
             &mut original,
@@ -456,6 +463,6 @@ mod tests {
             FeatureKind::Node,
             2
         ));
-        assert!(original.nodes.contains_key(&2));
+        assert!(original.nodes.contains_key(&NodeId(2)));
     }
 }

@@ -4,7 +4,7 @@ use super::*;
 /// `OsmLayer::pins`.
 #[derive(Default)]
 pub(super) struct Pins {
-    pub(super) nodes: HashSet<i64>,
+    pub(super) nodes: HashSet<NodeId>,
     /// Indices into `way_vertices`.
     pub(super) ways: HashSet<usize>,
     /// Index into `way_vertices` of the way whose vertices are previewed
@@ -189,10 +189,10 @@ impl OsmLayer {
         for f in &self.view.highlight {
             match f.kind {
                 FeatureKind::Node => {
-                    pins.nodes.insert(f.id);
+                    pins.nodes.insert(NodeId(f.id));
                 }
                 FeatureKind::Way => {
-                    if let Some(&i) = self.derived.way_id_to_index.get(&f.id) {
+                    if let Some(&i) = self.derived.way_id_to_index.get(&WayId(f.id)) {
                         pins.ways.insert(i);
                     }
                 }
@@ -208,7 +208,7 @@ impl OsmLayer {
 
     /// How node `id` (at `idx` in the node cache) is shown at `zoom`: the
     /// one answer behind drawing, hover, click and box select.
-    pub(super) fn node_form_at(&self, pins: &Pins, idx: usize, id: i64, zoom: f64) -> NodeForm {
+    pub(super) fn node_form_at(&self, pins: &Pins, idx: usize, id: NodeId, zoom: f64) -> NodeForm {
         let in_way = |pred: &dyn Fn(&usize) -> bool| {
             self.derived
                 .node_to_ways
@@ -239,7 +239,7 @@ impl OsmLayer {
     pub(super) fn styled_node_form(
         &self,
         style: &NodeStyle,
-        id: i64,
+        id: NodeId,
         zoom: f64,
     ) -> Option<NodeForm> {
         if zoom < node_markers::STYLED_MIN_ZOOM || !style.has_custom_marker() {

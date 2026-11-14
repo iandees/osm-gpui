@@ -1,6 +1,7 @@
 //! Split Way: relation membership, closed ways, end nodes, repeated nodes.
 
 use super::*;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 
 /// One undo restores the exact prior state, one redo reapplies the result.
 fn undo_redo(s: &mut Session, before: &Snap) {
@@ -303,7 +304,7 @@ fn a_relation_that_is_a_member_of_another_relation_is_not_disturbed(cx: &mut Tes
         // Only the route changed; the master is not in the upload.
         let d = s.diff();
         assert_eq!(d.modified_relations.len(), 1);
-        assert_eq!(d.modified_relations[0].id, 900);
+        assert_eq!(d.modified_relations[0].id, RelationId(900));
         undo_redo(s, &before);
     });
 }
@@ -370,7 +371,7 @@ fn closed_way_with_one_node_is_turned_to_start_and_end_there(cx: &mut TestAppCon
         // The same way, modified: no creation, relation untouched.
         let d = s.diff();
         assert_eq!(s.counts(), (0, 1, 0));
-        assert_eq!(d.modified_ways[0].id, 10);
+        assert_eq!(d.modified_ways[0].id, WayId(10));
         assert_eq!(d.modified_ways[0].version, 3);
         // The selection is left as it was.
         assert_eq!(s.view.selected.len(), 2);
@@ -568,7 +569,7 @@ fn splitting_an_open_way_at_two_nodes_at_once_gives_three_parts(cx: &mut TestApp
         // 10 is modified (version kept), the two others are created.
         assert_eq!(s.counts(), (2, 1, 0));
         let d = s.diff();
-        assert_eq!(d.modified_ways[0].id, 10);
+        assert_eq!(d.modified_ways[0].id, WayId(10));
         assert_eq!(d.modified_ways[0].version, 3);
         // The selection is not changed by the split.
         assert_eq!(s.view.selected.len(), 3);
@@ -1029,9 +1030,9 @@ fn the_longer_part_keeps_the_original_id_and_version(cx: &mut TestAppContext) {
         assert_eq!(s.way_nodes(10), Some(vec![2, 3, 4, 5]));
         let d = s.diff();
         assert_eq!(d.created_ways.len(), 1);
-        assert_eq!(d.created_ways[0].nodes, vec![1, 2]);
+        assert_eq!(d.created_ways[0].nodes, vec![NodeId(1), NodeId(2)]);
         assert_eq!(d.modified_ways.len(), 1);
-        assert_eq!(d.modified_ways[0].id, 10);
+        assert_eq!(d.modified_ways[0].id, WayId(10));
         assert_eq!(d.modified_ways[0].version, 3);
     });
 }

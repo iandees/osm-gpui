@@ -39,7 +39,7 @@ pub struct DeletedFeatureSnapshot {
     /// The feature's tags at the time of deletion, as (key, value) pairs.
     pub tags: Vec<(String, String)>,
     /// For a way: its ordered member node ids. Empty/unused for a node.
-    pub way_nodes: Vec<i64>,
+    pub way_nodes: Vec<crate::ids::NodeId>,
     /// For a node: its (lat, lon) at the time of deletion. `None` for a way.
     pub node_lat_lon: Option<(f64, f64)>,
     /// The server version the feature had when it was deleted (0 for one
@@ -81,17 +81,17 @@ impl PurgedFeatures {
         out.extend(self.nodes.iter().map(|n| FeatureRef {
             layer_id,
             kind: FeatureKind::Node,
-            id: n.id,
+            id: n.id.get(),
         }));
         out.extend(self.ways.iter().map(|w| FeatureRef {
             layer_id,
             kind: FeatureKind::Way,
-            id: w.id,
+            id: w.id.get(),
         }));
         out.extend(self.relations.iter().map(|(r, ..)| FeatureRef {
             layer_id,
             kind: FeatureKind::Relation,
-            id: r.id,
+            id: r.id.get(),
         }));
         out
     }

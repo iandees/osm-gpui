@@ -7,6 +7,7 @@ use super::{
 use crate::{EditMode, ExtrudeDrag, ExtrudeStyle, MapViewer};
 use gpui::{point, px, TestAppContext};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, WayId};
 
 #[gpui::test]
 fn first_click_in_add_mode_snaps_onto_existing_way(cx: &mut TestAppContext) {
@@ -28,14 +29,17 @@ fn first_click_in_add_mode_snaps_onto_existing_way(cx: &mut TestAppContext) {
             // not from an implicit continuation of way 10.
             assert!(view.add_progress().is_some());
             assert_eq!(view.add_progress().unwrap().way_id, None);
-            assert_eq!(view.add_progress().unwrap().last_node_id, new_id);
+            assert_eq!(view.add_progress().unwrap().last_node_id, NodeId(new_id));
 
             // Undo removes the splice and deletes the node.
             let action = view.undo_stack.undo().expect("expected an undo entry");
             view.apply_undo_action(&action, false);
             assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
             let layer = view.layer_manager.find_layer(layer_id).unwrap();
-            assert_eq!(layer.as_editable().unwrap().node_lat_lon(new_id), None);
+            assert_eq!(
+                layer.as_editable().unwrap().node_lat_lon(NodeId(new_id)),
+                None
+            );
         })
         .unwrap();
 }
@@ -68,8 +72,8 @@ fn second_click_snaps_and_folds_with_compound_undo(cx: &mut TestAppContext) {
 
             let drawn_way_id = view.add_progress().unwrap().way_id.unwrap();
             assert_eq!(
-                way_nodes(view, layer_id, drawn_way_id),
-                vec![node_a, node_b]
+                way_nodes(view, layer_id, drawn_way_id.get()),
+                vec![node_a.get(), node_b]
             );
 
             // Undo reverses both mutations from that single click: the
@@ -82,7 +86,7 @@ fn second_click_snaps_and_folds_with_compound_undo(cx: &mut TestAppContext) {
             assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
             let layer = view.layer_manager.find_layer(layer_id).unwrap();
             let editable = layer.as_editable().unwrap();
-            assert_eq!(editable.node_lat_lon(node_b), None);
+            assert_eq!(editable.node_lat_lon(NodeId(node_b)), None);
             assert!(editable.node_lat_lon(node_a).is_some());
             assert_eq!(editable.way_node_ids(drawn_way_id), None);
         })
@@ -112,7 +116,7 @@ fn second_click_on_an_undrawn_vertex_connects_to_it(cx: &mut TestAppContext) {
             // Way 10 gained no node; the new way runs from A to node 1.
             assert_eq!(way_nodes(view, layer_id, 10), vec![1, 2]);
             let selected = view.selected[0].id;
-            assert_eq!(way_nodes(view, layer_id, selected), vec![node_a, 1]);
+            assert_eq!(way_nodes(view, layer_id, selected), vec![node_a.get(), 1]);
         })
         .unwrap();
 }
@@ -138,7 +142,7 @@ fn ctrl_held_bypasses_both_node_and_way_snap(cx: &mut TestAppContext) {
             // brand-new independent node instead.
             view.handle_add_click(n1_screen, true);
             let node_b = view.add_progress().unwrap().last_node_id;
-            assert_ne!(node_b, 1, "Ctrl should not have connected to node 1");
+            assert_ne!(node_b.get(), 1, "Ctrl should not have connected to node 1");
             assert_eq!(
                 way_nodes(view, layer_id, 10),
                 vec![1, 2],
@@ -158,8 +162,8 @@ fn ctrl_held_bypasses_both_node_and_way_snap(cx: &mut TestAppContext) {
 
             let drawn_way_id = view.add_progress().unwrap().way_id.unwrap();
             assert_eq!(
-                way_nodes(view, layer_id, drawn_way_id),
-                vec![node_a, node_b, node_c]
+                way_nodes(view, layer_id, drawn_way_id.get()),
+                vec![node_a.get(), node_b.get(), node_c.get()]
             );
         })
         .unwrap();
@@ -204,7 +208,10 @@ fn extend_from_a_way_end_appends_with_one_undo_step_per_click(cx: &mut TestAppCo
             view.run_selection_action("extend", cx);
             assert_eq!(view.mode(), EditMode::Add);
             let progress = view.add_progress().unwrap();
-            assert_eq!((progress.way_id, progress.last_node_id), (Some(100), 3));
+            assert_eq!(
+                (progress.way_id, progress.last_node_id),
+                (Some(WayId(100)), NodeId(3))
+            );
             assert!(view.undo_stack.actions.is_empty());
             assert_eq!(pending(view), (0, 0, 0));
 
@@ -295,7 +302,13 @@ fn add_mode_refuses_to_grow_a_way_past_the_node_limit(cx: &mut TestAppContext) {
                     .find_layer_mut(layer_id)
                     .and_then(|l| l.as_editable_mut())
                     .unwrap()
-                    .set_way_nodes(100, long_way_nodes(len))
+                    .set_way_nodes(
+                        WayId(100),
+                        long_way_nodes(len)
+                            .into_iter()
+                            .map(NodeId)
+                            .collect::<Vec<_>>(),
+                    )
                     .unwrap();
             };
 
@@ -330,14 +343,20 @@ fn inserting_a_node_on_a_full_way_is_refused(cx: &mut TestAppContext) {
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_way_nodes(100, long_way_nodes(2000))
+                .set_way_nodes(
+                    WayId(100),
+                    long_way_nodes(2000)
+                        .into_iter()
+                        .map(NodeId)
+                        .collect::<Vec<_>>(),
+                )
                 .unwrap();
             let before = pending(view);
             let drag = ExtrudeDrag {
                 layer: layer_id,
-                way_id: 100,
-                node_a: 1,
-                node_b: 2,
+                way_id: WayId(100),
+                node_a: NodeId(1),
+                node_b: NodeId(2),
                 segment: 0,
                 style: ExtrudeStyle::Reshape,
                 down: point(px(0.0), px(0.0)),
@@ -362,7 +381,10 @@ fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut Te
                     .find_layer(layer_id)
                     .and_then(|l| l.as_editable())
                     .unwrap();
-                (e.node_lat_lon(1).unwrap(), e.node_lat_lon(2).unwrap())
+                (
+                    e.node_lat_lon(NodeId(1)).unwrap(),
+                    e.node_lat_lon(NodeId(2)).unwrap(),
+                )
             };
             let a = view.viewport.geo_to_screen(LatLon::new(a_geo.0, a_geo.1));
             let b = view.viewport.geo_to_screen(LatLon::new(b_geo.0, b_geo.1));
@@ -375,9 +397,9 @@ fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut Te
             );
             let drag = ExtrudeDrag {
                 layer: layer_id,
-                way_id: 100,
-                node_a: 1,
-                node_b: 2,
+                way_id: WayId(100),
+                node_a: NodeId(1),
+                node_b: NodeId(2),
                 segment: 0,
                 style: ExtrudeStyle::Reshape,
                 down: click,
@@ -390,7 +412,7 @@ fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut Te
                 .find_layer(layer_id)
                 .and_then(|l| l.as_editable())
                 .unwrap()
-                .node_lat_lon(nodes[1])
+                .node_lat_lon(NodeId(nodes[1]))
                 .unwrap();
             let n = view
                 .viewport

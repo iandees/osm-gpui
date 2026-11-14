@@ -2,6 +2,7 @@
 
 use super::{data_with, empty_tags};
 use crate::http::fake::{ok, status_err, FakeClient};
+use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::EditableLayer;
 use crate::layers::LayerId;
@@ -15,7 +16,7 @@ const MISMATCH: &str = "Version mismatch: Provided 1, server had: 2 of Node 1";
 
 fn node(id: i64, lat: f64, version: i32) -> OsmNode {
     OsmNode {
-        id,
+        id: NodeId(id),
         lat,
         lon: -74.0,
         version,
@@ -27,8 +28,8 @@ fn node(id: i64, lat: f64, version: i32) -> OsmNode {
 /// edited locally (tagged).
 fn edited_layer() -> OsmLayer {
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -149,7 +150,7 @@ fn use_theirs_replaces_the_object_and_the_retry_leaves_it_out() {
         })
         .unwrap();
     assert_eq!(tags, vec![("shop".to_string(), "bakery".to_string())]);
-    assert_eq!(layer.node_lat_lon(1), Some((40.5, -74.0)));
+    assert_eq!(layer.node_lat_lon(NodeId(1)), Some((40.5, -74.0)));
 
     let retry = FakeClient::new(vec![
         ok(200, "43"),
@@ -207,7 +208,7 @@ fn use_theirs_on_an_object_deleted_on_the_server_removes_it_locally() {
         &mut layer, kind, id, server
     ));
     assert!(!EditableLayer::has_feature(&layer, kind, id));
-    assert!(layer.way_node_ids(10).is_none());
+    assert!(layer.way_node_ids(WayId(10)).is_none());
 
     let diff = layer.diff_for_upload();
     assert!(diff.modified_ways.is_empty() && diff.deleted_way_ids.is_empty());
@@ -224,7 +225,10 @@ fn drop_my_change_forgets_a_delete_the_server_already_did() {
         FeatureKind::Way,
         10
     ));
-    assert_eq!(layer.diff_for_upload().deleted_way_ids, vec![(10, 1)]);
+    assert_eq!(
+        layer.diff_for_upload().deleted_way_ids,
+        vec![(WayId(10), 1)]
+    );
 
     assert!(EditableLayer::forget_local_delete(
         &mut layer,
@@ -255,5 +259,8 @@ fn keep_mine_on_a_locally_deleted_object_updates_the_delete_version() {
         10,
         5
     ));
-    assert_eq!(layer.diff_for_upload().deleted_way_ids, vec![(10, 5)]);
+    assert_eq!(
+        layer.diff_for_upload().deleted_way_ids,
+        vec![(WayId(10), 5)]
+    );
 }

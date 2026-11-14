@@ -21,6 +21,7 @@ use std::fmt::Write as _;
 
 use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon_wrapped, LatLon, Mercator};
 use crate::edit_ops::{replay, EditOp};
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::limits::{self, Limits};
 use crate::osm::{MemberType, OsmMember};
@@ -30,7 +31,7 @@ use crate::tr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipNode {
-    pub id: i64,
+    pub id: NodeId,
     pub lat: f64,
     pub lon: f64,
     pub tags: Vec<(String, String)>,
@@ -38,14 +39,14 @@ pub struct ClipNode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipWay {
-    pub id: i64,
-    pub nodes: Vec<i64>,
+    pub id: WayId,
+    pub nodes: Vec<NodeId>,
     pub tags: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipRelation {
-    pub id: i64,
+    pub id: RelationId,
     pub members: Vec<OsmMember>,
     pub tags: Vec<(String, String)>,
 }
@@ -111,25 +112,27 @@ impl FeatureClipboard {
         selection: &[FeatureRef],
     ) -> Option<Self> {
         let mut clip = Self::default();
-        let mut node_ids: HashSet<i64> = HashSet::new();
-        let mut way_ids: HashSet<i64> = HashSet::new();
-        let mut relation_ids: HashSet<i64> = HashSet::new();
+        let mut node_ids: HashSet<NodeId> = HashSet::new();
+        let mut way_ids: HashSet<WayId> = HashSet::new();
+        let mut relation_ids: HashSet<RelationId> = HashSet::new();
 
         for feature in selection.iter().filter(|f| f.layer_id == layer) {
             match feature.kind {
                 FeatureKind::Node => {
-                    if take_node(editable, layer, &mut clip.nodes, &mut node_ids, feature.id) {
+                    let id = NodeId(feature.id);
+                    if take_node(editable, layer, &mut clip.nodes, &mut node_ids, id) {
                         clip.selected.push((FeatureKind::Node, feature.id));
                     }
                 }
                 FeatureKind::Way => {
-                    if way_ids.contains(&feature.id) {
+                    let id = WayId(feature.id);
+                    if way_ids.contains(&id) {
                         continue;
                     }
-                    let Some(refs) = editable.way_node_ids(feature.id) else {
+                    let Some(refs) = editable.way_node_ids(id) else {
                         continue;
                     };
-                    let nodes: Vec<i64> = refs
+                    let nodes: Vec<NodeId> = refs
                         .into_iter()
                         .filter(|&id| {
                             take_node(editable, layer, &mut clip.nodes, &mut node_ids, id)
@@ -138,26 +141,27 @@ impl FeatureClipboard {
                     if nodes.is_empty() {
                         continue;
                     }
-                    way_ids.insert(feature.id);
+                    way_ids.insert(id);
                     clip.ways.push(ClipWay {
-                        id: feature.id,
+                        id,
                         nodes,
                         tags: editable.feature_tags(feature).unwrap_or_default(),
                     });
                     clip.selected.push((FeatureKind::Way, feature.id));
                 }
                 FeatureKind::Relation => {
-                    if relation_ids.contains(&feature.id) {
+                    let id = RelationId(feature.id);
+                    if relation_ids.contains(&id) {
                         continue;
                     }
-                    let Some(relation) = editable.relation(feature.id) else {
+                    let Some(relation) = editable.relation(id) else {
                         continue;
                     };
-                    relation_ids.insert(feature.id);
+                    relation_ids.insert(id);
                     let mut tags: Vec<(String, String)> = relation.tags.into_iter().collect();
                     tags.sort();
                     clip.relations.push(ClipRelation {
-                        id: feature.id,
+                        id,
                         members: relation.members,
                         tags,
                     });
@@ -267,7 +271,7 @@ impl FeatureClipboard {
     /// membership cannot be ordered; the member that closes the cycle keeps
     /// pointing at the original.)
     fn relation_order(&self) -> Vec<usize> {
-        let index: HashMap<i64, usize> = self
+        let index: HashMap<RelationId, usize> = self
             .relations
             .iter()
             .enumerate()
@@ -290,7 +294,7 @@ impl FeatureClipboard {
                     if member.member_type != MemberType::Relation {
                         continue;
                     }
-                    if let Some(&child) = index.get(&member.reference) {
+                    if let Some(&child) = index.get(&RelationId(member.reference)) {
                         if state[child] == 0 {
                             state[child] = 1;
                             stack.push((child, 0));
@@ -336,21 +340,24 @@ impl FeatureClipboard {
             duplicate: false,
         };
 
-        let mut new_nodes: HashMap<i64, i64> = HashMap::new();
+        let mut new_nodes: HashMap<NodeId, NodeId> = HashMap::new();
         for node in &self.nodes {
             let LatLon { lat, lon } = self.pasted_position(node, position);
             let id = editable.add_node(lat, lon);
             new_nodes.insert(node.id, id);
             pasted.nodes.push(DeletedFeatureSnapshot {
                 kind: FeatureKind::Node,
-                id,
+                id: id.get(),
                 tags: node.tags.clone(),
                 way_nodes: Vec::new(),
                 node_lat_lon: Some((lat, lon)),
                 version: 0,
             });
             for (key, value) in &node.tags {
-                if editable.set_tag(FeatureKind::Node, id, key, value).is_err() {
+                if editable
+                    .set_tag(FeatureKind::Node, id.get(), key, value)
+                    .is_err()
+                {
                     // Cannot happen to a node just created; undo what was done.
                     pasted.undo(editable);
                     return Err(PasteError::NoData);
@@ -358,14 +365,14 @@ impl FeatureClipboard {
             }
         }
 
-        let mut new_ways: HashMap<i64, i64> = HashMap::new();
+        let mut new_ways: HashMap<WayId, WayId> = HashMap::new();
         for way in &self.ways {
-            let nodes: Vec<i64> = way.nodes.iter().map(|id| new_nodes[id]).collect();
+            let nodes: Vec<NodeId> = way.nodes.iter().map(|id| new_nodes[id]).collect();
             let id = editable.add_way(nodes.clone(), way.tags.clone());
             new_ways.insert(way.id, id);
             pasted.ways.push(DeletedFeatureSnapshot {
                 kind: FeatureKind::Way,
-                id,
+                id: id.get(),
                 tags: way.tags.clone(),
                 way_nodes: nodes,
                 node_lat_lon: None,
@@ -373,18 +380,20 @@ impl FeatureClipboard {
             });
         }
 
-        let mut new_relations: HashMap<i64, i64> = HashMap::new();
+        let mut new_relations: HashMap<RelationId, RelationId> = HashMap::new();
         for at in self.relation_order() {
             let relation = &self.relations[at];
             let mut members = Vec::with_capacity(relation.members.len());
             for member in &relation.members {
                 let copied = match member.member_type {
-                    MemberType::Node => new_nodes.get(&member.reference),
-                    MemberType::Way => new_ways.get(&member.reference),
-                    MemberType::Relation => new_relations.get(&member.reference),
+                    MemberType::Node => new_nodes.get(&NodeId(member.reference)).map(|id| id.get()),
+                    MemberType::Way => new_ways.get(&WayId(member.reference)).map(|id| id.get()),
+                    MemberType::Relation => new_relations
+                        .get(&RelationId(member.reference))
+                        .map(|id| id.get()),
                 };
                 let reference = match copied {
-                    Some(&new_id) => new_id,
+                    Some(new_id) => new_id,
                     // Not copied: keep pointing at the original, if the
                     // layer can have it. A server object (positive id) is
                     // fine even when it is not loaded (relations may be
@@ -433,11 +442,11 @@ impl FeatureClipboard {
 
         for &(kind, old) in &self.selected {
             let id = match kind {
-                FeatureKind::Node => new_nodes.get(&old),
-                FeatureKind::Way => new_ways.get(&old),
-                FeatureKind::Relation => new_relations.get(&old),
+                FeatureKind::Node => new_nodes.get(&NodeId(old)).map(|id| id.get()),
+                FeatureKind::Way => new_ways.get(&WayId(old)).map(|id| id.get()),
+                FeatureKind::Relation => new_relations.get(&RelationId(old)).map(|id| id.get()),
             };
-            if let Some(&id) = id {
+            if let Some(id) = id {
                 pasted.selection.push(FeatureRef {
                     layer_id: layer,
                     kind,
@@ -465,9 +474,9 @@ impl FeatureClipboard {
             next -= 1;
             next
         };
-        let node_ids: HashMap<i64, i64> = self.nodes.iter().map(|n| (n.id, fresh())).collect();
-        let way_ids: HashMap<i64, i64> = self.ways.iter().map(|w| (w.id, fresh())).collect();
-        let relation_ids: HashMap<i64, i64> =
+        let node_ids: HashMap<NodeId, i64> = self.nodes.iter().map(|n| (n.id, fresh())).collect();
+        let way_ids: HashMap<WayId, i64> = self.ways.iter().map(|w| (w.id, fresh())).collect();
+        let relation_ids: HashMap<RelationId, i64> =
             self.relations.iter().map(|r| (r.id, fresh())).collect();
 
         let mut out = String::new();
@@ -516,9 +525,9 @@ impl FeatureClipboard {
             );
             for member in &relation.members {
                 let renumbered = match member.member_type {
-                    MemberType::Node => node_ids.get(&member.reference),
-                    MemberType::Way => way_ids.get(&member.reference),
-                    MemberType::Relation => relation_ids.get(&member.reference),
+                    MemberType::Node => node_ids.get(&NodeId(member.reference)),
+                    MemberType::Way => way_ids.get(&WayId(member.reference)),
+                    MemberType::Relation => relation_ids.get(&RelationId(member.reference)),
                 };
                 if let Some(id) = renumbered {
                     let _ = writeln!(
@@ -545,8 +554,8 @@ fn take_node(
     editable: &dyn EditableLayer,
     layer: LayerId,
     nodes: &mut Vec<ClipNode>,
-    seen: &mut HashSet<i64>,
-    id: i64,
+    seen: &mut HashSet<NodeId>,
+    id: NodeId,
 ) -> bool {
     if seen.contains(&id) {
         return true;
@@ -558,7 +567,7 @@ fn take_node(
     let feature = FeatureRef {
         layer_id: layer,
         kind: FeatureKind::Node,
-        id,
+        id: id.get(),
     };
     nodes.push(ClipNode {
         id,
@@ -603,7 +612,7 @@ impl PastedFeatures {
             .chain(
                 self.relations
                     .iter()
-                    .map(|s| feature(FeatureKind::Relation, s.relation.id)),
+                    .map(|s| feature(FeatureKind::Relation, s.relation.id.get())),
             )
             .collect()
     }
@@ -673,7 +682,7 @@ mod tests {
 
     fn node(id: i64, lat: f64, lon: f64, t: &[(&str, &str)]) -> OsmNode {
         OsmNode {
-            id,
+            id: NodeId(id),
             lat,
             lon,
             version: 3,
@@ -707,23 +716,23 @@ mod tests {
             } else {
                 &[]
             };
-            nodes.insert(id, node(id, lat, lon, t));
+            nodes.insert(NodeId(id), node(id, lat, lon, t));
         }
         let mut ways = HashMap::new();
         ways.insert(
-            10,
+            WayId(10),
             OsmWay {
-                id: 10,
-                nodes: vec![1, 2, 3],
+                id: WayId(10),
+                nodes: vec![NodeId(1), NodeId(2), NodeId(3)],
                 version: 2,
                 tags: tags(&[("highway", "residential"), ("name", "Main")]),
             },
         );
         ways.insert(
-            11,
+            WayId(11),
             OsmWay {
-                id: 11,
-                nodes: vec![3, 4, 5],
+                id: WayId(11),
+                nodes: vec![NodeId(3), NodeId(4), NodeId(5)],
                 version: 5,
                 tags: tags(&[("highway", "service")]),
             },
@@ -733,7 +742,7 @@ mod tests {
             ways,
             relations: vec![
                 OsmRelation {
-                    id: 20,
+                    id: RelationId(20),
                     members: vec![
                         member(MemberType::Way, 10, "outer"),
                         member(MemberType::Way, 11, "inner"),
@@ -743,7 +752,7 @@ mod tests {
                     tags: tags(&[("type", "multipolygon")]),
                 },
                 OsmRelation {
-                    id: 21,
+                    id: RelationId(21),
                     members: vec![member(MemberType::Relation, 20, "part")],
                     version: 1,
                     tags: tags(&[("type", "collection")]),
@@ -795,7 +804,7 @@ mod tests {
         let merc: Vec<Mercator> = nodes
             .iter()
             .map(|&id| {
-                let (lat, lon) = layer.node_lat_lon(id).unwrap();
+                let (lat, lon) = layer.node_lat_lon(NodeId(id)).unwrap();
                 lat_lon_to_mercator(LatLon::new(lat, lon))
             })
             .collect();
@@ -816,10 +825,10 @@ mod tests {
     fn copying_a_way_copies_all_its_nodes_even_unselected() {
         let layer = layer(A);
         let clip = copy(&layer, &select(FeatureKind::Way, &[10]));
-        let ids: Vec<i64> = clip.nodes().iter().map(|n| n.id).collect();
+        let ids: Vec<i64> = clip.nodes().iter().map(|n| n.id.get()).collect();
         assert_eq!(ids, [1, 2, 3]);
         assert_eq!(clip.ways().len(), 1);
-        assert_eq!(clip.ways()[0].nodes, [1, 2, 3]);
+        assert_eq!(clip.ways()[0].nodes, [NodeId(1), NodeId(2), NodeId(3)]);
         assert_eq!(
             clip.ways()[0].tags,
             [
@@ -866,14 +875,17 @@ mod tests {
                 ("name".to_string(), "Main".to_string())
             ]
         );
-        let new_nodes = layer.way_node_ids(way.id).unwrap();
+        let new_nodes = layer.way_node_ids(WayId(way.id)).unwrap();
         assert_eq!(new_nodes.len(), 3);
         for (new, old) in new_nodes.iter().zip([1, 2, 3]) {
-            assert!(*new < 0);
-            assert_eq!(layer.node_lat_lon(*new), layer.node_lat_lon(old));
+            assert!(*new < NodeId(0));
+            assert_eq!(layer.node_lat_lon(*new), layer.node_lat_lon(NodeId(old)));
         }
         // The originals are untouched.
-        assert_eq!(layer.way_node_ids(10).unwrap(), [1, 2, 3]);
+        assert_eq!(
+            layer.way_node_ids(WayId(10)).unwrap(),
+            [NodeId(1), NodeId(2), NodeId(3)]
+        );
         // What becomes the selection: the pasted way (its nodes are not
         // selected).
         assert_eq!(
@@ -912,12 +924,12 @@ mod tests {
         assert_eq!(clip.nodes().len(), 5);
         let pasted = paste(&clip, &mut layer, A, PastePosition::Source);
         assert_eq!(pasted.nodes.len(), 5);
-        let first = layer.way_node_ids(pasted.ways[0].id).unwrap();
-        let second = layer.way_node_ids(pasted.ways[1].id).unwrap();
+        let first = layer.way_node_ids(WayId(pasted.ways[0].id)).unwrap();
+        let second = layer.way_node_ids(WayId(pasted.ways[1].id)).unwrap();
         assert_eq!(first[2], second[0], "the two ways still meet at one node");
         assert_eq!(layer.ways_using_node(first[2]).len(), 2);
         // The copy shares nothing with the originals.
-        assert!(first.iter().chain(&second).all(|id| *id < 0));
+        assert!(first.iter().chain(&second).all(|id| *id < NodeId(0)));
     }
 
     #[test]
@@ -930,7 +942,7 @@ mod tests {
         let pasted = paste(&clip, &mut layer, A, PastePosition::Source);
 
         let relation_id = pasted.relations[0].relation.id;
-        assert!(relation_id < 0);
+        assert!(relation_id < RelationId(0));
         let relation = layer.relation(relation_id).unwrap();
         assert_eq!(relation.version, 0);
         assert_eq!(relation.tags, tags(&[("type", "multipolygon")]));
@@ -944,7 +956,10 @@ mod tests {
             ]
         );
         // The original relation still holds the original way.
-        assert_eq!(layer.relation(20).unwrap().members[0].reference, 10);
+        assert_eq!(
+            layer.relation(RelationId(20)).unwrap().members[0].reference,
+            10
+        );
         // Ways are in the selection; the relation is not mixed in with them.
         assert_eq!(
             pasted.selection,
@@ -962,9 +977,9 @@ mod tests {
         let id = pasted.relations[0].relation.id;
         assert_eq!(
             layer.relation(id).unwrap().members,
-            layer.relation(20).unwrap().members
+            layer.relation(RelationId(20)).unwrap().members
         );
-        assert_eq!(pasted.selection, [feature(FeatureKind::Relation, id)]);
+        assert_eq!(pasted.selection, [feature(FeatureKind::Relation, id.get())]);
         // No node, so there is nothing to move: the centre is unknown and a
         // paste at a position is the same as at the source.
         assert_eq!(clip.center(), None);
@@ -988,7 +1003,7 @@ mod tests {
         let parent = pasted.relations[1].relation.id;
         assert_eq!(
             layer.relation(parent).unwrap().members,
-            [member(MemberType::Relation, child, "part")]
+            [member(MemberType::Relation, child.get(), "part")]
         );
         // Undo removes the parent before the child it refers to, which the
         // layer would otherwise refuse.
@@ -1005,13 +1020,13 @@ mod tests {
         let mut data = data();
         data.relations = vec![
             OsmRelation {
-                id: 30,
+                id: RelationId(30),
                 members: vec![member(MemberType::Relation, 31, "")],
                 version: 1,
                 tags: HashMap::new(),
             },
             OsmRelation {
-                id: 31,
+                id: RelationId(31),
                 members: vec![member(MemberType::Relation, 30, "")],
                 version: 1,
                 tags: HashMap::new(),
@@ -1042,7 +1057,7 @@ mod tests {
         // The shape is kept: each pasted node is offset from its original by
         // the same Mercator vector.
         let merc = |layer: &OsmLayer, id: i64| {
-            let (lat, lon) = layer.node_lat_lon(id).unwrap();
+            let (lat, lon) = layer.node_lat_lon(NodeId(id)).unwrap();
             lat_lon_to_mercator(LatLon::new(lat, lon))
         };
         let new_ids: Vec<i64> = pasted.nodes.iter().map(|s| s.id).collect();
@@ -1051,9 +1066,9 @@ mod tests {
             let n = merc(&layer, new);
             (n.x - o.x, n.y - o.y)
         };
-        let first = shift(clip.nodes()[0].id, new_ids[0]);
+        let first = shift(clip.nodes()[0].id.get(), new_ids[0]);
         for (old, new) in clip.nodes().iter().zip(&new_ids) {
-            let s = shift(old.id, *new);
+            let s = shift(old.id.get(), *new);
             assert!((s.0 - first.0).abs() < 1e-3 && (s.1 - first.1).abs() < 1e-3);
         }
     }
@@ -1105,8 +1120,8 @@ mod tests {
         }
         // A copy that straddles the antimeridian still has some centre.
         let mut data = data();
-        data.nodes.get_mut(&1).unwrap().lon = 179.9999;
-        data.nodes.get_mut(&2).unwrap().lon = -179.9999;
+        data.nodes.get_mut(&NodeId(1)).unwrap().lon = 179.9999;
+        data.nodes.get_mut(&NodeId(2)).unwrap().lon = -179.9999;
         let layer_b = OsmLayer::new_with_data(A, "x", Arc::new(data));
         let clip = copy(&layer_b, &select(FeatureKind::Way, &[10]));
         assert!(clip.center().is_some());
@@ -1147,13 +1162,13 @@ mod tests {
                         *f,
                         layer.feature_tags(f),
                         layer
-                            .node_lat_lon(f.id)
+                            .node_lat_lon(NodeId(f.id))
                             .filter(|_| f.kind == FeatureKind::Node),
                         layer
-                            .way_node_ids(f.id)
+                            .way_node_ids(WayId(f.id))
                             .filter(|_| f.kind == FeatureKind::Way),
                         layer
-                            .relation(f.id)
+                            .relation(RelationId(f.id))
                             .filter(|_| f.kind == FeatureKind::Relation)
                             .map(|r| r.members),
                     )
@@ -1202,16 +1217,16 @@ mod tests {
         let mut data = data();
         // An unsaved way only layer A knows, and a server relation.
         data.ways.insert(
-            -5,
+            WayId(-5),
             OsmWay {
-                id: -5,
-                nodes: vec![1, 2],
+                id: WayId(-5),
+                nodes: vec![NodeId(1), NodeId(2)],
                 version: 0,
                 tags: HashMap::new(),
             },
         );
         data.relations.push(OsmRelation {
-            id: 22,
+            id: RelationId(22),
             members: vec![
                 member(MemberType::Way, -5, "a"),
                 member(MemberType::Way, 777, "b"),
@@ -1251,9 +1266,9 @@ mod tests {
         layer
             .set_tag(FeatureKind::Way, 10, "highway", "motorway")
             .unwrap();
-        layer.commit_node_moves(&[(1, 10.0, 10.0)]).unwrap();
+        layer.commit_node_moves(&[(NodeId(1), 10.0, 10.0)]).unwrap();
         // A way a relation lists cannot be deleted: drop it from them first.
-        for relation_id in layer.relations_containing_way(10) {
+        for relation_id in layer.relations_containing_way(WayId(10)) {
             let mut members = layer.relation(relation_id).unwrap().members;
             members.retain(|m| !(m.member_type == MemberType::Way && m.reference == 10));
             layer.set_relation_members(relation_id, members).unwrap();
@@ -1264,7 +1279,7 @@ mod tests {
         assert!(way
             .tags
             .contains(&("highway".to_string(), "residential".to_string())));
-        let first = layer.way_node_ids(way.id).unwrap()[0];
+        let first = layer.way_node_ids(WayId(way.id)).unwrap()[0];
         assert_eq!(layer.node_lat_lon(first), Some((47.000, 8.000)));
 
         // And it outlives the source layer altogether.
@@ -1344,7 +1359,7 @@ mod tests {
         assert_eq!(parsed.nodes.len(), 3);
         assert_eq!(parsed.ways.len(), 1);
         assert_eq!(parsed.relations.len(), 1);
-        assert!(parsed.nodes.keys().all(|id| *id < 0));
+        assert!(parsed.nodes.keys().all(|id| *id < NodeId(0)));
         let way = parsed.ways.values().next().unwrap();
         assert!(way.nodes.iter().all(|id| parsed.nodes.contains_key(id)));
         assert_eq!(
@@ -1354,7 +1369,7 @@ mod tests {
         // Only the member that was copied is kept, renumbered.
         let relation = &parsed.relations[0];
         assert_eq!(relation.members.len(), 1);
-        assert_eq!(relation.members[0].reference, way.id);
+        assert_eq!(relation.members[0].reference, way.id.get());
         assert_eq!(relation.members[0].role, "outer");
     }
 }

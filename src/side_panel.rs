@@ -40,7 +40,7 @@ type LayerRowInfo = (
 /// One membership of the selected feature in a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Membership {
-    pub relation_id: i64,
+    pub relation_id: osm_gpui::ids::RelationId,
     /// The relation's display name.
     pub name: String,
     pub role: String,
@@ -366,11 +366,11 @@ impl MapViewer {
         let (member_type, relation_ids) = match feature.kind {
             FeatureKind::Node => (
                 MemberType::Node,
-                editable.relations_containing_node(feature.id),
+                editable.relations_containing_node(osm_gpui::ids::NodeId(feature.id)),
             ),
             FeatureKind::Way => (
                 MemberType::Way,
-                editable.relations_containing_way(feature.id),
+                editable.relations_containing_way(osm_gpui::ids::WayId(feature.id)),
             ),
             // The Relations section lists what the selected node or way
             // belongs to; a relation's own contents are in its Members section.
@@ -422,7 +422,7 @@ impl MapViewer {
         }
         let layer_id = feature.layer_id;
         let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
-        let relation = editable.relation(feature.id)?;
+        let relation = editable.relation(osm_gpui::ids::RelationId(feature.id))?;
         let total = relation.members.len();
         let muted = cx.theme().muted_foreground;
         if total == 0 {
@@ -467,15 +467,21 @@ impl MapViewer {
                 let (kind, loaded) = match member.member_type {
                     MemberType::Node => (
                         FeatureKind::Node,
-                        editable.node_lat_lon(member.reference).is_some(),
+                        editable
+                            .node_lat_lon(osm_gpui::ids::NodeId(member.reference))
+                            .is_some(),
                     ),
                     MemberType::Way => (
                         FeatureKind::Way,
-                        editable.way_node_ids(member.reference).is_some(),
+                        editable
+                            .way_node_ids(osm_gpui::ids::WayId(member.reference))
+                            .is_some(),
                     ),
                     MemberType::Relation => (
                         FeatureKind::Relation,
-                        editable.relation(member.reference).is_some(),
+                        editable
+                            .relation(osm_gpui::ids::RelationId(member.reference))
+                            .is_some(),
                     ),
                 };
                 let target = FeatureRef {
@@ -1761,6 +1767,7 @@ mod header_control_tests {
 
 #[cfg(test)]
 mod preset_label_tests {
+    use osm_gpui::ids::NodeId;
     use osm_gpui::layers::osm_layer::OsmLayer;
     use osm_gpui::layers::LayerManager;
     use osm_gpui::osm::{OsmData, OsmNode};
@@ -1774,14 +1781,14 @@ mod preset_label_tests {
         let mut tags = HashMap::new();
         tags.insert("amenity".to_string(), "cafe".to_string());
         let node = OsmNode {
-            id: 1,
+            id: NodeId(1),
             lat: 40.0,
             lon: -74.0,
             version: 1,
             tags,
         };
         let data = Arc::new(OsmData {
-            nodes: HashMap::from([(1, node)]),
+            nodes: HashMap::from([(NodeId(1), node)]),
             ways: HashMap::new(),
             relations: Vec::new(),
             bounds: Vec::new(),

@@ -2,6 +2,7 @@
 
 use super::super::{MpState, OsmLayer};
 use crate::coordinates::LatLon;
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::multipolygon::Problem;
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
@@ -33,8 +34,8 @@ fn square(c0: i64, r0: i64, c1: i64, r1: i64) -> Vec<i64> {
 
 fn way(id: i64, nodes: Vec<i64>) -> OsmWay {
     OsmWay {
-        id,
-        nodes,
+        id: WayId(id),
+        nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
         version: 1,
         tags: HashMap::new(),
     }
@@ -50,7 +51,7 @@ fn member(way_id: i64, role: &str) -> OsmMember {
 
 fn relation(id: i64, tags: &[(&str, &str)], members: Vec<OsmMember>) -> OsmRelation {
     OsmRelation {
-        id,
+        id: RelationId(id),
         version: 1,
         tags: tags
             .iter()
@@ -71,9 +72,9 @@ fn layer() -> OsmLayer {
         for c in 0..=40 {
             let (lat, lon) = lat_lon(c, r);
             nodes.insert(
-                nid(c, r),
+                NodeId(nid(c, r)),
                 OsmNode {
-                    id: nid(c, r),
+                    id: NodeId(nid(c, r)),
                     lat,
                     lon,
                     version: 1,
@@ -150,16 +151,18 @@ fn valid(polygons: usize, holes: usize) -> MpState {
 #[test]
 fn relations_assemble_when_the_layer_loads() {
     let layer = layer();
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
-    assert_eq!(layer.multipolygon_state(501), valid(1, 0));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
+    assert_eq!(layer.multipolygon_state(RelationId(501)), valid(1, 0));
     assert_eq!(
-        layer.multipolygon_state(502),
+        layer.multipolygon_state(RelationId(502)),
         MpState::Invalid(Problem::Unclosed)
     );
-    assert_eq!(layer.multipolygon_state(999), MpState::NotArea);
+    assert_eq!(layer.multipolygon_state(RelationId(999)), MpState::NotArea);
     // The lake style has a fill, so it is triangulated: 4 outer + 4 hole
     // vertices make 8 triangles.
-    let (_, tris) = layer.multipolygon_geometry(500, nid(0, 0)).unwrap();
+    let (_, tris) = layer
+        .multipolygon_geometry(RelationId(500), NodeId(nid(0, 0)))
+        .unwrap();
     assert_eq!(tris, 8);
 }
 
@@ -200,7 +203,7 @@ fn an_untagged_old_style_relation_leaves_the_click_to_its_outer_way() {
     layer
         .remove_tag(FeatureKind::Relation, 500, "natural")
         .unwrap();
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
     assert_eq!(double_click(&layer, 1.5, 8.5), Some((FeatureKind::Way, 10)));
 }
 
@@ -208,27 +211,31 @@ fn an_untagged_old_style_relation_leaves_the_click_to_its_outer_way() {
 fn moving_a_member_node_rebuilds_only_the_relations_it_belongs_to() {
     let mut layer = layer();
     let before = layer.multipolygon_version();
-    let (old, _) = layer.multipolygon_geometry(500, nid(10, 10)).unwrap();
+    let (old, _) = layer
+        .multipolygon_geometry(RelationId(500), NodeId(nid(10, 10)))
+        .unwrap();
 
     // A node of another relation's ring: this one's cache is untouched
     // but the version still counts the patch.
     layer
-        .commit_node_moves(&[(nid(30, 0), 40.0, -73.969)])
+        .commit_node_moves(&[(NodeId(nid(30, 0)), 40.0, -73.969)])
         .unwrap();
     assert!(layer.multipolygon_version() > before);
 
     // A node no relation uses: no patch at all.
     let before = layer.multipolygon_version();
     layer
-        .commit_node_moves(&[(nid(12, 12), 40.0121, -73.9881)])
+        .commit_node_moves(&[(NodeId(nid(12, 12)), 40.0121, -73.9881)])
         .unwrap();
     assert_eq!(layer.multipolygon_version(), before);
 
     layer
-        .commit_node_moves(&[(nid(10, 10), 40.0105, -73.9895)])
+        .commit_node_moves(&[(NodeId(nid(10, 10)), 40.0105, -73.9895)])
         .unwrap();
     assert!(layer.multipolygon_version() > before);
-    let (new, tris) = layer.multipolygon_geometry(500, nid(10, 10)).unwrap();
+    let (new, tris) = layer
+        .multipolygon_geometry(RelationId(500), NodeId(nid(10, 10)))
+        .unwrap();
     assert_ne!(new, old);
     assert_eq!(tris, 8);
 }
@@ -238,16 +245,20 @@ fn reshaping_splitting_and_removing_member_ways_updates_the_relation() {
     let mut layer = layer();
     // Cutting the ring open invalidates the lake...
     let ring = square(0, 0, 10, 10);
-    assert!(layer.set_way_nodes(10, ring[..4].to_vec()).is_ok());
+    assert!(layer
+        .set_way_nodes(WayId(10), NodeId::from_raw_vec(&ring[..4]))
+        .is_ok());
     assert_eq!(
-        layer.multipolygon_state(500),
+        layer.multipolygon_state(RelationId(500)),
         MpState::Invalid(Problem::Unclosed)
     );
     // (An open way has no interior either, so nothing is selectable.)
     assert_eq!(double_click(&layer, 1.5, 8.5), None);
     // ...and putting it back (the undo) restores it.
-    assert!(layer.set_way_nodes(10, ring).is_ok());
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    assert!(layer
+        .set_way_nodes(WayId(10), ring.into_iter().map(NodeId).collect::<Vec<_>>())
+        .is_ok());
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
 
     // A member way cannot be deleted while the relation lists it.
     assert_eq!(
@@ -255,27 +266,33 @@ fn reshaping_splitting_and_removing_member_ways_updates_the_relation() {
         EditError::InRelation {
             kind: FeatureKind::Way,
             id: 11,
-            relation: 500
+            relation: RelationId(500)
         }
     );
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
     // Purging the island way (a member) leaves a relation with a missing
     // member; restoring it brings the hole back.
-    let purged = layer.purge_features(&[], &[11], &[]);
+    let purged = layer.purge_features(&[], &[WayId(11)], &[]);
     assert_eq!(
-        layer.multipolygon_state(500),
-        MpState::Invalid(Problem::MissingWay(11))
+        layer.multipolygon_state(RelationId(500)),
+        MpState::Invalid(Problem::MissingWay(WayId(11)))
     );
     layer.restore_purged(purged);
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
 
     // Adding a vertex to the outer way keeps it valid and re-triangulates.
-    layer.insert_node_into_way(10, 1, 39.9997, -73.995).unwrap();
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
-    let (_, tris) = layer.multipolygon_geometry(500, nid(0, 0)).unwrap();
+    layer
+        .insert_node_into_way(WayId(10), 1, 39.9997, -73.995)
+        .unwrap();
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
+    let (_, tris) = layer
+        .multipolygon_geometry(RelationId(500), NodeId(nid(0, 0)))
+        .unwrap();
     assert_eq!(tris, 9);
-    layer.remove_node_from_way(10, 1).unwrap();
-    let (_, tris) = layer.multipolygon_geometry(500, nid(0, 0)).unwrap();
+    layer.remove_node_from_way(WayId(10), 1).unwrap();
+    let (_, tris) = layer
+        .multipolygon_geometry(RelationId(500), NodeId(nid(0, 0)))
+        .unwrap();
     assert_eq!(tris, 8);
 }
 
@@ -284,20 +301,28 @@ fn changing_members_roles_and_tags_updates_the_relation() {
     let mut layer = layer();
     // Dropping the inner leaves a plain outer.
     let previous = layer
-        .set_relation_members(500, vec![member(10, "outer")])
+        .set_relation_members(RelationId(500), vec![member(10, "outer")])
         .unwrap();
-    assert_eq!(layer.multipolygon_state(500), valid(1, 0));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 0));
     // Undo: the old member list is back, with its hole.
-    layer.set_relation_members(500, previous).unwrap();
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    layer
+        .set_relation_members(RelationId(500), previous)
+        .unwrap();
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
 
     // The island as an outer too: two polygons, no hole.
     layer
-        .set_relation_members(500, vec![member(10, "outer"), member(11, "outer")])
+        .set_relation_members(
+            RelationId(500),
+            vec![member(10, "outer"), member(11, "outer")],
+        )
         .unwrap();
-    assert_eq!(layer.multipolygon_state(500), valid(2, 0));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(2, 0));
     layer
-        .set_relation_members(500, vec![member(10, "outer"), member(11, "inner")])
+        .set_relation_members(
+            RelationId(500),
+            vec![member(10, "outer"), member(11, "inner")],
+        )
         .unwrap();
 
     // Removing the type makes it a plain relation; putting it back
@@ -305,18 +330,18 @@ fn changing_members_roles_and_tags_updates_the_relation() {
     layer
         .remove_tag(FeatureKind::Relation, 500, "type")
         .unwrap();
-    assert_eq!(layer.multipolygon_state(500), MpState::NotArea);
+    assert_eq!(layer.multipolygon_state(RelationId(500)), MpState::NotArea);
     assert_eq!(double_click(&layer, 1.5, 8.5), Some((FeatureKind::Way, 10)));
     layer
         .set_tag(FeatureKind::Relation, 500, "type", "multipolygon")
         .unwrap();
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
 
     // Delete and restore the relation (undo of a delete).
-    let snapshot = layer.delete_relation(500).unwrap();
-    assert_eq!(layer.multipolygon_state(500), MpState::NotArea);
+    let snapshot = layer.delete_relation(RelationId(500)).unwrap();
+    assert_eq!(layer.multipolygon_state(RelationId(500)), MpState::NotArea);
     assert!(layer.restore_relation(snapshot).is_ok());
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
 
     // A newly created multipolygon appears at once.
     let id = layer
@@ -334,14 +359,26 @@ fn changing_members_roles_and_tags_updates_the_relation() {
 #[test]
 fn a_style_change_re_resolves_the_fill() {
     let mut layer = layer();
-    assert!(layer.multipolygon_geometry(500, nid(0, 0)).unwrap().1 > 0);
+    assert!(
+        layer
+            .multipolygon_geometry(RelationId(500), NodeId(nid(0, 0)))
+            .unwrap()
+            .1
+            > 0
+    );
     // No fill style for this tag: assembled (selectable) but not
     // triangulated.
     layer
         .set_tag(FeatureKind::Relation, 500, "natural", "bare_rock")
         .unwrap();
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
-    assert_eq!(layer.multipolygon_geometry(500, nid(0, 0)).unwrap().1, 0);
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
+    assert_eq!(
+        layer
+            .multipolygon_geometry(RelationId(500), NodeId(nid(0, 0)))
+            .unwrap()
+            .1,
+        0
+    );
 }
 
 #[test]
@@ -349,7 +386,7 @@ fn the_cache_is_rebuilt_from_scratch_on_reload_and_dropped_on_clear() {
     let mut layer = layer();
     let data = layer.get_osm_data().unwrap();
     layer.set_osm_data(data);
-    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
     layer.clear_osm_data();
-    assert_eq!(layer.multipolygon_state(500), MpState::NotArea);
+    assert_eq!(layer.multipolygon_state(RelationId(500)), MpState::NotArea);
 }

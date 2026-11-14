@@ -6,6 +6,7 @@ use super::*;
 use crate::{ExtrudeDrag, ExtrudeStyle};
 use gpui::point;
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -214,7 +215,7 @@ fn one_full_relation_blocks_the_split_for_every_relation_the_way_is_in(cx: &mut 
     // Refusing for 900 must leave 901 untouched too (no half-done split).
     let mut data = route_of(32_000, &[10, 11]);
     data.relations.push(OsmRelation {
-        id: 901,
+        id: RelationId(901),
         version: 1,
         tags: [("type", "route"), ("route", "bicycle")]
             .iter()
@@ -328,9 +329,9 @@ fn offset(lat: f64, lon: f64, east: f64, north: f64) -> (f64, f64) {
 
 fn put(mut b: Build, id: i64, pos: (f64, f64)) -> Build {
     b.data.as_mut().unwrap().nodes.insert(
-        id,
+        NodeId(id),
         OsmNode {
-            id,
+            id: NodeId(id),
             lat: pos.0,
             lon: pos.1,
             version: 3,
@@ -375,7 +376,7 @@ fn line(lat: f64, lon: f64, east: [f64; 4]) -> (OsmData, Placed) {
 
 fn assert_sane(s: &Session, pts: &[(i64, (f64, f64))], max_move_m: f64, what: &str) {
     for &(id, before) in pts {
-        let after = s.editable().node_lat_lon(id).unwrap();
+        let after = s.editable().node_lat_lon(NodeId(id)).unwrap();
         assert!(
             after.0.is_finite() && after.1.is_finite(),
             "{what}: node {id} became {after:?}"
@@ -496,7 +497,7 @@ fn extrude_at(cx: &mut TestAppContext, style: ExtrudeStyle, lat: f64, lon: f64) 
         // Zoom 20 so the 40 m square is a few hundred pixels wide.
         s.view.viewport = Viewport::new(LatLon::new(lat, lon), 20.0, size(px(800.0), px(600.0)));
         let screen = |s: &Session, id: i64| {
-            let (la, lo) = s.editable().node_lat_lon(id).unwrap();
+            let (la, lo) = s.editable().node_lat_lon(NodeId(id)).unwrap();
             s.view.viewport.geo_to_screen(LatLon::new(la, lo))
         };
         let (a, b) = (screen(s, 1), screen(s, 2));
@@ -508,9 +509,9 @@ fn extrude_at(cx: &mut TestAppContext, style: ExtrudeStyle, lat: f64, lon: f64) 
         let up = point(mid.x + px(dy / len * 40.0), mid.y + px(-dx / len * 40.0));
         let drag = ExtrudeDrag {
             layer: s.layer,
-            way_id: 10,
-            node_a: 1,
-            node_b: 2,
+            way_id: WayId(10),
+            node_a: NodeId(1),
+            node_b: NodeId(2),
             segment: 0,
             style,
             down: mid,
@@ -529,12 +530,12 @@ fn extrude_at(cx: &mut TestAppContext, style: ExtrudeStyle, lat: f64, lon: f64) 
             .collect();
         let mut all = pts.clone();
         for id in &new_nodes {
-            all.push((*id, s.editable().node_lat_lon(*id).unwrap()));
+            all.push((*id, s.editable().node_lat_lon(NodeId(*id)).unwrap()));
         }
         // Existing nodes may move up to the drag distance (about 40 px, which
         // at zoom 20 is a few metres); new nodes must end up near the ring.
         for &(id, p) in &all {
-            let now = s.editable().node_lat_lon(id).unwrap();
+            let now = s.editable().node_lat_lon(NodeId(id)).unwrap();
             assert!(now.0.is_finite() && now.1.is_finite(), "node {id}: {now:?}");
             assert!(
                 (-90.0..=90.0).contains(&now.0) && (-180.0..=180.0).contains(&now.1),

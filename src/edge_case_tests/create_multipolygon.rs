@@ -2,6 +2,7 @@
 //! one `type=multipolygon` relation out, with roles from nesting depth.
 
 use super::*;
+use osm_gpui::ids::NodeId;
 use osm_gpui::osm::OsmNode;
 
 /// Node id for grid point `(x, y)` (both 1..=98); placed about 100 m apart.
@@ -20,8 +21,8 @@ type GridWay<'a> = (i64, Vec<i64>, Vec<(&'a str, &'a str)>);
 fn on_grid(mut b: Build, ways: &[GridWay]) -> Build {
     for (id, nodes, tags) in ways {
         for &node in nodes {
-            b.d().nodes.entry(node).or_insert(OsmNode {
-                id: node,
+            b.d().nodes.entry(NodeId(node)).or_insert(OsmNode {
+                id: NodeId(node),
                 lat: 40.0 + (node % 100) as f64 * 0.001,
                 lon: -74.0 + (node / 100) as f64 * 0.001,
                 version: 3,
@@ -371,9 +372,9 @@ fn a_ring_with_thousands_of_nodes_is_fine_the_node_limit_belongs_to_editing_ways
         let a = std::f64::consts::TAU * i as f64 / count as f64;
         let id = 100_000 + i as i64;
         b.d().nodes.insert(
-            id,
+            NodeId(id),
             OsmNode {
-                id,
+                id: NodeId(id),
                 lat: 40.0 + 0.05 * a.sin(),
                 lon: -74.0 + 0.05 * a.cos(),
                 version: 3,
@@ -454,7 +455,7 @@ fn new_ways_go_up_before_the_relation_that_names_them(cx: &mut TestAppContext) {
         let mut ids = Vec::new();
         for (way_id, (x0, x1)) in [(-901, (1, 9)), (-902, (3, 5))] {
             let corners = [(x0, x0), (x1, x0), (x1, x1), (x0, x1)];
-            let mut nodes: Vec<i64> = corners
+            let mut nodes: Vec<NodeId> = corners
                 .iter()
                 .map(|&(x, y)| {
                     s.editable_mut()

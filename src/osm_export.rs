@@ -14,6 +14,7 @@
 //! Which elements those are comes from diffing the layer's server baseline
 //! against its current data, the same way an upload is built.
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::diff::diff_osm_data;
 use crate::osm::{OsmData, OsmNode, OsmRelation, OsmWay};
 use crate::osm_upload::xml_escape;
@@ -68,7 +69,7 @@ fn write_node(out: &mut String, node: &OsmNode, action: Action) {
         "  <node id=\"{}\"{}{} visible=\"true\" lat=\"{}\" lon=\"{}\"",
         node.id,
         action.attr(),
-        version_attr(node.id, node.version),
+        version_attr(node.id.get(), node.version),
         node.lat,
         node.lon
     );
@@ -87,7 +88,7 @@ fn write_way(out: &mut String, way: &OsmWay, action: Action) {
         "  <way id=\"{}\"{}{} visible=\"true\">",
         way.id,
         action.attr(),
-        version_attr(way.id, way.version)
+        version_attr(way.id.get(), way.version)
     );
     for node_ref in &way.nodes {
         let _ = writeln!(out, "    <nd ref=\"{node_ref}\"/>");
@@ -104,7 +105,7 @@ fn write_relation(out: &mut String, relation: &OsmRelation, action: Action) {
         "  <relation id=\"{}\"{}{} visible=\"true\">",
         relation.id,
         action.attr(),
-        version_attr(relation.id, relation.version)
+        version_attr(relation.id.get(), relation.version)
     );
     for member in &relation.members {
         let _ = writeln!(
@@ -138,20 +139,20 @@ pub fn to_osm_xml_with_diff(
     current: &OsmData,
     diff: &crate::layers::diff::LayerDiff,
 ) -> String {
-    let changed_nodes: HashSet<i64> = diff
+    let changed_nodes: HashSet<NodeId> = diff
         .created_nodes
         .iter()
         .chain(&diff.modified_nodes)
         .map(|n| n.id)
         .collect();
-    let changed_ways: HashSet<i64> = diff
+    let changed_ways: HashSet<WayId> = diff
         .created_ways
         .iter()
         .chain(&diff.modified_ways)
         .map(|w| w.id)
         .collect();
 
-    let changed_relations: HashSet<i64> = diff
+    let changed_relations: HashSet<RelationId> = diff
         .created_relations
         .iter()
         .chain(&diff.modified_relations)
@@ -264,7 +265,7 @@ mod tests {
 
     fn node(id: i64, lat: f64, lon: f64, version: i32, t: &[(&str, &str)]) -> OsmNode {
         OsmNode {
-            id,
+            id: NodeId(id),
             lat,
             lon,
             version,
@@ -274,8 +275,8 @@ mod tests {
 
     fn way(id: i64, nodes: Vec<i64>, version: i32, t: &[(&str, &str)]) -> OsmWay {
         OsmWay {
-            id,
-            nodes,
+            id: WayId(id),
+            nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version,
             tags: tags(t),
         }
@@ -308,12 +309,14 @@ mod tests {
             vec![way(10, vec![1, 2], 4, &[("highway", "path")])],
         );
         let mut current = original.clone();
-        current.nodes.get_mut(&2).unwrap().lat = 40.125;
-        current.nodes.remove(&3);
-        current.nodes.insert(-1, node(-1, 42.0, -76.0, 1, &[]));
+        current.nodes.get_mut(&NodeId(2)).unwrap().lat = 40.125;
+        current.nodes.remove(&NodeId(3));
+        current
+            .nodes
+            .insert(NodeId(-1), node(-1, 42.0, -76.0, 1, &[]));
         current
             .ways
-            .insert(-1, way(-1, vec![2, -1], 1, &[("building", "yes")]));
+            .insert(WayId(-1), way(-1, vec![2, -1], 1, &[("building", "yes")]));
         (original, current)
     }
 
@@ -366,7 +369,7 @@ mod tests {
         // The reloaded data is the current state, tag text intact.
         assert_eq!(reloaded.nodes, current.nodes);
         assert_eq!(reloaded.ways, current.ways);
-        assert_eq!(reloaded.nodes[&1].tags["name"], "A & B");
+        assert_eq!(reloaded.nodes[&NodeId(1)].tags["name"], "A & B");
 
         // And the reconstructed baseline yields the same pending upload.
         let baseline = baseline_for_loaded_file(&reloaded, &edits);
@@ -383,7 +386,7 @@ mod tests {
     #[test]
     fn a_membership_edit_is_exported_as_modify_and_restored_on_reopen() {
         let relation = |members: &[(i64, &str)]| OsmRelation {
-            id: 5,
+            id: RelationId(5),
             members: members
                 .iter()
                 .map(|&(reference, role)| OsmMember {
@@ -399,12 +402,12 @@ mod tests {
             vec![node(1, 1.0, 1.0, 1, &[]), node(2, 2.0, 2.0, 1, &[])],
             vec![way(10, vec![1, 2], 1, &[]), way(-1, vec![1, 2], 1, &[])],
         );
-        original.ways.remove(&-1);
+        original.ways.remove(&WayId(-1));
         original.relations.push(relation(&[(10, "forward")]));
         let mut current = original.clone();
         current
             .ways
-            .insert(-1, way(-1, vec![2, 1], 1, &[("name", "new half")]));
+            .insert(WayId(-1), way(-1, vec![2, 1], 1, &[("name", "new half")]));
         current.relations[0] = relation(&[(10, "forward"), (-1, "forward")]);
 
         let xml = to_osm_xml(&original, &current);
@@ -420,7 +423,7 @@ mod tests {
         );
 
         let (reloaded, edits) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
-        assert_eq!(edits.modified_relations, HashSet::from([5]));
+        assert_eq!(edits.modified_relations, HashSet::from([RelationId(5)]));
         assert_eq!(reloaded.relations, current.relations);
 
         // The reopened layer still has the relation edit pending, with the
@@ -442,7 +445,7 @@ mod tests {
     #[test]
     fn created_and_deleted_relations_round_trip_through_a_file() {
         let relation = |id: i64, version: i32, members: &[(MemberType, i64)]| OsmRelation {
-            id,
+            id: RelationId(id),
             version,
             tags: tags(&[("type", "route")]),
             members: members
@@ -492,16 +495,16 @@ mod tests {
         let (reloaded, edits) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
         assert_eq!(
             edits.deleted_relations.keys().copied().collect::<Vec<_>>(),
-            [6]
+            [RelationId(6)]
         );
-        assert!(reloaded.relations.iter().all(|r| r.id != 6));
+        assert!(reloaded.relations.iter().all(|r| r.id != RelationId(6)));
 
         let baseline = baseline_for_loaded_file(&reloaded, &edits);
         let diff = diff_osm_data(&baseline, &reloaded);
-        let mut created: Vec<i64> = diff.created_relations.iter().map(|r| r.id).collect();
+        let mut created: Vec<i64> = diff.created_relations.iter().map(|r| r.id.get()).collect();
         created.sort_unstable();
         assert_eq!(created, vec![-2, -1]);
-        assert_eq!(diff.deleted_relation_ids, vec![(6, 3)]);
+        assert_eq!(diff.deleted_relation_ids, vec![(RelationId(6), 3)]);
         assert!(diff.modified_relations.is_empty());
         assert_eq!(diff.counts(), (2, 0, 1));
         assert_eq!(to_osm_xml(&baseline, &reloaded), xml);
@@ -527,7 +530,10 @@ mod tests {
             "{xml}"
         );
         let (reloaded, _) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
-        assert_eq!(reloaded.nodes[&1].tags["note"], "line one\nline two\tend\r");
+        assert_eq!(
+            reloaded.nodes[&NodeId(1)].tags["note"],
+            "line one\nline two\tend\r"
+        );
     }
 
     #[test]
@@ -569,7 +575,7 @@ mod tests {
             max_lon: 4.0,
         }];
         current.relations.push(OsmRelation {
-            id: 7,
+            id: RelationId(7),
             members: vec![OsmMember {
                 member_type: MemberType::Node,
                 reference: 1,
@@ -616,8 +622,8 @@ mod tests {
     fn the_diff_decides_which_elements_are_marked_modified() {
         let (original, _) = edited();
         let diff = LayerDiff {
-            modified_nodes: vec![original.nodes[&2].clone()],
-            modified_ways: vec![original.ways[&10].clone()],
+            modified_nodes: vec![original.nodes[&NodeId(2)].clone()],
+            modified_ways: vec![original.ways[&WayId(10)].clone()],
             ..Default::default()
         };
         let xml = to_osm_xml_with_diff(&original, &original, &diff);
@@ -637,9 +643,9 @@ mod tests {
     fn a_deleted_id_the_baseline_does_not_hold_is_not_written() {
         let (original, current) = edited();
         let diff = LayerDiff {
-            deleted_node_ids: vec![(99, 1)],
-            deleted_way_ids: vec![(98, 1)],
-            deleted_relation_ids: vec![(97, 1)],
+            deleted_node_ids: vec![(NodeId(99), 1)],
+            deleted_way_ids: vec![(WayId(98), 1)],
+            deleted_relation_ids: vec![(RelationId(97), 1)],
             ..Default::default()
         };
         let xml = to_osm_xml_with_diff(&original, &current, &diff);
@@ -664,9 +670,9 @@ mod tests {
             ],
         );
         let mut current = original.clone();
-        current.ways.remove(&11);
-        current.nodes.remove(&2);
-        current.ways.get_mut(&12).unwrap().nodes = vec![3];
+        current.ways.remove(&WayId(11));
+        current.nodes.remove(&NodeId(2));
+        current.ways.get_mut(&WayId(12)).unwrap().nodes = vec![NodeId(3)];
         let xml = to_osm_xml(&original, &current);
         let at = |needle: &str| {
             xml.find(needle)
@@ -708,7 +714,7 @@ mod tests {
     #[test]
     fn a_deleted_relation_is_written_without_its_tags() {
         let relation = OsmRelation {
-            id: 6,
+            id: RelationId(6),
             version: 3,
             tags: tags(&[("type", "route"), ("route", "bus")]),
             members: vec![OsmMember {
@@ -732,7 +738,7 @@ mod tests {
     #[test]
     fn a_deleted_relation_keeps_its_members_like_a_deleted_way_keeps_its_nodes() {
         let relation = |id: i64| OsmRelation {
-            id,
+            id: RelationId(id),
             version: 3,
             tags: tags(&[("type", "route")]),
             members: vec![
@@ -770,7 +776,7 @@ mod tests {
     #[test]
     fn modified_and_unmodified_relations_keep_their_tags_and_members() {
         let relation = |id: i64, role: &str| OsmRelation {
-            id,
+            id: RelationId(id),
             version: 2,
             tags: tags(&[("type", "route")]),
             members: vec![OsmMember {
@@ -805,7 +811,7 @@ mod tests {
     #[test]
     fn a_modified_relation_keeps_its_server_version_and_a_created_one_has_none() {
         let relation = |id: i64, version: i32, role: &str| OsmRelation {
-            id,
+            id: RelationId(id),
             version,
             tags: tags(&[("type", "route")]),
             members: vec![OsmMember {

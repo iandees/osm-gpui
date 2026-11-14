@@ -7,14 +7,15 @@ use super::{
 use crate::undo::UndoableAction;
 use gpui::{px, size, TestAppContext};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::osm_upload;
 use osm_gpui::viewport::Viewport;
 
 fn server_node(version: i32, lat: f64) -> osm_gpui::osm_api::ServerElement {
     let mut data = way_fixture(CENTER_LAT, CENTER_LON);
     data.ways.clear();
-    data.nodes.retain(|id, _| *id == 1);
-    let node = data.nodes.get_mut(&1).unwrap();
+    data.nodes.retain(|id, _| *id == NodeId(1));
+    let node = data.nodes.get_mut(&NodeId(1)).unwrap();
     node.version = version;
     node.lat = lat;
     node.tags.insert("shop".to_string(), "bakery".to_string());
@@ -89,7 +90,7 @@ fn use_theirs_replaces_the_object_and_keeps_unrelated_undo_history(cx: &mut Test
             // An unrelated earlier edit is on the stack too: it stays.
             view.undo_stack.push(UndoableAction::reverse_ways(
                 view.active_layer.unwrap(),
-                vec![99],
+                vec![WayId(99)],
             ));
             let note = view
                 .apply_resolution(ConflictAction::UseTheirs, Node, 1, server_node(5, 40.0))
@@ -139,7 +140,7 @@ fn use_theirs_for_a_deleted_object_removes_it_and_its_selection(cx: &mut TestApp
                 )
                 .unwrap();
             assert!(note.contains("Way 10"), "{note}");
-            assert!(editable(view).way_node_ids(10).is_none());
+            assert!(editable(view).way_node_ids(WayId(10)).is_none());
             assert!(view.selected.is_empty(), "no dangling selection");
             let _ = layer_id;
             assert_eq!(pending(view), (0, 0, 0));

@@ -1,6 +1,7 @@
 //! Delete, Disconnect (Separate) and relation membership upkeep.
 
 use super::*;
+use osm_gpui::ids::WayId;
 
 fn undo_redo(s: &mut Session, before: &Snap) {
     let after = s.snap();
@@ -125,7 +126,7 @@ fn deleting_a_way_removes_it_from_the_route_and_keeps_the_rest_in_order(cx: &mut
         assert_eq!(s.members(900), mem(&[(10, "a"), (12, "c")]));
         // Way deleted, relation modified; the upload deletes nothing else.
         let d = s.diff();
-        assert_eq!(d.deleted_way_ids, vec![(11, 3)]);
+        assert_eq!(d.deleted_way_ids, vec![(WayId(11), 3)]);
         assert_eq!(d.modified_relations.len(), 1);
         // The relation is edited before the way goes (modify before delete).
         let xml = s.xml();

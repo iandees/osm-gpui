@@ -9,6 +9,7 @@ use crate::test_support::*;
 use crate::{MapViewer, SetMode};
 use gpui::{point, px, TestAppContext};
 use osm_gpui::edit_mode::EditMode;
+use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::layers::LayerId;
 
 /// The modes that have a gesture to abandon.
@@ -24,7 +25,7 @@ pub(crate) fn start_gesture(view: &mut MapViewer, layer: LayerId) {
     match view.mode() {
         EditMode::Add => view.set_add_progress(Some(AddProgress {
             way_id: None,
-            last_node_id: -1,
+            last_node_id: NodeId(-1),
             at_start: false,
         })),
         EditMode::Building => view.set_building_progress(Some(BuildingProgress {
@@ -40,9 +41,9 @@ pub(crate) fn start_gesture(view: &mut MapViewer, layer: LayerId) {
         })),
         EditMode::Extrude => view.set_extrude_drag(Some(ExtrudeDrag {
             layer,
-            way_id: 1,
-            node_a: 1,
-            node_b: 2,
+            way_id: WayId(1),
+            node_a: NodeId(1),
+            node_b: NodeId(2),
             segment: 0,
             style: ExtrudeStyle::Reshape,
             down: point(px(0.0), px(0.0)),
@@ -96,12 +97,12 @@ fn another_modes_slots_are_not_reachable(cx: &mut TestAppContext) {
         // Writing into a slot the current mode does not have does nothing.
         view.set_add_progress(Some(AddProgress {
             way_id: None,
-            last_node_id: -1,
+            last_node_id: NodeId(-1),
             at_start: false,
         }));
         view.set_building_reference(Some(BuildingReference {
             layer_id: layer,
-            way_id: 1,
+            way_id: WayId(1),
             orientation: 0.0,
         }));
         view.set_extrude_drag(None);
@@ -130,7 +131,7 @@ fn resetting_progress_keeps_the_mode_and_the_building_reference(cx: &mut TestApp
         with_osm(cx, empty_data(), mode, move |view, _w, _cx, layer| {
             view.set_building_reference(Some(BuildingReference {
                 layer_id: layer,
-                way_id: 1,
+                way_id: WayId(1),
                 orientation: 0.0,
             }));
             start_gesture(view, layer);
@@ -155,7 +156,7 @@ fn staying_in_building_mode_keeps_the_reference(cx: &mut TestAppContext) {
         |view, w, cx, layer| {
             view.set_building_reference(Some(BuildingReference {
                 layer_id: layer,
-                way_id: 1,
+                way_id: WayId(1),
                 orientation: 0.0,
             }));
             start_gesture(view, layer);

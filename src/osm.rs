@@ -1,4 +1,5 @@
 use crate::coordinates::LatLon;
+use crate::ids::{NodeId, RelationId, WayId};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use std::collections::{HashMap, HashSet};
@@ -7,8 +8,8 @@ use std::io::BufReader;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OsmData {
-    pub nodes: HashMap<i64, OsmNode>,
-    pub ways: HashMap<i64, OsmWay>,
+    pub nodes: HashMap<NodeId, OsmNode>,
+    pub ways: HashMap<WayId, OsmWay>,
     pub relations: Vec<OsmRelation>,
     /// Every `<bounds>` element of the source document: the rectangles the
     /// data was downloaded for. Empty when the source declared none.
@@ -17,7 +18,7 @@ pub struct OsmData {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OsmNode {
-    pub id: i64,
+    pub id: NodeId,
     pub lat: f64,
     pub lon: f64,
     pub version: i32,
@@ -33,8 +34,8 @@ impl OsmNode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OsmWay {
-    pub id: i64,
-    pub nodes: Vec<i64>,
+    pub id: WayId,
+    pub nodes: Vec<NodeId>,
     pub version: i32,
     pub tags: HashMap<String, String>,
 }
@@ -50,7 +51,7 @@ impl OsmWay {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OsmRelation {
-    pub id: i64,
+    pub id: RelationId,
     pub members: Vec<OsmMember>,
     pub version: i32,
     pub tags: HashMap<String, String>,
@@ -116,18 +117,18 @@ pub struct OsmBounds {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FileEdits {
     /// Ids of nodes marked `action="modify"`.
-    pub modified_nodes: HashSet<i64>,
+    pub modified_nodes: HashSet<NodeId>,
     /// Ids of ways marked `action="modify"`.
-    pub modified_ways: HashSet<i64>,
+    pub modified_ways: HashSet<WayId>,
     /// Ids of relations marked `action="modify"`.
-    pub modified_relations: HashSet<i64>,
+    pub modified_relations: HashSet<RelationId>,
     /// Nodes marked `action="delete"`. These are not part of the parsed
     /// `OsmData`; they're kept here so the deletion can still be uploaded.
-    pub deleted_nodes: HashMap<i64, OsmNode>,
+    pub deleted_nodes: HashMap<NodeId, OsmNode>,
     /// Ways marked `action="delete"`; see `deleted_nodes`.
-    pub deleted_ways: HashMap<i64, OsmWay>,
+    pub deleted_ways: HashMap<WayId, OsmWay>,
     /// Relations marked `action="delete"`; see `deleted_nodes`.
-    pub deleted_relations: HashMap<i64, OsmRelation>,
+    pub deleted_relations: HashMap<RelationId, OsmRelation>,
 }
 
 impl FileEdits {
@@ -497,7 +498,7 @@ impl OsmParser {
         }
 
         Ok(OsmNode {
-            id: id.ok_or_else(|| OsmParseError::MissingAttribute("id".to_string()))?,
+            id: NodeId(id.ok_or_else(|| OsmParseError::MissingAttribute("id".to_string()))?),
             lat: lat.ok_or_else(|| OsmParseError::MissingAttribute("lat".to_string()))?,
             lon: lon.ok_or_else(|| OsmParseError::MissingAttribute("lon".to_string()))?,
             version,
@@ -522,7 +523,7 @@ impl OsmParser {
         }
 
         Ok(OsmWay {
-            id: id.ok_or_else(|| OsmParseError::MissingAttribute("id".to_string()))?,
+            id: WayId(id.ok_or_else(|| OsmParseError::MissingAttribute("id".to_string()))?),
             nodes: Vec::new(),
             version,
             tags: HashMap::new(),
@@ -546,7 +547,7 @@ impl OsmParser {
         }
 
         Ok(OsmRelation {
-            id: id.ok_or_else(|| OsmParseError::MissingAttribute("id".to_string()))?,
+            id: RelationId(id.ok_or_else(|| OsmParseError::MissingAttribute("id".to_string()))?),
             members: Vec::new(),
             version,
             tags: HashMap::new(),
@@ -577,14 +578,14 @@ impl OsmParser {
         Ok((key, value))
     }
 
-    fn parse_node_ref(&self, e: &BytesStart) -> Result<i64, OsmParseError> {
+    fn parse_node_ref(&self, e: &BytesStart) -> Result<NodeId, OsmParseError> {
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
             let key = attr_str(attr.key.as_ref())?;
             let value = attr_str(&attr.value)?;
 
             if key == "ref" {
-                return self.parse_i64(value);
+                return self.parse_i64(value).map(NodeId);
             }
         }
 
@@ -685,11 +686,12 @@ impl std::error::Error for OsmParseError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{NodeId, RelationId, WayId};
 
     fn way(nodes: Vec<i64>) -> OsmWay {
         OsmWay {
-            id: 1,
-            nodes,
+            id: WayId(1),
+            nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version: 1,
             tags: HashMap::new(),
         }
@@ -773,15 +775,15 @@ mod tests {
         let osm_data = parser.parse_str(xml).expect("parse_str failed");
 
         assert!(
-            osm_data.nodes.contains_key(&1),
+            osm_data.nodes.contains_key(&NodeId(1)),
             "node 1 (self-closing, untagged) was not inserted"
         );
         assert!(
-            osm_data.nodes.contains_key(&2),
+            osm_data.nodes.contains_key(&NodeId(2)),
             "node 2 (tagged, paired tags) was not inserted"
         );
 
-        let tagged = &osm_data.nodes[&2];
+        let tagged = &osm_data.nodes[&NodeId(2)];
         assert_eq!(
             tagged.tags.get("name").map(|s| s.as_str()),
             Some("tagged"),
@@ -790,8 +792,8 @@ mod tests {
 
         assert_eq!(osm_data.ways.len(), 1, "expected exactly one way");
         assert_eq!(
-            osm_data.ways[&10].nodes,
-            vec![1, 2],
+            osm_data.ways[&WayId(10)].nodes,
+            vec![NodeId(1), NodeId(2)],
             "way node refs do not match"
         );
     }
@@ -812,8 +814,16 @@ mod tests {
         let parser = OsmParser::new();
         let osm_data = parser.parse_str(xml).expect("parse_str failed");
 
-        assert_eq!(osm_data.nodes[&1].version, 7, "node version not parsed");
-        assert_eq!(osm_data.ways[&10].version, 3, "way version not parsed");
+        assert_eq!(
+            osm_data.nodes[&NodeId(1)].version,
+            7,
+            "node version not parsed"
+        );
+        assert_eq!(
+            osm_data.ways[&WayId(10)].version,
+            3,
+            "way version not parsed"
+        );
         assert_eq!(
             osm_data.relations[0].version, 5,
             "relation version not parsed"
@@ -831,7 +841,8 @@ mod tests {
         let osm_data = parser.parse_str(xml).expect("parse_str failed");
 
         assert_eq!(
-            osm_data.nodes[&1].version, 1,
+            osm_data.nodes[&NodeId(1)].version,
+            1,
             "node version should default to 1 when absent"
         );
     }
@@ -999,10 +1010,13 @@ mod tests {
         let parser = OsmParser::new();
         let osm_data = parser.parse_str(xml).expect("parse_str failed");
 
-        let way = osm_data.ways.get(&42).expect("way 42 should be present");
-        assert_eq!(way.nodes, vec![1, 2]);
+        let way = osm_data
+            .ways
+            .get(&WayId(42))
+            .expect("way 42 should be present");
+        assert_eq!(way.nodes, vec![NodeId(1), NodeId(2)]);
         assert!(
-            !osm_data.ways.contains_key(&999),
+            !osm_data.ways.contains_key(&WayId(999)),
             "way 999 should not exist"
         );
     }
@@ -1045,7 +1059,10 @@ mod tests {
 
         let data = OsmParser::new().parse_str(xml).unwrap();
 
-        assert_eq!(data.nodes[&1].tags["name"], "Barnes & Noble \"Annex\" <2>");
+        assert_eq!(
+            data.nodes[&NodeId(1)].tags["name"],
+            "Barnes & Noble \"Annex\" <2>"
+        );
         assert_eq!(data.relations[0].members[0].role, "a & b");
     }
 
@@ -1073,18 +1090,18 @@ mod tests {
 
         let (data, edits) = OsmParser::new().parse_str_with_edits(xml).unwrap();
 
-        let mut live: Vec<i64> = data.nodes.keys().copied().collect();
+        let mut live: Vec<i64> = data.nodes.keys().map(|id| id.get()).collect();
         live.sort_unstable();
         assert_eq!(live, vec![-1, 1, 2], "deleted nodes are not live data");
-        assert_eq!(edits.modified_nodes, HashSet::from([-1, 2]));
-        assert_eq!(edits.deleted_nodes[&3].version, 4);
-        assert_eq!(edits.deleted_nodes[&4].version, 5);
-        assert_eq!(edits.modified_ways, HashSet::from([10]));
-        assert!(data.ways.contains_key(&10) && !data.ways.contains_key(&11));
-        assert_eq!(edits.deleted_ways[&11].nodes, vec![1]);
+        assert_eq!(edits.modified_nodes, HashSet::from([NodeId(-1), NodeId(2)]));
+        assert_eq!(edits.deleted_nodes[&NodeId(3)].version, 4);
+        assert_eq!(edits.deleted_nodes[&NodeId(4)].version, 5);
+        assert_eq!(edits.modified_ways, HashSet::from([WayId(10)]));
+        assert!(data.ways.contains_key(&WayId(10)) && !data.ways.contains_key(&WayId(11)));
+        assert_eq!(edits.deleted_ways[&WayId(11)].nodes, vec![NodeId(1)]);
         assert_eq!(data.relations.len(), 1);
-        assert_eq!(data.relations[0].id, 21);
-        assert_eq!(edits.deleted_relations[&20].version, 1);
+        assert_eq!(data.relations[0].id, RelationId(21));
+        assert_eq!(edits.deleted_relations[&RelationId(20)].version, 1);
 
         // The plain entry point agrees on the data and just drops the edits.
         assert_eq!(OsmParser::new().parse_str(xml).unwrap(), data);

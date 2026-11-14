@@ -2,6 +2,7 @@
 
 use super::{data_with, empty_tags};
 use crate::coordinates::LatLon;
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{OsmData, OsmNode, OsmWay};
@@ -123,17 +124,17 @@ fn square_ring_data() -> Arc<OsmData> {
     let mut way_tags = HashMap::new();
     way_tags.insert("building".to_string(), "yes".to_string());
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2, 3, 4, 1],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(1)],
         version: 1,
         tags: way_tags,
     };
     data_with(
         vec![
-            mk(1, 0.0, 0.0),
-            mk(2, 0.0, 0.001),
-            mk(3, 0.001, 0.001),
-            mk(4, 0.001, 0.0),
+            mk(NodeId(1), 0.0, 0.0),
+            mk(NodeId(2), 0.0, 0.001),
+            mk(NodeId(3), 0.001, 0.001),
+            mk(NodeId(4), 0.001, 0.0),
         ],
         vec![way],
     )
@@ -205,7 +206,9 @@ fn area_label_geometry_is_cached_and_follows_vertex_edits_only() {
     assert_eq!(cache.areas.builds, 1);
 
     // Moving a corner rebuilds it, and the pole moves.
-    layer.commit_node_moves(&[(3, 40.004, -73.997)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(3), 40.004, -73.997)])
+        .unwrap();
     validate(&layer, &mut cache);
     let g3 = layer.area_geom_for(&mut cache, key).unwrap();
     assert_eq!(cache.areas.builds, 2, "a vertex edit invalidates");
@@ -228,22 +231,25 @@ fn multipolygon_area_label_uses_the_relation_tags_and_avoids_holes() {
     };
     let way = |id, nodes: Vec<i64>| OsmWay {
         id,
-        nodes,
+        nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
         version: 1,
         tags: empty_tags(),
     };
     let mut base = (*data_with(
         vec![
-            mk(1, 0.0, 0.0),
-            mk(2, 0.0, 0.01),
-            mk(3, 0.01, 0.01),
-            mk(4, 0.01, 0.0),
-            mk(5, 0.002, 0.002),
-            mk(6, 0.002, 0.008),
-            mk(7, 0.008, 0.008),
-            mk(8, 0.008, 0.002),
+            mk(NodeId(1), 0.0, 0.0),
+            mk(NodeId(2), 0.0, 0.01),
+            mk(NodeId(3), 0.01, 0.01),
+            mk(NodeId(4), 0.01, 0.0),
+            mk(NodeId(5), 0.002, 0.002),
+            mk(NodeId(6), 0.002, 0.008),
+            mk(NodeId(7), 0.008, 0.008),
+            mk(NodeId(8), 0.008, 0.002),
         ],
-        vec![way(10, vec![1, 2, 3, 4, 1]), way(11, vec![5, 6, 7, 8, 5])],
+        vec![
+            way(WayId(10), vec![1, 2, 3, 4, 1]),
+            way(WayId(11), vec![5, 6, 7, 8, 5]),
+        ],
     ))
     .clone();
     let member = |reference, role: &str| OsmMember {
@@ -260,7 +266,7 @@ fn multipolygon_area_label_uses_the_relation_tags_and_avoids_holes() {
         tags.insert(k.to_string(), v.to_string());
     }
     base.relations.push(OsmRelation {
-        id: 500,
+        id: RelationId(500),
         version: 1,
         tags,
         members: vec![member(10, "outer"), member(11, "inner")],
@@ -307,7 +313,11 @@ fn closed_way_with_fill_style_gets_triangulated() {
 #[test]
 fn open_way_gets_no_fill_triangles() {
     let mut data = square_ring_data();
-    Arc::make_mut(&mut data).ways.get_mut(&10).unwrap().nodes = vec![1, 2, 3, 4];
+    Arc::make_mut(&mut data)
+        .ways
+        .get_mut(&WayId(10))
+        .unwrap()
+        .nodes = vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4)];
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
     layer.set_stylesheet(fill_stylesheet());
     assert_eq!(layer.render.way_fill_tris[0], None);
@@ -327,7 +337,7 @@ fn set_tag_refreshes_fill_triangles() {
     let mut data = square_ring_data();
     Arc::make_mut(&mut data)
         .ways
-        .get_mut(&10)
+        .get_mut(&WayId(10))
         .unwrap()
         .tags
         .clear();
@@ -361,13 +371,18 @@ fn degenerate_ring_yields_no_fill_without_panic() {
     let mut way_tags = HashMap::new();
     way_tags.insert("building".to_string(), "yes".to_string());
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2, 3, 4, 1],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(1)],
         version: 1,
         tags: way_tags,
     };
     let data = data_with(
-        vec![mk(1, 0.0), mk(2, 0.001), mk(3, 0.002), mk(4, 0.003)],
+        vec![
+            mk(NodeId(1), 0.0),
+            mk(NodeId(2), 0.001),
+            mk(NodeId(3), 0.002),
+            mk(NodeId(4), 0.003),
+        ],
         vec![way],
     );
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
@@ -384,10 +399,10 @@ fn delete_way_shifts_fill_cache() {
         let mut tags = HashMap::new();
         tags.insert("building".to_string(), "yes".to_string());
         d.ways.insert(
-            20,
+            WayId(20),
             OsmWay {
-                id: 20,
-                nodes: vec![1, 2, 3, 1],
+                id: WayId(20),
+                nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(1)],
                 version: 1,
                 tags,
             },

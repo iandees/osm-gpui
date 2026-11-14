@@ -626,6 +626,7 @@ pub fn suggest_values(input: SuggestInput) -> Vec<Suggestion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{NodeId, WayId};
     use crate::osm::{OsmNode, OsmWay};
 
     /// The tests state their inputs positionally; these adapters build the
@@ -680,9 +681,9 @@ mod tests {
                 .enumerate()
                 .map(|(i, t)| {
                     (
-                        i as i64 + 1,
+                        NodeId(i as i64 + 1),
                         OsmNode {
-                            id: i as i64 + 1,
+                            id: NodeId(i as i64 + 1),
                             lat: 0.0,
                             lon: 0.0,
                             version: 1,
@@ -696,9 +697,9 @@ mod tests {
                 .enumerate()
                 .map(|(i, t)| {
                     (
-                        i as i64 + 1,
+                        WayId(i as i64 + 1),
                         OsmWay {
-                            id: i as i64 + 1,
+                            id: WayId(i as i64 + 1),
                             nodes: vec![],
                             version: 1,
                             tags: tags(t),
@@ -897,14 +898,14 @@ mod tests {
         // node 2: surface asphalt -> gravel; node 2 also gains name.
         let mut after = before.clone();
         {
-            let n = after.nodes.get_mut(&1).unwrap();
+            let n = after.nodes.get_mut(&NodeId(1)).unwrap();
             n.tags = tags(&[("shop", "bakery")]);
             idx.apply_change("amenity", Some("cafe"), None);
             idx.apply_change("shop", None, Some("bakery"));
-            let w = after.ways.get_mut(&1).unwrap();
+            let w = after.ways.get_mut(&WayId(1)).unwrap();
             w.tags.remove("surface");
             idx.apply_change("surface", Some("gravel"), None);
-            let n2 = after.nodes.get_mut(&2).unwrap();
+            let n2 = after.nodes.get_mut(&NodeId(2)).unwrap();
             n2.tags = tags(&[("surface", "gravel"), ("name", "X")]);
             idx.apply_change("surface", Some("asphalt"), Some("gravel"));
             idx.apply_change("name", None, Some("X"));
@@ -1105,9 +1106,9 @@ mod tests {
                 t.insert(format!("survey:{}", i % 50), "yes".to_string());
             }
             nodes.insert(
-                i,
+                NodeId(i),
                 OsmNode {
-                    id: i,
+                    id: NodeId(i),
                     lat: 0.0,
                     lon: 0.0,
                     version: 1,

@@ -2,6 +2,7 @@
 //! each one the layer must hold exactly what a layer built from scratch on
 //! the same data holds.
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
@@ -27,7 +28,7 @@ fn tags(list: &[(&str, &str)]) -> HashMap<String, String> {
 
 fn node(id: i64, row: f64, col: f64, t: &[(&str, &str)]) -> OsmNode {
     OsmNode {
-        id,
+        id: NodeId(id),
         lat: 40.0 + row * 0.001,
         lon: -74.0 + col * 0.001,
         version: 1,
@@ -37,8 +38,8 @@ fn node(id: i64, row: f64, col: f64, t: &[(&str, &str)]) -> OsmNode {
 
 fn way(id: i64, nodes: &[i64], t: &[(&str, &str)]) -> OsmWay {
     OsmWay {
-        id,
-        nodes: nodes.to_vec(),
+        id: WayId(id),
+        nodes: NodeId::from_raw_vec(nodes),
         version: 1,
         tags: tags(t),
     }
@@ -93,7 +94,7 @@ fn data() -> OsmData {
     ];
     let relations = vec![
         OsmRelation {
-            id: 200,
+            id: RelationId(200),
             version: 2,
             tags: tags(&[("type", "multipolygon"), ("natural", "water")]),
             members: vec![
@@ -102,7 +103,7 @@ fn data() -> OsmData {
             ],
         },
         OsmRelation {
-            id: 201,
+            id: RelationId(201),
             version: 1,
             tags: tags(&[("type", "route"), ("route", "bus"), ("ref", "7")]),
             members: vec![
@@ -111,7 +112,7 @@ fn data() -> OsmData {
             ],
         },
         OsmRelation {
-            id: 202,
+            id: RelationId(202),
             version: 1,
             tags: tags(&[("type", "restriction"), ("restriction", "no_left_turn")]),
             members: vec![
@@ -149,7 +150,7 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
     for (id, &i) in &l.derived.way_id_to_index {
         assert_eq!(l.derived.way_ids[i], *id, "way_id_to_index of way {id}");
     }
-    let ways: BTreeMap<i64, _> = l
+    let ways: BTreeMap<WayId, _> = l
         .derived
         .way_ids
         .iter()
@@ -178,7 +179,7 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
     for (id, &i) in &cache.index_by_id {
         assert_eq!(cache.flat[i].0, *id, "node cache index of node {id}");
     }
-    let nodes: BTreeMap<i64, _> = cache
+    let nodes: BTreeMap<NodeId, _> = cache
         .flat
         .iter()
         .zip(&cache.styles)
@@ -200,7 +201,7 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
         .collect();
     way_index.sort_by_key(|e| e.0);
 
-    let node_to_ways: BTreeMap<i64, BTreeSet<i64>> = l
+    let node_to_ways: BTreeMap<NodeId, BTreeSet<WayId>> = l
         .derived
         .node_to_ways
         .iter()
@@ -208,10 +209,10 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
         .map(|(node, idx)| (*node, idx.iter().map(|&i| l.derived.way_ids[i]).collect()))
         .collect();
 
-    let member_ways: BTreeSet<i64> = l.render.member_ways.iter().copied().collect();
+    let member_ways: BTreeSet<WayId> = l.render.member_ways.iter().copied().collect();
 
     let mp = &l.derived.mp;
-    let entries: BTreeMap<i64, _> = mp
+    let entries: BTreeMap<RelationId, _> = mp
         .entries
         .iter()
         .map(|(id, e)| {
@@ -224,7 +225,9 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
             (*id, (e.style, polygons, e.bbox, e.area, e.tagged, t))
         })
         .collect();
-    let sorted = |m: &HashMap<i64, Vec<i64>>| -> BTreeMap<i64, Vec<i64>> {
+    fn sorted<K: Ord + Copy + std::hash::Hash, V: Ord + Clone>(
+        m: &HashMap<K, Vec<V>>,
+    ) -> BTreeMap<K, Vec<V>> {
         m.iter()
             .filter(|(_, v)| !v.is_empty())
             .map(|(k, v)| {
@@ -233,7 +236,7 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
                 (*k, v)
             })
             .collect()
-    };
+    }
 
     vec![
         ("ways", format!("{ways:?}")),
@@ -321,20 +324,20 @@ fn all_kinds_of_tag_edit_target() -> [(FeatureKind, i64); 8] {
 fn commit_node_moves_matches_a_fresh_rebuild() {
     let mut l = start();
     let there = [
-        (3, 40.0004, -73.9975),
-        (22, 40.0125, -73.9875),
-        (7, 40.0011, -74.0003),
-        (8, 40.0013, -73.9990),
-        (1, 39.9996, -74.0004),
+        (NodeId(3), 40.0004, -73.9975),
+        (NodeId(22), 40.0125, -73.9875),
+        (NodeId(7), 40.0011, -74.0003),
+        (NodeId(8), 40.0013, -73.9990),
+        (NodeId(1), 39.9996, -74.0004),
     ];
     l.commit_node_moves(&there).unwrap();
     assert_fresh(&l, "after moving five nodes");
     let back = [
-        (3, 40.0, -73.998),
-        (22, 40.012, -73.988),
-        (7, 40.001, -74.0),
-        (8, 40.001, -73.999),
-        (1, 40.0, -74.0),
+        (NodeId(3), 40.0, -73.998),
+        (NodeId(22), 40.012, -73.988),
+        (NodeId(7), 40.001, -74.0),
+        (NodeId(8), 40.001, -73.999),
+        (NodeId(1), 40.0, -74.0),
     ];
     l.commit_node_moves(&back).unwrap();
     assert_fresh(&l, "after moving them back");
@@ -374,7 +377,7 @@ fn set_tag_matches_a_fresh_rebuild() {
     assert_fresh(&l, "retagging the restriction");
     assert_eq!(
         l.set_tag(FeatureKind::Way, 999, "a", "b"),
-        Err(EditError::UnknownWay(999))
+        Err(EditError::UnknownWay(WayId(999)))
     );
     assert_fresh(&l, "tagging a way that is not there");
 }
@@ -413,12 +416,12 @@ fn create_node_matches_a_fresh_rebuild() {
     let mut l = start();
     let a = l.create_node(40.002, -73.999, None).unwrap();
     assert_fresh(&l, "after a node with a fresh id");
-    let b = l.create_node(40.003, -73.997, Some(-500)).unwrap();
-    assert_eq!(b, -500);
+    let b = l.create_node(40.003, -73.997, Some(NodeId(-500))).unwrap();
+    assert_eq!(b, NodeId(-500));
     assert_fresh(&l, "after a node with a forced id");
     assert_eq!(
         l.create_node(40.0, -74.0, Some(a)),
-        Err(EditError::IdInUse(FeatureKind::Node, a))
+        Err(EditError::IdInUse(FeatureKind::Node, a.get()))
     );
     assert_fresh(&l, "after refusing an id that is taken");
 }
@@ -438,7 +441,7 @@ fn add_way_matches_a_fresh_rebuild() {
     let a = l.add_node(40.002, -73.999);
     let b = l.add_node(40.002, -73.996);
     let c = l.add_node(40.004, -73.996);
-    l.add_way(vec![1, a], vec![]);
+    l.add_way(vec![NodeId(1), a], vec![]);
     assert_fresh(&l, "after an untagged open way off the road");
     let ring = l.add_way(
         vec![a, b, c, a],
@@ -446,48 +449,55 @@ fn add_way_matches_a_fresh_rebuild() {
     );
     assert_fresh(&l, "after a closed building");
     l.add_way(
-        vec![8, 9],
+        vec![NodeId(8), NodeId(9)],
         vec![("highway".to_string(), "path".to_string())],
     );
     assert_fresh(&l, "after a way over two loose nodes");
-    l.add_way(vec![ring], vec![]);
+    l.add_way(vec![NodeId(ring.get())], vec![]);
     assert_fresh(&l, "after a way naming a way id as a node");
 }
 
 #[test]
 fn extend_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.extend_way(106, 8).unwrap();
+    l.extend_way(WayId(106), NodeId(8)).unwrap();
     assert_fresh(&l, "extending a path onto a loose node");
-    l.extend_way(100, 9).unwrap();
+    l.extend_way(WayId(100), NodeId(9)).unwrap();
     assert_fresh(&l, "extending a route member road");
-    l.extend_way(105, 3).unwrap();
+    l.extend_way(WayId(105), NodeId(3)).unwrap();
     assert_fresh(&l, "extending onto the three-way junction");
-    assert_eq!(l.extend_way(999, 3), Err(EditError::UnknownWay(999)));
+    assert_eq!(
+        l.extend_way(WayId(999), NodeId(3)),
+        Err(EditError::UnknownWay(WayId(999)))
+    );
     assert_fresh(&l, "extending a way that is not there");
 }
 
 #[test]
 fn insert_node_into_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.insert_node_into_way(100, 1, 40.0003, -73.9985).unwrap();
+    l.insert_node_into_way(WayId(100), 1, 40.0003, -73.9985)
+        .unwrap();
     assert_fresh(&l, "into the middle of a road");
-    l.insert_node_into_way(102, 2, 40.0025, -73.9965).unwrap();
+    l.insert_node_into_way(WayId(102), 2, 40.0025, -73.9965)
+        .unwrap();
     assert_fresh(&l, "into a closed ring");
-    l.insert_node_into_way(103, 1, 40.0101, -73.9990).unwrap();
+    l.insert_node_into_way(WayId(103), 1, 40.0101, -73.9990)
+        .unwrap();
     assert_fresh(&l, "into a multipolygon member");
-    l.insert_node_into_way(101, 3, 40.003, -73.998).unwrap();
+    l.insert_node_into_way(WayId(101), 3, 40.003, -73.998)
+        .unwrap();
     assert_fresh(&l, "at the end of a road");
 }
 
 #[test]
 fn remove_node_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.remove_node(8).unwrap();
+    l.remove_node(NodeId(8)).unwrap();
     assert_fresh(&l, "removing a loose node");
-    l.remove_node(9).unwrap();
+    l.remove_node(NodeId(9)).unwrap();
     assert_fresh(&l, "removing another");
-    l.remove_node(7).unwrap();
+    l.remove_node(NodeId(7)).unwrap();
     assert_fresh(&l, "removing the tagged point");
 }
 
@@ -495,8 +505,8 @@ fn remove_node_matches_a_fresh_rebuild() {
 /// must before the layer lets it delete the feature.
 fn leave_relations(l: &mut OsmLayer, kind: FeatureKind, id: i64) {
     let (member_type, relations) = match kind {
-        FeatureKind::Node => (MemberType::Node, l.relations_containing_node(id)),
-        FeatureKind::Way => (MemberType::Way, l.relations_containing_way(id)),
+        FeatureKind::Node => (MemberType::Node, l.relations_containing_node(NodeId(id))),
+        FeatureKind::Way => (MemberType::Way, l.relations_containing_way(WayId(id))),
         FeatureKind::Relation => return,
     };
     for relation_id in relations {
@@ -510,33 +520,33 @@ fn leave_relations(l: &mut OsmLayer, kind: FeatureKind, id: i64) {
 #[test]
 fn remove_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.remove_way(105).unwrap();
+    l.remove_way(WayId(105)).unwrap();
     assert_fresh(&l, "removing a leaf footway");
     assert!(matches!(
-        l.remove_way(100),
+        l.remove_way(WayId(100)),
         Err(EditError::InRelation { id: 100, .. })
     ));
     assert_fresh(&l, "refusing a way that a relation still lists");
     leave_relations(&mut l, FeatureKind::Way, 100);
-    l.remove_way(100).unwrap();
+    l.remove_way(WayId(100)).unwrap();
     assert_fresh(&l, "removing the route and restriction member road");
     leave_relations(&mut l, FeatureKind::Way, 103);
-    l.remove_way(103).unwrap();
+    l.remove_way(WayId(103)).unwrap();
     assert_fresh(&l, "removing the multipolygon's outer way");
-    l.remove_way(102).unwrap();
+    l.remove_way(WayId(102)).unwrap();
     assert_fresh(&l, "removing the building");
 }
 
 #[test]
 fn remove_node_from_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.remove_node_from_way(100, 3).unwrap();
+    l.remove_node_from_way(WayId(100), 3).unwrap();
     assert_fresh(&l, "dropping a road's end node");
-    l.remove_node_from_way(102, 1).unwrap();
+    l.remove_node_from_way(WayId(102), 1).unwrap();
     assert_fresh(&l, "dropping a ring vertex");
-    l.remove_node_from_way(101, 0).unwrap();
+    l.remove_node_from_way(WayId(101), 0).unwrap();
     assert_fresh(&l, "dropping a road's start node, a junction");
-    l.remove_node_from_way(103, 1).unwrap();
+    l.remove_node_from_way(WayId(103), 1).unwrap();
     assert_fresh(&l, "dropping a multipolygon outer vertex");
 }
 
@@ -544,29 +554,51 @@ fn remove_node_from_way_matches_a_fresh_rebuild() {
 fn reverse_way_matches_a_fresh_rebuild() {
     let mut l = start();
     for id in [100, 102, 103, 104] {
-        assert!(l.reverse_way(id).is_ok());
+        assert!(l.reverse_way(WayId(id)).is_ok());
         assert_fresh(&l, &format!("reversing way {id}"));
     }
-    assert_eq!(l.reverse_way(999), Err(EditError::UnknownWay(999)));
+    assert_eq!(
+        l.reverse_way(WayId(999)),
+        Err(EditError::UnknownWay(WayId(999)))
+    );
     assert_fresh(&l, "reversing a way that is not there");
 }
 
 #[test]
 fn set_way_nodes_matches_a_fresh_rebuild() {
     let mut l = start();
-    assert!(l.set_way_nodes(100, vec![1, 2, 3]).is_ok());
+    assert!(l
+        .set_way_nodes(WayId(100), vec![NodeId(1), NodeId(2), NodeId(3)])
+        .is_ok());
     assert_fresh(&l, "shortening a road");
-    assert!(l.set_way_nodes(102, vec![6, 13, 12, 11, 6]).is_ok());
+    assert!(l
+        .set_way_nodes(
+            WayId(102),
+            vec![NodeId(6), NodeId(13), NodeId(12), NodeId(11), NodeId(6)]
+        )
+        .is_ok());
     assert_fresh(&l, "re-winding a ring");
-    assert!(l.set_way_nodes(103, vec![21, 22, 23, 20, 21]).is_ok());
+    assert!(l
+        .set_way_nodes(
+            WayId(103),
+            vec![NodeId(21), NodeId(22), NodeId(23), NodeId(20), NodeId(21)]
+        )
+        .is_ok());
     assert_fresh(&l, "rotating a multipolygon's outer ring");
-    assert!(l.set_way_nodes(101, vec![3, 5, 13, 6]).is_ok());
+    assert!(l
+        .set_way_nodes(
+            WayId(101),
+            vec![NodeId(3), NodeId(5), NodeId(13), NodeId(6)]
+        )
+        .is_ok());
     assert_fresh(&l, "re-routing a road through a ring node");
-    assert!(l.set_way_nodes(106, vec![8, 9]).is_ok());
+    assert!(l
+        .set_way_nodes(WayId(106), vec![NodeId(8), NodeId(9)])
+        .is_ok());
     assert_fresh(&l, "moving a path onto loose nodes");
     assert_eq!(
-        l.set_way_nodes(999, vec![1, 2]),
-        Err(EditError::UnknownWay(999))
+        l.set_way_nodes(WayId(999), vec![NodeId(1), NodeId(2)]),
+        Err(EditError::UnknownWay(WayId(999)))
     );
     assert_fresh(&l, "setting the nodes of a way that is not there");
 }
@@ -591,7 +623,7 @@ fn delete_and_restore_feature_match_a_fresh_rebuild() {
 
     assert_eq!(
         l.delete_feature(FeatureKind::Node, 3).unwrap_err(),
-        EditError::NodeInWay(3)
+        EditError::NodeInWay(NodeId(3))
     );
     assert_fresh(&l, "refusing a node that a way still uses");
 
@@ -611,11 +643,11 @@ fn delete_and_restore_feature_match_a_fresh_rebuild() {
 #[test]
 fn set_relation_members_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.set_relation_members(200, vec![member(MemberType::Way, 103, "outer")])
+    l.set_relation_members(RelationId(200), vec![member(MemberType::Way, 103, "outer")])
         .unwrap();
     assert_fresh(&l, "dropping the hole");
     l.set_relation_members(
-        200,
+        RelationId(200),
         vec![
             member(MemberType::Way, 103, "outer"),
             member(MemberType::Way, 104, "inner"),
@@ -625,7 +657,7 @@ fn set_relation_members_matches_a_fresh_rebuild() {
     .unwrap();
     assert_fresh(&l, "adding a second hole outside the outer ring");
     l.set_relation_members(
-        201,
+        RelationId(201),
         vec![
             member(MemberType::Way, 101, ""),
             member(MemberType::Way, 105, ""),
@@ -634,7 +666,7 @@ fn set_relation_members_matches_a_fresh_rebuild() {
     .unwrap();
     assert_fresh(&l, "re-routing the route");
     l.set_relation_members(
-        202,
+        RelationId(202),
         vec![
             member(MemberType::Way, 100, "from"),
             member(MemberType::Node, 5, "via"),
@@ -644,8 +676,8 @@ fn set_relation_members_matches_a_fresh_rebuild() {
     .unwrap();
     assert_fresh(&l, "moving the restriction's via node");
     assert_eq!(
-        l.set_relation_members(999, vec![]),
-        Err(EditError::UnknownRelation(999))
+        l.set_relation_members(RelationId(999), vec![]),
+        Err(EditError::UnknownRelation(RelationId(999)))
     );
     assert_fresh(&l, "setting the members of a relation that is not there");
 }
@@ -679,8 +711,8 @@ fn create_relation_matches_a_fresh_rebuild() {
     l.create_relation(
         vec![("type".to_string(), "site".to_string())],
         vec![
-            member(MemberType::Relation, wood, ""),
-            member(MemberType::Relation, route, ""),
+            member(MemberType::Relation, wood.get(), ""),
+            member(MemberType::Relation, route.get(), ""),
         ],
     )
     .unwrap();
@@ -692,7 +724,7 @@ fn delete_and_restore_relation_match_a_fresh_rebuild() {
     let mut l = start();
     let mut snapshots = Vec::new();
     for id in [202, 201, 200] {
-        snapshots.push(l.delete_relation(id).unwrap());
+        snapshots.push(l.delete_relation(RelationId(id)).unwrap());
         assert_fresh(&l, &format!("deleting relation {id}"));
     }
     for snapshot in snapshots.into_iter().rev() {
@@ -705,10 +737,14 @@ fn delete_and_restore_relation_match_a_fresh_rebuild() {
 #[test]
 fn purge_and_restore_purged_match_a_fresh_rebuild() {
     let mut l = start();
-    let purged = l.purge_features(&[14, 8], &[106], &[201]);
+    let purged = l.purge_features(&[NodeId(14), NodeId(8)], &[WayId(106)], &[RelationId(201)]);
     assert!(!purged.is_empty());
     assert_fresh(&l, "after purging a path, its end node and the route");
-    let multipolygon = l.purge_features(&[24, 25, 26], &[104], &[200]);
+    let multipolygon = l.purge_features(
+        &[NodeId(24), NodeId(25), NodeId(26)],
+        &[WayId(104)],
+        &[RelationId(200)],
+    );
     assert_fresh(&l, "after purging the hole and the multipolygon");
     l.restore_purged(multipolygon);
     assert_fresh(&l, "after restoring the multipolygon");
@@ -719,29 +755,31 @@ fn purge_and_restore_purged_match_a_fresh_rebuild() {
 #[test]
 fn merge_download_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.commit_node_moves(&[(3, 40.0004, -73.9975)]).unwrap();
+    l.commit_node_moves(&[(NodeId(3), 40.0004, -73.9975)])
+        .unwrap();
     l.set_tag(FeatureKind::Way, 102, "name", "mine").unwrap();
 
     let mut incoming = data();
-    incoming.nodes.get_mut(&7).unwrap().version = 2;
+    incoming.nodes.get_mut(&NodeId(7)).unwrap().version = 2;
     incoming
         .nodes
-        .insert(40, node(40, 20.0, 20.0, &[("shop", "bakery")]));
-    incoming.nodes.insert(41, node(41, 20.0, 21.0, &[]));
-    incoming.nodes.insert(42, node(42, 21.0, 21.0, &[]));
-    incoming.nodes.insert(43, node(43, 21.0, 20.0, &[]));
+        .insert(NodeId(40), node(40, 20.0, 20.0, &[("shop", "bakery")]));
+    incoming.nodes.insert(NodeId(41), node(41, 20.0, 21.0, &[]));
+    incoming.nodes.insert(NodeId(42), node(42, 21.0, 21.0, &[]));
+    incoming.nodes.insert(NodeId(43), node(43, 21.0, 20.0, &[]));
+    incoming.ways.insert(
+        WayId(300),
+        way(300, &[41, 42, 43, 41], &[("building", "yes")]),
+    );
+    incoming.ways.get_mut(&WayId(101)).unwrap().version = 2;
     incoming
         .ways
-        .insert(300, way(300, &[41, 42, 43, 41], &[("building", "yes")]));
-    incoming.ways.get_mut(&101).unwrap().version = 2;
-    incoming
-        .ways
-        .get_mut(&101)
+        .get_mut(&WayId(101))
         .unwrap()
         .tags
         .insert("highway".to_string(), "tertiary".to_string());
     incoming.relations.push(OsmRelation {
-        id: 301,
+        id: RelationId(301),
         version: 1,
         tags: tags(&[("type", "multipolygon"), ("landuse", "grass")]),
         members: vec![member(MemberType::Way, 300, "outer")],
@@ -801,9 +839,11 @@ mod apply_change {
     fn a_change_bumps_the_revision_once_and_marks_modified() {
         let mut l = start();
         let revision = l.edit_revision();
-        data_mut(&mut l).nodes.insert(30, node(30, 5.0, 5.0, &[]));
+        data_mut(&mut l)
+            .nodes
+            .insert(NodeId(30), node(30, 5.0, 5.0, &[]));
         l.apply_change(&Change {
-            nodes_added: vec![30],
+            nodes_added: vec![NodeId(30)],
             ..Change::default()
         });
         assert_eq!(l.edit_revision(), revision + 1);
@@ -813,17 +853,19 @@ mod apply_change {
     #[test]
     fn nodes_added_and_restored() {
         let mut l = start();
-        data_mut(&mut l).nodes.insert(30, node(30, 5.0, 5.0, &[]));
+        data_mut(&mut l)
+            .nodes
+            .insert(NodeId(30), node(30, 5.0, 5.0, &[]));
         l.apply_change(&Change {
-            nodes_added: vec![30],
+            nodes_added: vec![NodeId(30)],
             ..Change::default()
         });
         assert_fresh(&l, "a node added");
         data_mut(&mut l)
             .nodes
-            .insert(31, node(31, 6.0, 5.0, &[("amenity", "cafe")]));
+            .insert(NodeId(31), node(31, 6.0, 5.0, &[("amenity", "cafe")]));
         l.apply_change(&Change {
-            nodes_restored: vec![31],
+            nodes_restored: vec![NodeId(31)],
             ..Change::default()
         });
         assert_fresh(&l, "a node restored");
@@ -833,16 +875,18 @@ mod apply_change {
     fn nodes_moved_with_and_without_their_ways() {
         let mut l = start();
         let moved = node(3, 0.5, 2.5, &[]);
-        data_mut(&mut l).nodes.insert(3, moved);
+        data_mut(&mut l).nodes.insert(NodeId(3), moved);
         l.apply_change(&Change {
-            nodes_moved: vec![3],
-            ways_reprojected: vec![100, 101, 106],
+            nodes_moved: vec![NodeId(3)],
+            ways_reprojected: vec![WayId(100), WayId(101), WayId(106)],
             ..Change::default()
         });
         assert_fresh(&l, "the junction moved");
-        data_mut(&mut l).nodes.insert(8, node(8, 1.5, 1.5, &[]));
+        data_mut(&mut l)
+            .nodes
+            .insert(NodeId(8), node(8, 1.5, 1.5, &[]));
         l.apply_change(&Change {
-            nodes_moved: vec![8],
+            nodes_moved: vec![NodeId(8)],
             ..Change::default()
         });
         assert_fresh(&l, "a loose node moved");
@@ -851,9 +895,9 @@ mod apply_change {
     #[test]
     fn nodes_removed() {
         let mut l = start();
-        data_mut(&mut l).nodes.remove(&8);
+        data_mut(&mut l).nodes.remove(&NodeId(8));
         l.apply_change(&Change {
-            nodes_removed: vec![8],
+            nodes_removed: vec![NodeId(8)],
             ..Change::default()
         });
         assert_fresh(&l, "a loose node removed");
@@ -864,21 +908,21 @@ mod apply_change {
         let mut l = start();
         data_mut(&mut l)
             .ways
-            .insert(110, way(110, &[8, 9], &[("highway", "path")]));
+            .insert(WayId(110), way(110, &[8, 9], &[("highway", "path")]));
         l.apply_change(&Change {
-            ways_added: vec![110],
+            ways_added: vec![WayId(110)],
             ..Change::default()
         });
         assert_fresh(&l, "a way added");
-        data_mut(&mut l).ways.remove(&102);
+        data_mut(&mut l).ways.remove(&WayId(102));
         l.apply_change(&Change {
-            ways_removed: vec![102],
+            ways_removed: vec![WayId(102)],
             ..Change::default()
         });
         assert_fresh(&l, "a building removed");
-        data_mut(&mut l).ways.remove(&103);
+        data_mut(&mut l).ways.remove(&WayId(103));
         l.apply_change(&Change {
-            ways_removed: vec![103],
+            ways_removed: vec![WayId(103)],
             ..Change::default()
         });
         assert_fresh(&l, "a multipolygon's outer way removed");
@@ -888,9 +932,10 @@ mod apply_change {
     fn way_nodes_replaced() {
         let mut l = start();
         let old = vec![1, 2, 3, 4];
-        data_mut(&mut l).ways.get_mut(&100).unwrap().nodes = vec![1, 2, 8, 4];
+        data_mut(&mut l).ways.get_mut(&WayId(100)).unwrap().nodes =
+            vec![NodeId(1), NodeId(2), NodeId(8), NodeId(4)];
         l.apply_change(&Change {
-            way_nodes: vec![(100, old)],
+            way_nodes: vec![(WayId(100), old.into_iter().map(NodeId).collect::<Vec<_>>())],
             ..Change::default()
         });
         assert_fresh(&l, "a road's node list replaced");
@@ -901,18 +946,18 @@ mod apply_change {
         let mut l = start();
         let d = data_mut(&mut l);
         d.ways
-            .get_mut(&100)
+            .get_mut(&WayId(100))
             .unwrap()
             .tags
             .insert("highway".to_string(), "primary".to_string());
         d.nodes
-            .get_mut(&7)
+            .get_mut(&NodeId(7))
             .unwrap()
             .tags
             .insert("amenity".to_string(), "cafe".to_string());
         d.relations
             .iter_mut()
-            .find(|r| r.id == 201)
+            .find(|r| r.id == RelationId(201))
             .unwrap()
             .tags
             .insert("route".to_string(), "bicycle".to_string());
@@ -931,31 +976,33 @@ mod apply_change {
     fn relations_created_changed_and_deleted() {
         let mut l = start();
         data_mut(&mut l).relations.push(OsmRelation {
-            id: 203,
+            id: RelationId(203),
             version: 0,
             tags: tags(&[("type", "multipolygon"), ("building", "yes")]),
             members: vec![member(MemberType::Way, 102, "outer")],
         });
         l.apply_change(&Change {
-            relations: vec![203],
+            relations: vec![RelationId(203)],
             ..Change::default()
         });
         assert_fresh(&l, "a relation created");
         data_mut(&mut l)
             .relations
             .iter_mut()
-            .find(|r| r.id == 200)
+            .find(|r| r.id == RelationId(200))
             .unwrap()
             .members
             .pop();
         l.apply_change(&Change {
-            relations: vec![200],
+            relations: vec![RelationId(200)],
             ..Change::default()
         });
         assert_fresh(&l, "a relation's members replaced");
-        data_mut(&mut l).relations.retain(|r| r.id != 201);
+        data_mut(&mut l)
+            .relations
+            .retain(|r| r.id != RelationId(201));
         l.apply_change(&Change {
-            relations: vec![201],
+            relations: vec![RelationId(201)],
             ..Change::default()
         });
         assert_fresh(&l, "a relation deleted");

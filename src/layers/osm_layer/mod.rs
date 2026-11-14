@@ -1,5 +1,6 @@
 use crate::coordinates::Mercator;
 use crate::coordinates::{is_point_valid, lat_lon_to_mercator, validate_coords};
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::area_labels;
 use crate::layers::diff::{baseline_for_loaded_file, diff_osm_data, LayerDiff};
 use crate::layers::labels;
@@ -108,7 +109,7 @@ struct Derived {
     /// aligned by index. `osm_data.ways` is a `HashMap` keyed by id (not
     /// positionally ordered), so this is what lets index-aligned code
     /// recover a way's id from a position in those parallel arrays.
-    way_ids: Vec<i64>,
+    way_ids: Vec<WayId>,
     /// Cached bboxes aligned with `osm_data.ways` by index. `None` means the
     /// way had no valid nodes and should be skipped.
     way_bboxes: Vec<Option<WayBbox>>,
@@ -123,21 +124,21 @@ struct Derived {
     /// Spatial index of all nodes (mercator x/y -> node id), rebuilt whenever
     /// data changes. Used by box-select (`hit_test_rect`) and indexed
     /// point-click hit-testing (`hit_test`).
-    node_index: RTree<GeomWithData<[f64; 2], i64>>,
+    node_index: RTree<GeomWithData<[f64; 2], NodeId>>,
     /// Spatial index of all way bounding boxes (mercator meters -> way id),
     /// rebuilt whenever data changes. `locate_in_envelope` on this index
     /// returns ways whose bbox is fully contained in the query rect, which is
     /// exactly the "fully enclosed" box-select rule for ways. Also used as a
     /// coarse candidate filter for indexed point-click hit-testing.
-    way_index: RTree<GeomWithData<Rectangle<[f64; 2]>, i64>>,
+    way_index: RTree<GeomWithData<Rectangle<[f64; 2]>, WayId>>,
     /// OSM way id -> index into `way_vertices`/`way_bboxes`/`way_styles`.
     /// Lets `hit_test` go from an R-tree candidate (way id) straight to its
     /// cached geometry without a linear scan of `osm_data.ways`.
-    way_id_to_index: HashMap<i64, usize>,
+    way_id_to_index: HashMap<WayId, usize>,
     /// node id -> indices of ways (into `way_vertices`/`way_bboxes`) that
     /// reference it; lets an edit recompute only the affected ways' caches
     /// instead of every way.
-    node_to_ways: HashMap<i64, HashSet<usize>>,
+    node_to_ways: HashMap<NodeId, HashSet<usize>>,
     /// Union AABB (mercator) of every node in this layer. Used as a cheap
     /// early-out in `render_canvas` so off-screen datasets do zero
     /// per-vertex work. `None` when there's no data.
@@ -160,7 +161,7 @@ struct RenderCaches {
     /// Ids of the ways that are a member of any relation; filled only when
     /// the stylesheet has `way:in-relation` rules (see
     /// [`relation_member_ways`]) and kept current by relation edits.
-    member_ways: HashSet<i64>,
+    member_ways: HashSet<WayId>,
     /// The downloaded rectangles (`OsmData::bounds`) projected to mercator,
     /// so a frame does no trig for them. Rebuilt wherever `osm_data`'s bounds
     /// can change: construction, `set_osm_data` (which `merge_download` ends
@@ -185,17 +186,17 @@ struct ViewState {
     /// The way under the pointer in Select mode, whose vertices are shown
     /// (small and light) and can be hovered, clicked and dragged. Set by
     /// `update_vertex_preview`; costs nothing while `None`.
-    preview_way: Option<i64>,
+    preview_way: Option<WayId>,
     /// Transient screen-space offset applied to the given node ids while
     /// rendering, for live drag feedback. Never touches `osm_data`.
-    drag_preview: Option<(HashSet<i64>, Point<Pixels>)>,
+    drag_preview: Option<(HashSet<NodeId>, Point<Pixels>)>,
 }
 
 /// Starting point for `next_new_id`: one below the most negative existing
 /// node id, or `-1` if every existing id is non-negative (the normal case
 /// for freshly downloaded OSM data).
 fn compute_next_new_id(data: &OsmData) -> i64 {
-    let min_existing = data.nodes.keys().copied().min().unwrap_or(0);
+    let min_existing = data.nodes.keys().map(|id| id.get()).min().unwrap_or(0);
     if min_existing < 0 {
         min_existing - 1
     } else {
@@ -206,7 +207,13 @@ fn compute_next_new_id(data: &OsmData) -> i64 {
 /// Starting point for `next_placeholder_way_id`, as `compute_next_new_id` is
 /// for nodes.
 fn compute_next_way_id(data: &OsmData) -> i64 {
-    data.ways.keys().copied().min().unwrap_or(0).min(0) - 1
+    data.ways
+        .keys()
+        .map(|id| id.get())
+        .min()
+        .unwrap_or(0)
+        .min(0)
+        - 1
 }
 
 impl OsmLayer {

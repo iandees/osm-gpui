@@ -7,6 +7,7 @@
 use super::*;
 use gpui::{point, Modifiers, MouseMoveEvent, MouseUpEvent};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, WayId};
 
 fn road() -> [(&'static str, &'static str); 1] {
     [("highway", "residential")]
@@ -186,11 +187,11 @@ fn a_new_node_goes_up_before_the_modified_way(cx: &mut TestAppContext) {
     with_session(cx, line().done(), |s| {
         // A node created in this session, near the second segment.
         let id = s.editable_mut().add_node(40.0004, -74.0 + 0.0003 * 15.0);
-        assert!(id < 0);
-        s.select(&[(N, id), (W, 10)]);
+        assert!(id < NodeId(0));
+        s.select(&[(N, id.get()), (W, 10)]);
         assert!(s.act("join_node_way"), "{}", s.status());
         let nodes = s.way_nodes(10).unwrap();
-        assert_eq!(nodes[2], id);
+        assert_eq!(nodes[2], id.get());
         // One created node (no separate move step needed upstream), one
         // modified way.
         assert_eq!(s.counts(), (1, 1, 0));
@@ -216,7 +217,7 @@ fn scene(way_tags: &[(&str, &str)], node_tags: &[(&str, &str)]) -> OsmData {
         .way(10, &[1, 2], way_tags)
         .done();
     let place = |data: &mut OsmData, id: i64, lat: f64, lon: f64| {
-        let n = data.nodes.get_mut(&id).unwrap();
+        let n = data.nodes.get_mut(&NodeId(id)).unwrap();
         n.lat = lat;
         n.lon = lon;
     };
@@ -287,7 +288,7 @@ fn scene_with_unloaded_node() -> OsmData {
         .way(10, &[1, 99, 2, 4], &road())
         .done();
     let place = |data: &mut OsmData, id: i64, lat: f64, lon: f64| {
-        let n = data.nodes.get_mut(&id).unwrap();
+        let n = data.nodes.get_mut(&NodeId(id)).unwrap();
         n.lat = lat;
         n.lon = lon;
     };
@@ -385,7 +386,7 @@ fn the_snap_target_is_highlighted_while_dragging_and_cleared_after(cx: &mut Test
             matches!(
                 s.view.pointer.snap_preview,
                 Some(crate::SnapTarget::Way {
-                    way_id: 10,
+                    way_id: WayId(10),
                     index: 0,
                     ..
                 })
@@ -438,7 +439,7 @@ fn add_mode_snaps_a_way_being_drawn_only_onto_compatible_ways(cx: &mut TestAppCo
         s.view
             .handle_add_click(point(gpui::px(60.0), gpui::px(80.0)), false);
         let drawn = s.view.add_progress().unwrap().way_id.unwrap();
-        s.set_tag(W, drawn, "highway", "footway");
+        s.set_tag(W, drawn.get(), "highway", "footway");
         let on_building = screen(s, 40.0, -74.0);
         s.view.handle_add_click(on_building, false);
         assert_eq!(
@@ -448,8 +449,10 @@ fn add_mode_snaps_a_way_being_drawn_only_onto_compatible_ways(cx: &mut TestAppCo
         );
 
         // Make the drawn way a building too: now the same click snaps.
-        s.editable_mut().remove_tag(W, drawn, "highway").unwrap();
-        s.set_tag(W, drawn, "building", "yes");
+        s.editable_mut()
+            .remove_tag(W, drawn.get(), "highway")
+            .unwrap();
+        s.set_tag(W, drawn.get(), "building", "yes");
         let elsewhere = point(on_building.x + gpui::px(40.0), on_building.y);
         s.view.handle_add_click(elsewhere, false);
         assert_eq!(s.way_nodes(10).map(|n| n.len()), Some(3));

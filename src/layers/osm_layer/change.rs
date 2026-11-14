@@ -6,29 +6,29 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Change {
     /// New nodes, to be indexed.
-    pub(super) nodes_added: Vec<i64>,
+    pub(super) nodes_added: Vec<NodeId>,
     /// Existing nodes whose position changed.
-    pub(super) nodes_moved: Vec<i64>,
+    pub(super) nodes_moved: Vec<NodeId>,
     /// Nodes put back by an undo: indexed like added ones, and the
     /// turn restrictions that use them as `via` draw again.
-    pub(super) nodes_restored: Vec<i64>,
+    pub(super) nodes_restored: Vec<NodeId>,
     /// Nodes already gone from the data.
-    pub(super) nodes_removed: Vec<i64>,
+    pub(super) nodes_removed: Vec<NodeId>,
     /// New ways, already in the data.
-    pub(super) ways_added: Vec<i64>,
+    pub(super) ways_added: Vec<WayId>,
     /// Ways already gone from the data.
-    pub(super) ways_removed: Vec<i64>,
+    pub(super) ways_removed: Vec<WayId>,
     /// Ways whose node list was replaced, with the list they had before
     /// (`node_to_ways` needs the difference). Their geometry is recomputed.
-    pub(super) way_nodes: Vec<(i64, Vec<i64>)>,
+    pub(super) way_nodes: Vec<(WayId, Vec<NodeId>)>,
     /// Ways whose node list is unchanged but whose geometry moved with a
     /// node.
-    pub(super) ways_reprojected: Vec<i64>,
+    pub(super) ways_reprojected: Vec<WayId>,
     /// Features whose tags changed: their cached style is re-resolved.
     pub(super) retagged: Vec<(FeatureKind, i64)>,
     /// Relations created, deleted or given other members: their
     /// multipolygons are reassembled and `member_ways` is recomputed.
-    pub(super) relations: Vec<i64>,
+    pub(super) relations: Vec<RelationId>,
 }
 
 impl Change {
@@ -119,15 +119,15 @@ impl OsmLayer {
             );
         }
 
-        let relations: Vec<i64> = change
+        let relations: Vec<RelationId> = change
             .retagged
             .iter()
             .filter(|(kind, _)| *kind == FeatureKind::Relation)
-            .map(|&(_, id)| id)
+            .map(|&(_, id)| RelationId(id))
             .chain(change.relations.iter().copied())
             .collect();
         self.mp_refresh_relations(&relations);
-        let ways: Vec<i64> = change
+        let ways: Vec<WayId> = change
             .ways_added
             .iter()
             .chain(&change.ways_removed)
@@ -136,7 +136,7 @@ impl OsmLayer {
             .copied()
             .collect();
         self.mp_refresh_ways(&ways);
-        let nodes: Vec<i64> = change
+        let nodes: Vec<NodeId> = change
             .nodes_moved
             .iter()
             .chain(&change.nodes_restored)

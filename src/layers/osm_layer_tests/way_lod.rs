@@ -7,6 +7,7 @@ use super::super::{
     vertex_significance, WayDetail, WayLod, CASING_MIN_ZOOM, COARSE_BELOW_ZOOM, COLLAPSE_BELOW_PX,
 };
 use crate::coordinates::LatLon;
+use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{OsmData, OsmNode, OsmWay};
@@ -21,7 +22,7 @@ fn tags() -> HashMap<String, String> {
 
 fn node(id: i64, lat: f64, lon: f64) -> OsmNode {
     OsmNode {
-        id,
+        id: NodeId(id),
         lat,
         lon,
         tags: tags(),
@@ -31,15 +32,15 @@ fn node(id: i64, lat: f64, lon: f64) -> OsmNode {
 
 fn way(id: i64, nodes: Vec<i64>) -> OsmWay {
     OsmWay {
-        id,
-        nodes,
+        id: WayId(id),
+        nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
         tags: tags(),
         version: 1,
     }
 }
 
-fn vert(x: f64, y: f64) -> (i64, f64, f64) {
-    (0, x, y)
+fn vert(x: f64, y: f64) -> (NodeId, f64, f64) {
+    (NodeId(0), x, y)
 }
 
 #[test]
@@ -161,7 +162,7 @@ fn layer() -> OsmLayer {
     ];
     let data = OsmData {
         nodes: nodes.into_iter().map(|n| (n.id, n)).collect(),
-        ways: HashMap::from([(10, way(10, vec![1, 2, 3, 4, 5]))]),
+        ways: HashMap::from([(WayId(10), way(10, vec![1, 2, 3, 4, 5]))]),
         relations: Vec::new(),
         bounds: Vec::new(),
     };
@@ -235,7 +236,7 @@ fn two_way_layer(css: &str) -> OsmLayer {
     lo.tags.insert("highway".into(), "lo".into());
     let mut hi = way(11, vec![1, 2, 3, 4, 5]);
     hi.tags.insert("highway".into(), "hi".into());
-    data.ways = HashMap::from([(10, lo), (11, hi)]);
+    data.ways = HashMap::from([(WayId(10), lo), (WayId(11), hi)]);
     let mut l = OsmLayer::new_with_data(LayerId(1), "t", Arc::new(data));
     l.set_stylesheet(Arc::new(crate::style::Stylesheet::parse(css).unwrap()));
     l
@@ -370,13 +371,14 @@ fn moving_a_node_updates_the_simplification() {
     let before = scene_vertices(&l, 17.0);
     // Node 3 starts on the line and is simplified away. Pull it 55 m off
     // the line: it becomes significant, so the way draws more segments.
-    l.commit_node_moves(&[(3, LAT + 0.0005, LON + 0.001)])
+    l.commit_node_moves(&[(NodeId(3), LAT + 0.0005, LON + 0.001)])
         .unwrap();
     assert_same_as_fresh(&l);
     let bent = scene_vertices(&l, 17.0);
     assert!(bent > before, "{bent} > {before}");
     // And back (what undo does): it is simplified away again.
-    l.commit_node_moves(&[(3, LAT, LON + 0.001)]).unwrap();
+    l.commit_node_moves(&[(NodeId(3), LAT, LON + 0.001)])
+        .unwrap();
     assert_same_as_fresh(&l);
     assert_eq!(scene_vertices(&l, 17.0), before);
 }
@@ -401,11 +403,13 @@ fn changing_a_ways_nodes_updates_the_scene() {
     let mut l = layer();
     // Zoom 19 keeps the 0.2 m kink (node 2), so dropping it shows.
     let before = scene_vertices(&l, 19.0);
-    assert!(l.set_way_nodes(10, vec![1, 5]).is_ok());
+    assert!(l
+        .set_way_nodes(WayId(10), vec![NodeId(1), NodeId(5)])
+        .is_ok());
     assert_same_as_fresh(&l);
     assert!(scene_vertices(&l, 19.0) < before);
-    l.extend_way(10, 3).unwrap();
-    l.remove_node_from_way(10, 0).unwrap();
+    l.extend_way(WayId(10), NodeId(3)).unwrap();
+    l.remove_node_from_way(WayId(10), 0).unwrap();
     assert_same_as_fresh(&l);
 }
 
@@ -416,7 +420,7 @@ fn a_drag_in_progress_draws_every_vertex() {
     let simplified = scene_vertices(&l, 16.0);
     // ... but while nodes are dragged nothing is dropped, because the
     // cached significance is of the geometry before the drag.
-    l.set_drag_preview(&HashSet::from([4]), point(px(3.0), px(0.0)));
+    l.set_drag_preview(&HashSet::from([NodeId(4)]), point(px(3.0), px(0.0)));
     assert!(scene_vertices(&l, 16.0) > simplified);
     l.clear_drag_preview();
     assert_eq!(scene_vertices(&l, 16.0), simplified);

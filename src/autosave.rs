@@ -65,6 +65,7 @@
 //! edits are all uploaded, when the diff becomes empty, and for everything
 //! when the app quits normally.
 
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::diff::{diff_osm_data, LayerDiff};
 use crate::osm::{FileEdits, OsmData, OsmParseError, OsmParser};
 use serde::{Deserialize, Serialize};
@@ -213,23 +214,23 @@ pub struct InFlight {
     #[serde(default)]
     pub omitted: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub created_nodes: Vec<i64>,
+    pub created_nodes: Vec<NodeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub modified_nodes: Vec<i64>,
+    pub modified_nodes: Vec<NodeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deleted_nodes: Vec<i64>,
+    pub deleted_nodes: Vec<NodeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub created_ways: Vec<i64>,
+    pub created_ways: Vec<WayId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub modified_ways: Vec<i64>,
+    pub modified_ways: Vec<WayId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deleted_ways: Vec<i64>,
+    pub deleted_ways: Vec<WayId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub created_relations: Vec<i64>,
+    pub created_relations: Vec<RelationId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub modified_relations: Vec<i64>,
+    pub modified_relations: Vec<RelationId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deleted_relations: Vec<i64>,
+    pub deleted_relations: Vec<RelationId>,
 }
 
 /// How many elements of each kind and action, for the summary line.
@@ -254,7 +255,9 @@ impl InFlight {
         let way_ids = |v: &[crate::osm::OsmWay]| v.iter().map(|e| e.id).collect::<Vec<_>>();
         let relation_ids =
             |v: &[crate::osm::OsmRelation]| v.iter().map(|e| e.id).collect::<Vec<_>>();
-        let deleted = |v: &[(i64, i32)]| v.iter().map(|&(id, _)| id).collect::<Vec<_>>();
+        fn deleted<T: Copy>(v: &[(T, i32)]) -> Vec<T> {
+            v.iter().map(|&(id, _)| id).collect()
+        }
         let mut flight = InFlight {
             cap: IN_FLIGHT_CAP,
             omitted: 0,
@@ -272,30 +275,25 @@ impl InFlight {
         flight
     }
 
-    fn lists_mut(&mut self) -> [&mut Vec<i64>; 9] {
-        [
-            &mut self.created_nodes,
-            &mut self.modified_nodes,
-            &mut self.deleted_nodes,
-            &mut self.created_ways,
-            &mut self.modified_ways,
-            &mut self.deleted_ways,
-            &mut self.created_relations,
-            &mut self.modified_relations,
-            &mut self.deleted_relations,
-        ]
-    }
-
     fn apply_cap(&mut self, cap: usize) {
         let mut room = cap;
         let mut dropped = 0;
-        for list in self.lists_mut() {
-            if list.len() > room {
-                dropped += list.len() - room;
-                list.truncate(room);
+        fn trim<T>(list: &mut Vec<T>, room: &mut usize, dropped: &mut usize) {
+            if list.len() > *room {
+                *dropped += list.len() - *room;
+                list.truncate(*room);
             }
-            room -= list.len();
+            *room -= list.len();
         }
+        trim(&mut self.created_nodes, &mut room, &mut dropped);
+        trim(&mut self.modified_nodes, &mut room, &mut dropped);
+        trim(&mut self.deleted_nodes, &mut room, &mut dropped);
+        trim(&mut self.created_ways, &mut room, &mut dropped);
+        trim(&mut self.modified_ways, &mut room, &mut dropped);
+        trim(&mut self.deleted_ways, &mut room, &mut dropped);
+        trim(&mut self.created_relations, &mut room, &mut dropped);
+        trim(&mut self.modified_relations, &mut room, &mut dropped);
+        trim(&mut self.deleted_relations, &mut room, &mut dropped);
         self.omitted += dropped;
     }
 
@@ -350,18 +348,21 @@ pub fn in_flight_features(
     use crate::selection::{FeatureKind, FeatureRef};
     use std::collections::HashSet;
 
-    let wanted = |pick: fn(&InFlight) -> &Vec<i64>| -> HashSet<i64> {
+    fn wanted<T: Copy + Eq + std::hash::Hash>(
+        markers: &[UploadMarker],
+        pick: fn(&InFlight) -> &Vec<T>,
+    ) -> HashSet<T> {
         markers
             .iter()
             .flat_map(|m| pick(&m.in_flight).iter().copied())
             .collect()
-    };
-    let created_nodes = wanted(|f| &f.created_nodes);
-    let modified_nodes = wanted(|f| &f.modified_nodes);
-    let created_ways = wanted(|f| &f.created_ways);
-    let modified_ways = wanted(|f| &f.modified_ways);
-    let created_relations = wanted(|f| &f.created_relations);
-    let modified_relations = wanted(|f| &f.modified_relations);
+    }
+    let created_nodes = wanted(markers, |f| &f.created_nodes);
+    let modified_nodes = wanted(markers, |f| &f.modified_nodes);
+    let created_ways = wanted(markers, |f| &f.created_ways);
+    let modified_ways = wanted(markers, |f| &f.modified_ways);
+    let created_relations = wanted(markers, |f| &f.created_relations);
+    let modified_relations = wanted(markers, |f| &f.modified_relations);
 
     let mut out = Vec::new();
     for &(layer_id, diff) in layers {
@@ -370,32 +371,32 @@ pub fn in_flight_features(
         };
         for n in &diff.created_nodes {
             if created_nodes.contains(&n.id) {
-                push(FeatureKind::Node, n.id);
+                push(FeatureKind::Node, n.id.get());
             }
         }
         for n in &diff.modified_nodes {
             if modified_nodes.contains(&n.id) {
-                push(FeatureKind::Node, n.id);
+                push(FeatureKind::Node, n.id.get());
             }
         }
         for w in &diff.created_ways {
             if created_ways.contains(&w.id) {
-                push(FeatureKind::Way, w.id);
+                push(FeatureKind::Way, w.id.get());
             }
         }
         for w in &diff.modified_ways {
             if modified_ways.contains(&w.id) {
-                push(FeatureKind::Way, w.id);
+                push(FeatureKind::Way, w.id.get());
             }
         }
         for r in &diff.created_relations {
             if created_relations.contains(&r.id) {
-                push(FeatureKind::Relation, r.id);
+                push(FeatureKind::Relation, r.id.get());
             }
         }
         for r in &diff.modified_relations {
             if modified_relations.contains(&r.id) {
-                push(FeatureKind::Relation, r.id);
+                push(FeatureKind::Relation, r.id.get());
             }
         }
     }
@@ -1158,7 +1159,7 @@ mod tests {
 
     fn node(id: i64, lat: f64, lon: f64, version: i32, t: &[(&str, &str)]) -> OsmNode {
         OsmNode {
-            id,
+            id: NodeId(id),
             lat,
             lon,
             version,
@@ -1190,27 +1191,27 @@ mod tests {
         ];
         let ways = vec![
             OsmWay {
-                id: 100,
-                nodes: vec![1, 2, 3],
+                id: WayId(100),
+                nodes: vec![NodeId(1), NodeId(2), NodeId(3)],
                 version: 6,
                 tags: tags(&[("highway", "residential"), ("name", "Main St")]),
             },
             OsmWay {
-                id: 101,
-                nodes: vec![4, 5, 6, 7, 4],
+                id: WayId(101),
+                nodes: vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7), NodeId(4)],
                 version: 2,
                 tags: tags(&[("building", "yes")]),
             },
         ];
         let relations = vec![
             OsmRelation {
-                id: 200,
+                id: RelationId(200),
                 members: vec![member(MemberType::Way, 100, "forward")],
                 version: 9,
                 tags: tags(&[("type", "route"), ("route", "bus")]),
             },
             OsmRelation {
-                id: 201,
+                id: RelationId(201),
                 members: vec![member(MemberType::Node, 8, "stop")],
                 version: 3,
                 tags: tags(&[("type", "route")]),
@@ -1236,7 +1237,7 @@ mod tests {
         let mut layer = OsmLayer::new_with_data(LayerId(1), "Edited", Arc::new(downloaded()));
         // Geometry and tags of existing objects.
         layer
-            .commit_node_moves(&[(2, 40.00123456789, -74.00012345)])
+            .commit_node_moves(&[(NodeId(2), 40.00123456789, -74.00012345)])
             .unwrap();
         layer
             .set_tag(FeatureKind::Way, 100, "name", "Main Street")
@@ -1249,46 +1250,46 @@ mod tests {
         let a = layer.add_node(40.02, -74.02);
         let b = layer.add_node(40.021, -74.021);
         let c = layer.add_node(40.022, -74.019);
-        assert!(a < 0 && b < 0 && c < 0);
+        assert!(a < NodeId(0) && b < NodeId(0) && c < NodeId(0));
         let new_way = layer.add_way(
             vec![a, b, c, a],
             vec![("building".to_string(), "house".to_string())],
         );
-        assert!(new_way < 0);
+        assert!(new_way < WayId(0));
         let new_relation = layer
             .create_relation(
                 vec![("type".to_string(), "multipolygon".to_string())],
                 vec![
-                    member(MemberType::Way, new_way, "outer"),
+                    member(MemberType::Way, new_way.get(), "outer"),
                     member(MemberType::Way, 101, "inner"),
                 ],
             )
             .unwrap();
-        assert!(new_relation < 0);
+        assert!(new_relation < RelationId(0));
         // A relation's membership changes.
         layer
             .set_relation_members(
-                200,
+                RelationId(200),
                 vec![
                     member(MemberType::Way, 100, "forward"),
-                    member(MemberType::Way, new_way, "backward"),
+                    member(MemberType::Way, new_way.get(), "backward"),
                 ],
             )
             .unwrap();
         // Deleted objects: a relation, a way and a loose node. The way leaves
         // the relation that lists it first, as the layer requires.
-        layer.delete_relation(201).unwrap();
+        layer.delete_relation(RelationId(201)).unwrap();
         layer
             .set_relation_members(
                 new_relation,
-                vec![member(MemberType::Way, new_way, "outer")],
+                vec![member(MemberType::Way, new_way.get(), "outer")],
             )
             .unwrap();
         layer.delete_feature(FeatureKind::Way, 101).unwrap();
         layer.delete_feature(FeatureKind::Node, 9).unwrap();
         // A node created and deleted again never existed on the server.
         let gone = layer.add_node(41.0, -75.0);
-        layer.delete_feature(FeatureKind::Node, gone).unwrap();
+        layer.delete_feature(FeatureKind::Node, gone.get()).unwrap();
         // Undone work: deleted and restored, changed and changed back.
         let snap = layer.delete_feature(FeatureKind::Node, 8).unwrap();
         layer.restore_feature(snap).unwrap();
@@ -1467,9 +1468,9 @@ mod tests {
         let restored_current = restored.autosave_snapshot().unwrap().0;
         // (A created object has no server version; the app gives it 0 and a
         // reload reads 1. Nothing uploads it.)
-        let unversioned = |nodes: &HashMap<i64, OsmNode>| {
+        let unversioned = |nodes: &HashMap<NodeId, OsmNode>| {
             let mut nodes = nodes.clone();
-            for n in nodes.values_mut().filter(|n| n.id < 0) {
+            for n in nodes.values_mut().filter(|n| n.id < NodeId(0)) {
                 n.version = 0;
             }
             nodes
@@ -1478,9 +1479,9 @@ mod tests {
             unversioned(&restored_current.nodes),
             unversioned(&current.nodes)
         );
-        let unversioned_ways = |ways: &HashMap<i64, OsmWay>| {
+        let unversioned_ways = |ways: &HashMap<WayId, OsmWay>| {
             let mut ways = ways.clone();
-            for w in ways.values_mut().filter(|w| w.id < 0) {
+            for w in ways.values_mut().filter(|w| w.id < WayId(0)) {
                 w.version = 0;
             }
             ways
@@ -1490,10 +1491,11 @@ mod tests {
             unversioned_ways(&current.ways)
         );
         assert_eq!(restored_current.bounds, current.bounds);
-        let tag_node = &restored_current.nodes[&1];
+        let tag_node = &restored_current.nodes[&NodeId(1)];
         assert_eq!(tag_node.tags["name"], "Corner \"A\" & Co\nline 2");
         assert_eq!(
-            restored_current.nodes[&2].lat, 40.00123456789,
+            restored_current.nodes[&NodeId(2)].lat,
+            40.00123456789,
             "coordinates keep every digit"
         );
 
@@ -1506,18 +1508,18 @@ mod tests {
     #[test]
     fn a_deleted_node_way_and_relation_are_still_deleted_after_a_restore() {
         let mut layer = OsmLayer::new_with_data(LayerId(1), "Deleted", Arc::new(downloaded()));
-        layer.delete_relation(201).unwrap();
+        layer.delete_relation(RelationId(201)).unwrap();
         layer.delete_feature(FeatureKind::Way, 101).unwrap();
         layer.delete_feature(FeatureKind::Node, 9).unwrap();
         let before = layer.diff_for_upload();
-        assert_eq!(before.deleted_relation_ids, vec![(201, 3)]);
+        assert_eq!(before.deleted_relation_ids, vec![(RelationId(201), 3)]);
 
         let root = tmp_root("deleted-roundtrip");
         let restored = restore(&layer, &root);
         let after = restored.diff_for_upload();
-        assert_eq!(after.deleted_relation_ids, vec![(201, 3)]);
-        assert_eq!(after.deleted_way_ids, vec![(101, 2)]);
-        assert_eq!(after.deleted_node_ids, vec![(9, 5)]);
+        assert_eq!(after.deleted_relation_ids, vec![(RelationId(201), 3)]);
+        assert_eq!(after.deleted_way_ids, vec![(WayId(101), 2)]);
+        assert_eq!(after.deleted_node_ids, vec![(NodeId(9), 5)]);
         assert_eq!(facts(&after), facts(&before));
 
         let change = crate::osm_upload::build_osm_change_xml(1, &[("Deleted", after)]);
@@ -1549,8 +1551,8 @@ mod tests {
             ..Default::default()
         };
         let result = crate::osm_upload::UploadResult {
-            node_id_remap: HashMap::from([(a, (5000, 1))]),
-            way_id_remap: HashMap::from([(100, (100, 7))]),
+            node_id_remap: HashMap::from([(a, (NodeId(5000), 1))]),
+            way_id_remap: HashMap::from([(WayId(100), (WayId(100), 7))]),
             relation_id_remap: HashMap::new(),
         };
         layer.apply_chunk_result(&result, &chunk);
@@ -1563,8 +1565,8 @@ mod tests {
         assert_eq!(facts(&restored.diff_for_upload()), before);
         // The accepted objects are part of the restored data, not pending.
         let data = restored.autosave_snapshot().unwrap().0;
-        assert!(data.nodes.contains_key(&5000));
-        assert_eq!(data.ways[&100].version, 7);
+        assert!(data.nodes.contains_key(&NodeId(5000)));
+        assert_eq!(data.ways[&WayId(100)].version, 7);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1647,8 +1649,8 @@ mod tests {
         let crashed = find_crashed(&root, None);
         assert_eq!(crashed.len(), 1);
         let (data, edits) = crashed[0].layers[0].load().unwrap();
-        assert_eq!(data.ways[&100].tags["name"], "First");
-        assert!(edits.modified_ways.contains(&100));
+        assert_eq!(data.ways[&WayId(100)].tags["name"], "First");
+        assert!(edits.modified_ways.contains(&WayId(100)));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1827,7 +1829,7 @@ mod tests {
             tags: "Fix the bus stops".into(),
             chunk: LayerDiff {
                 created_nodes: vec![node(-1, 1.0, 2.0, 0, &[]), node(-2, 1.0, 2.0, 0, &[])],
-                deleted_node_ids: vec![(5, 1)],
+                deleted_node_ids: vec![(NodeId(5), 1)],
                 ..Default::default()
             },
         }
@@ -1885,12 +1887,12 @@ mod tests {
     fn a_marker_lists_the_elements_that_were_in_flight_by_kind_and_action() {
         let mut chunk = request(None).chunk;
         chunk.modified_ways.push(crate::osm::OsmWay {
-            id: 31,
-            nodes: vec![1, 2],
+            id: WayId(31),
+            nodes: vec![NodeId(1), NodeId(2)],
             version: 2,
             tags: HashMap::new(),
         });
-        chunk.deleted_relation_ids.push((77, 3));
+        chunk.deleted_relation_ids.push((RelationId(77), 3));
         let marker = UploadMarker::for_request(
             "https://x.test",
             &crate::upload_chunks::ChunkRequest {
@@ -1900,10 +1902,10 @@ mod tests {
             0,
         );
         let flight = &marker.in_flight;
-        assert_eq!(flight.created_nodes, vec![-1, -2]);
-        assert_eq!(flight.deleted_nodes, vec![5]);
-        assert_eq!(flight.modified_ways, vec![31]);
-        assert_eq!(flight.deleted_relations, vec![77]);
+        assert_eq!(flight.created_nodes, vec![NodeId(-1), NodeId(-2)]);
+        assert_eq!(flight.deleted_nodes, vec![NodeId(5)]);
+        assert_eq!(flight.modified_ways, vec![WayId(31)]);
+        assert_eq!(flight.deleted_relations, vec![RelationId(77)]);
         assert_eq!((flight.cap, flight.omitted), (IN_FLIGHT_CAP, 0));
         let counts = flight.counts();
         assert_eq!(counts.total(), marker.objects);
@@ -1917,14 +1919,14 @@ mod tests {
     #[test]
     fn a_chunk_over_the_cap_lists_up_to_the_cap_and_says_how_many_were_left_out() {
         let mut flight = InFlight {
-            created_nodes: (1..=5).map(|i| -i).collect(),
-            modified_nodes: vec![10, 11, 12],
-            deleted_ways: vec![20, 21],
+            created_nodes: (1..=5).map(|i| NodeId(-i)).collect(),
+            modified_nodes: vec![NodeId(10), NodeId(11), NodeId(12)],
+            deleted_ways: vec![WayId(20), WayId(21)],
             ..Default::default()
         };
         flight.apply_cap(6);
         assert_eq!(flight.created_nodes.len(), 5);
-        assert_eq!(flight.modified_nodes, vec![10]);
+        assert_eq!(flight.modified_nodes, vec![NodeId(10)]);
         assert!(flight.deleted_ways.is_empty());
         assert_eq!(flight.omitted, 4);
         assert_eq!(flight.listed() + flight.omitted, 10);
@@ -1977,7 +1979,7 @@ mod tests {
             created_nodes: vec![node(-2, 0.0, 0.0, 0, &[]), node(-9, 0.0, 0.0, 0, &[])],
             // Same id as a created one, other action: not what was sent.
             modified_nodes: vec![node(-1, 0.0, 0.0, 1, &[]), node(5, 0.0, 0.0, 1, &[])],
-            deleted_node_ids: vec![(5, 1)],
+            deleted_node_ids: vec![(NodeId(5), 1)],
             ..Default::default()
         };
         let other = LayerDiff {
@@ -2005,8 +2007,8 @@ mod tests {
     fn placeholder_ids_survive_autosave_and_restore() {
         let layer = heavily_edited();
         let before = layer.diff_for_upload();
-        let created: Vec<i64> = before.created_nodes.iter().map(|n| n.id).collect();
-        assert!(created.iter().all(|&id| id < 0) && !created.is_empty());
+        let created: Vec<NodeId> = before.created_nodes.iter().map(|n| n.id).collect();
+        assert!(created.iter().all(|&id| id < NodeId(0)) && !created.is_empty());
         let root = tmp_root("placeholder-ids");
         let dead = Session::start(&root).unwrap();
         dead.write(&snapshot_of(&layer, 1)).unwrap();
@@ -2015,7 +2017,7 @@ mod tests {
         let (data, edits) = rec.load().unwrap();
         let restored = OsmLayer::new_with_edits(LayerId(2), "x", Arc::new(data), &edits);
         let after = restored.diff_for_upload();
-        let mut restored_ids: Vec<i64> = after.created_nodes.iter().map(|n| n.id).collect();
+        let mut restored_ids: Vec<NodeId> = after.created_nodes.iter().map(|n| n.id).collect();
         let mut created = created;
         created.sort();
         restored_ids.sort();
@@ -2386,7 +2388,7 @@ mod tests {
                 &[]
             };
             nodes.insert(
-                i,
+                NodeId(i),
                 node(
                     i,
                     40.0 + (i as f64) * 1e-6,
@@ -2400,10 +2402,10 @@ mod tests {
         for w in 0..30_000i64 {
             let first = w * 10 + 1;
             ways.insert(
-                w + 1,
+                WayId(w + 1),
                 OsmWay {
-                    id: w + 1,
-                    nodes: (first..first + 10).collect(),
+                    id: WayId(w + 1),
+                    nodes: (first..first + 10).map(NodeId).collect(),
                     version: 2,
                     tags: tags(&[("highway", "residential"), ("name", "Some Street")]),
                 },

@@ -6,6 +6,7 @@ use gpui::{
     ScrollWheelEvent, Window,
 };
 use osm_gpui::coordinates::{LatLon, Mercator};
+use osm_gpui::ids::{NodeId, WayId};
 use std::sync::{Arc, Condvar, Mutex};
 
 use osm_gpui::idle_tracker::IdleTracker;
@@ -310,9 +311,9 @@ impl MapViewer {
         use script::SnapExpect;
         let got = match &self.pointer.snap_preview {
             None => SnapExpect::None,
-            Some(SnapTarget::Node { id, .. }) => SnapExpect::Node(*id),
+            Some(SnapTarget::Node { id, .. }) => SnapExpect::Node(id.get()),
             Some(SnapTarget::Way { way_id, index, .. }) => SnapExpect::Way {
-                way: *way_id,
+                way: way_id.get(),
                 segment: *index,
             },
         };
@@ -334,8 +335,11 @@ impl MapViewer {
     pub(crate) fn script_check_way_nodes(&self, way: i64, want: &[i64]) -> Result<(), String> {
         let got = self
             .script_active_editable()?
-            .way_node_ids(way)
-            .ok_or_else(|| format!("way {way} does not exist"))?;
+            .way_node_ids(WayId(way))
+            .ok_or_else(|| format!("way {way} does not exist"))?
+            .into_iter()
+            .map(|n| n.get())
+            .collect::<Vec<i64>>();
         if got == want {
             Ok(())
         } else {
@@ -346,10 +350,14 @@ impl MapViewer {
     /// `assert_node_shared`: exactly these ways use the node.
     pub(crate) fn script_check_node_shared(&self, node: i64, want: &[i64]) -> Result<(), String> {
         let editable = self.script_active_editable()?;
-        if editable.node_lat_lon(node).is_none() {
+        if editable.node_lat_lon(NodeId(node)).is_none() {
             return Err(format!("node {node} does not exist"));
         }
-        let mut got = editable.ways_using_node(node);
+        let mut got: Vec<i64> = editable
+            .ways_using_node(NodeId(node))
+            .into_iter()
+            .map(|w| w.get())
+            .collect();
         got.sort_unstable();
         got.dedup();
         let mut want = want.to_vec();
@@ -1092,7 +1100,7 @@ impl MapViewer {
                         self.layer_manager
                             .find_layer(only.layer_id)
                             .and_then(|l| l.as_editable())
-                            .and_then(|e| e.node_lat_lon(only.id))
+                            .and_then(|e| e.node_lat_lon(NodeId(only.id)))
                     })
                     .flatten()
                     .ok_or_else(|| "the selected feature is not a node".to_string())?;

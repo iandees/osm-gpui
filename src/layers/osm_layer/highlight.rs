@@ -4,7 +4,7 @@ impl OsmLayer {
     /// The screen-space offset to apply to `node_id`'s projected position
     /// this frame: the drag preview's delta if the node is part of it, zero
     /// otherwise.
-    pub(super) fn drag_preview_offset(&self, node_id: i64) -> Point<Pixels> {
+    pub(super) fn drag_preview_offset(&self, node_id: NodeId) -> Point<Pixels> {
         match &self.view.drag_preview {
             Some((ids, delta)) if ids.contains(&node_id) => *delta,
             _ => Point::default(),
@@ -29,7 +29,7 @@ impl OsmLayer {
 
         match feature.kind {
             FeatureKind::Node => {
-                let Some(n) = osm_data.nodes.get(&feature.id) else {
+                let Some(n) = osm_data.nodes.get(&NodeId(feature.id)) else {
                     return;
                 };
                 let Some(at) = validate_coords(n.lat_lon()) else {
@@ -39,7 +39,7 @@ impl OsmLayer {
                 if !is_point_valid(sp) {
                     return;
                 }
-                sp += self.drag_preview_offset(feature.id);
+                sp += self.drag_preview_offset(NodeId(feature.id));
                 // Off screen (a big selection mostly is): nothing to draw.
                 const MARGIN: f32 = 30.0;
                 if kind == HighlightKind::Selected
@@ -62,7 +62,7 @@ impl OsmLayer {
                 paint_ring(window, center, core_diameter, 2.0, core);
             }
             FeatureKind::Way => {
-                let Some(way) = osm_data.ways.get(&feature.id) else {
+                let Some(way) = osm_data.ways.get(&WayId(feature.id)) else {
                     return;
                 };
                 if way.nodes.len() < 2 {
@@ -174,7 +174,7 @@ impl OsmLayer {
                 // not otherwise shown get the small preview dot (the
                 // stroke above covered the ones painted by `render_canvas`).
                 let preview = kind == HighlightKind::Hovered
-                    && self.view.preview_way == Some(feature.id)
+                    && self.view.preview_way == Some(WayId(feature.id))
                     && zoom >= node_markers::PREVIEW_MIN_ZOOM;
                 for (p, style) in pts.iter().zip(node_styles.iter()) {
                     if kind == HighlightKind::Selected
@@ -189,15 +189,16 @@ impl OsmLayer {
             FeatureKind::Relation => {
                 // A relation has no shape of its own: mark each member that
                 // is loaded (nested relations' members too, one level).
-                let Some(relation) = osm_data.relations.iter().find(|r| r.id == feature.id) else {
+                let Some(relation) = osm_data.relations.iter().find(|r| r.id.get() == feature.id)
+                else {
                     return;
                 };
                 // A multipolygon is an area: tint it in the highlight's color
                 // so the whole shape reads as selected, under the members.
-                if let Some(entry) = self.derived.mp.entries.get(&feature.id) {
+                if let Some(entry) = self.derived.mp.entries.get(&RelationId(feature.id)) {
                     self.render_area_tint(viewport, bounds, window, entry, core, kind);
                 }
-                let find = |id: i64| osm_data.relations.iter().find(|r| r.id == id).cloned();
+                let find = |id: RelationId| osm_data.relations.iter().find(|r| r.id == id).cloned();
                 for (member_type, id) in crate::relations::flatten_members(relation, &find) {
                     let kind = match member_type {
                         crate::osm::MemberType::Node => FeatureKind::Node,

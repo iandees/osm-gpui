@@ -1,6 +1,7 @@
 //! Point, segment, rectangle and interior hit tests, and snapping to a way.
 
 use super::{data_with, empty_tags, viewport_centered_on};
+use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::EditableLayer;
 use crate::layers::LayerId;
@@ -13,22 +14,22 @@ fn hit_test_node_wins_over_coincident_way() {
     let center_lat = 40.0;
     let center_lon = -74.0;
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat,
         lon: center_lon,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat,
         lon: center_lon + 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -53,22 +54,22 @@ fn hit_test_falls_through_to_way() {
     let center_lat = 40.0;
     let center_lon = -74.0;
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat,
         lon: center_lon - 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat,
         lon: center_lon + 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -87,36 +88,36 @@ fn hit_test_interior_hits_closed_way_center_but_plain_hit_test_misses() {
     let center_lon = -74.0;
     let d = 0.01;
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat - d,
         lon: center_lon - d,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat - d,
         lon: center_lon + d,
         version: 1,
         tags: empty_tags(),
     };
     let n3 = OsmNode {
-        id: 3,
+        id: NodeId(3),
         lat: center_lat + d,
         lon: center_lon + d,
         version: 1,
         tags: empty_tags(),
     };
     let n4 = OsmNode {
-        id: 4,
+        id: NodeId(4),
         lat: center_lat + d,
         lon: center_lon - d,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2, 3, 4, 1],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(1)],
         version: 1,
         tags: empty_tags(),
     };
@@ -144,36 +145,36 @@ fn resolve_hits_picks_smallest_of_nested_closed_ways() {
     // Outer, large square.
     let d_outer = 0.01;
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat - d_outer,
         lon: center_lon - d_outer,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat - d_outer,
         lon: center_lon + d_outer,
         version: 1,
         tags: empty_tags(),
     };
     let n3 = OsmNode {
-        id: 3,
+        id: NodeId(3),
         lat: center_lat + d_outer,
         lon: center_lon + d_outer,
         version: 1,
         tags: empty_tags(),
     };
     let n4 = OsmNode {
-        id: 4,
+        id: NodeId(4),
         lat: center_lat + d_outer,
         lon: center_lon - d_outer,
         version: 1,
         tags: empty_tags(),
     };
     let outer_way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2, 3, 4, 1],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(1)],
         version: 1,
         tags: empty_tags(),
     };
@@ -183,36 +184,36 @@ fn resolve_hits_picks_smallest_of_nested_closed_ways() {
     // way instead.
     let d_inner = 0.001;
     let n5 = OsmNode {
-        id: 5,
+        id: NodeId(5),
         lat: center_lat - d_inner,
         lon: center_lon - d_inner,
         version: 1,
         tags: empty_tags(),
     };
     let n6 = OsmNode {
-        id: 6,
+        id: NodeId(6),
         lat: center_lat - d_inner,
         lon: center_lon + d_inner,
         version: 1,
         tags: empty_tags(),
     };
     let n7 = OsmNode {
-        id: 7,
+        id: NodeId(7),
         lat: center_lat + d_inner,
         lon: center_lon + d_inner,
         version: 1,
         tags: empty_tags(),
     };
     let n8 = OsmNode {
-        id: 8,
+        id: NodeId(8),
         lat: center_lat + d_inner,
         lon: center_lon - d_inner,
         version: 1,
         tags: empty_tags(),
     };
     let inner_way = OsmWay {
-        id: 20,
-        nodes: vec![5, 6, 7, 8, 5],
+        id: WayId(20),
+        nodes: vec![NodeId(5), NodeId(6), NodeId(7), NodeId(8), NodeId(5)],
         version: 1,
         tags: empty_tags(),
     };
@@ -238,28 +239,28 @@ fn hit_test_interior_ignores_open_way() {
     let center_lon = -74.0;
     let d = 0.01;
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat - d,
         lon: center_lon - d,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat - d,
         lon: center_lon + d,
         version: 1,
         tags: empty_tags(),
     };
     let n3 = OsmNode {
-        id: 3,
+        id: NodeId(3),
         lat: center_lat + d,
         lon: center_lon + d,
         version: 1,
         tags: empty_tags(),
     };
     let n4 = OsmNode {
-        id: 4,
+        id: NodeId(4),
         lat: center_lat + d,
         lon: center_lon - d,
         version: 1,
@@ -267,8 +268,8 @@ fn hit_test_interior_ignores_open_way() {
     };
     // Not closed: first node ref (1) != last (4).
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2, 3, 4],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
         version: 1,
         tags: empty_tags(),
     };
@@ -283,7 +284,7 @@ fn hit_test_interior_ignores_open_way() {
 #[test]
 fn hit_test_no_match_returns_empty() {
     let n = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -302,22 +303,22 @@ fn hit_test_segment_finds_nearest_segment_and_endpoint_indices() {
     let center_lat = 40.0;
     let center_lon = -74.0;
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat,
         lon: center_lon - 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat,
         lon: center_lon + 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -326,28 +327,28 @@ fn hit_test_segment_finds_nearest_segment_and_endpoint_indices() {
     let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     let hit = layer.hit_test_segment(&viewport, point(px(400.0), px(300.0)), 6.0);
-    assert_eq!(hit, Some((10, 1, 2, 0)));
+    assert_eq!(hit, Some((WayId(10), NodeId(1), NodeId(2), 0)));
 }
 
 #[test]
 fn hit_test_segment_none_when_out_of_tolerance() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.001,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.0,
         lon: -74.0,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -364,22 +365,22 @@ fn snap_to_way_on_line_returns_exact_click_point() {
     let center_lat = 40.0;
     let center_lon = -74.0;
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat,
         lon: center_lon - 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat,
         lon: center_lon + 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -390,7 +391,7 @@ fn snap_to_way_on_line_returns_exact_click_point() {
     let (way_id, a, b, idx, lat, lon) = layer
         .snap_to_way(&viewport, point(px(400.0), px(300.0)), 6.0)
         .expect("expected a snap hit");
-    assert_eq!((way_id, a, b, idx), (10, 1, 2, 0));
+    assert_eq!((way_id, a, b, idx), (WayId(10), NodeId(1), NodeId(2), 0));
     assert!((lat - center_lat).abs() < 1e-6, "got lat {}", lat);
     assert!((lon - center_lon).abs() < 1e-6, "got lon {}", lon);
 }
@@ -400,22 +401,22 @@ fn snap_to_way_off_line_projects_onto_segment() {
     let center_lat = 40.0;
     let center_lon = -74.0;
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat,
         lon: center_lon - 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat,
         lon: center_lon + 0.001,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -427,7 +428,7 @@ fn snap_to_way_off_line_projects_onto_segment() {
     let (way_id, a, b, idx, lat, lon) = layer
         .snap_to_way(&viewport, point(px(403.0), px(297.0)), 6.0)
         .expect("expected a snap hit");
-    assert_eq!((way_id, a, b, idx), (10, 1, 2, 0));
+    assert_eq!((way_id, a, b, idx), (WayId(10), NodeId(1), NodeId(2), 0));
     // The line is flat (both endpoints share center_lat), so the
     // projected point's lat matches the line exactly regardless of the
     // click's vertical offset.
@@ -442,22 +443,22 @@ fn snap_to_way_off_line_projects_onto_segment() {
 #[test]
 fn snap_to_way_none_when_out_of_tolerance() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.001,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: 40.0,
         lon: -74.0,
         version: 1,
         tags: empty_tags(),
     };
     let way = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
@@ -477,21 +478,21 @@ fn hit_test_rect_selects_contained_nodes_and_fully_enclosed_ways() {
     // n3 is a full degree away, so its mercator position is far outside
     // any modest screen-space rect around the center.
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: center_lat,
         lon: center_lon,
         version: 1,
         tags: empty_tags(),
     };
     let n2 = OsmNode {
-        id: 2,
+        id: NodeId(2),
         lat: center_lat,
         lon: center_lon,
         version: 1,
         tags: empty_tags(),
     };
     let n3 = OsmNode {
-        id: 3,
+        id: NodeId(3),
         lat: center_lat + 1.0,
         lon: center_lon + 1.0,
         version: 1,
@@ -499,16 +500,16 @@ fn hit_test_rect_selects_contained_nodes_and_fully_enclosed_ways() {
     };
     // way_in's bbox is the (degenerate) point at the center: fully enclosed.
     let way_in = OsmWay {
-        id: 10,
-        nodes: vec![1, 2],
+        id: WayId(10),
+        nodes: vec![NodeId(1), NodeId(2)],
         version: 1,
         tags: empty_tags(),
     };
     // way_partial's bbox spans from the center to the far node: NOT fully
     // enclosed by a modest rect around the center.
     let way_partial = OsmWay {
-        id: 20,
-        nodes: vec![1, 3],
+        id: WayId(20),
+        nodes: vec![NodeId(1), NodeId(3)],
         version: 1,
         tags: empty_tags(),
     };

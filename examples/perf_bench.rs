@@ -9,6 +9,7 @@
 
 use gpui::{point, px, size, Path, PathVertex, Pixels, Point};
 use osm_gpui::coordinates::{LatLon, Mercator};
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::{EditableLayer, LayerId};
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
@@ -61,9 +62,9 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
             let id = next_id;
             next_id += 1;
             nodes.insert(
-                id,
+                NodeId(id),
                 OsmNode {
-                    id,
+                    id: NodeId(id),
                     lat,
                     lon,
                     tags: HashMap::new(),
@@ -82,10 +83,10 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
             _ => HashMap::new(),
         };
         ways.insert(
-            wid,
+            WayId(wid),
             OsmWay {
-                id: wid,
-                nodes: node_ids,
+                id: WayId(wid),
+                nodes: node_ids.into_iter().map(NodeId).collect::<Vec<_>>(),
                 tags: t,
                 version: 1,
             },
@@ -102,9 +103,9 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
             _ => HashMap::new(),
         };
         nodes.insert(
-            id,
+            NodeId(id),
             OsmNode {
-                id,
+                id: NodeId(id),
                 lat,
                 lon,
                 tags: t,
@@ -143,7 +144,7 @@ fn bench<F: FnMut() -> u64>(name: &str, iters: usize, mut f: F) {
 /// quads grouped by style. Everything except the final window.paint_path.
 fn render_ways_cpu(
     ways_sorted: &[&OsmWay],
-    way_vertices: &[Vec<(i64, f64, f64)>],
+    way_vertices: &[Vec<(NodeId, f64, f64)>],
     way_bboxes: &[Option<(f64, f64, f64, f64)>],
     viewport: &Viewport,
     stylesheet: &Stylesheet,
@@ -170,7 +171,7 @@ fn render_ways_cpu(
 #[allow(clippy::too_many_arguments)]
 fn render_ways_cpu_inner(
     ways_sorted: &[&OsmWay],
-    way_vertices: &[Vec<(i64, f64, f64)>],
+    way_vertices: &[Vec<(NodeId, f64, f64)>],
     way_bboxes: &[Option<(f64, f64, f64, f64)>],
     viewport: &Viewport,
     stylesheet: &Stylesheet,
@@ -277,7 +278,7 @@ fn push_quad(
 /// Node loop replica: cull, per-node HashMap lookup + style resolution.
 fn render_nodes_cpu(
     data: &OsmData,
-    flat: &[(i64, f64, f64)],
+    flat: &[(NodeId, f64, f64)],
     viewport: &Viewport,
     stylesheet: &Stylesheet,
     skip_style: bool,
@@ -339,8 +340,8 @@ fn main() {
     // Rebuild the same derived tables the layer holds, so the render replica
     // matches the real loop's data layout.
     use osm_gpui::coordinates::lat_lon_to_mercator;
-    let mut merc: HashMap<i64, (f64, f64)> = HashMap::with_capacity(data.nodes.len());
-    let mut flat: Vec<(i64, f64, f64)> = Vec::with_capacity(data.nodes.len());
+    let mut merc: HashMap<NodeId, (f64, f64)> = HashMap::with_capacity(data.nodes.len());
+    let mut flat: Vec<(NodeId, f64, f64)> = Vec::with_capacity(data.nodes.len());
     for n in data.nodes.values() {
         let Mercator { x: mx, y: my } = lat_lon_to_mercator(LatLon::new(n.lat, n.lon));
         merc.insert(n.id, (mx, my));
@@ -349,7 +350,7 @@ fn main() {
     // Iterate ways sorted by id, matching OsmLayer's deterministic table order.
     let mut ways_sorted: Vec<&OsmWay> = data.ways.values().collect();
     ways_sorted.sort_by_key(|w| w.id);
-    let mut way_vertices: Vec<Vec<(i64, f64, f64)>> = Vec::with_capacity(data.ways.len());
+    let mut way_vertices: Vec<Vec<(NodeId, f64, f64)>> = Vec::with_capacity(data.ways.len());
     let mut way_bboxes: Vec<Option<(f64, f64, f64, f64)>> = Vec::with_capacity(data.ways.len());
     for w in &ways_sorted {
         let mut vs = Vec::with_capacity(w.nodes.len());
@@ -501,7 +502,8 @@ fn main() {
         10,
         || {
             let mut l = OsmLayer::new_with_data(LayerId(1), "bench", data.clone());
-            l.commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)]).unwrap();
+            l.commit_node_moves(&[(NodeId(0), CENTER_LAT, CENTER_LON)])
+                .unwrap();
             l.is_modified() as u64
         },
     );
@@ -518,7 +520,7 @@ fn main() {
         30,
         || {
             l_unique
-                .commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)])
+                .commit_node_moves(&[(NodeId(0), CENTER_LAT, CENTER_LON)])
                 .unwrap();
             l_unique.is_modified() as u64
         },
@@ -564,9 +566,9 @@ fn build_street_dataset() -> Arc<OsmData> {
             let id = next_id;
             next_id += 1;
             nodes.insert(
-                id,
+                NodeId(id),
                 OsmNode {
-                    id,
+                    id: NodeId(id),
                     lat: cl + t * ang.sin() + wob,
                     lon: co + t * ang.cos() / 0.7 + wob,
                     tags: HashMap::new(),
@@ -576,10 +578,10 @@ fn build_street_dataset() -> Arc<OsmData> {
             ids.push(id);
         }
         ways.insert(
-            wid,
+            WayId(wid),
             OsmWay {
-                id: wid,
-                nodes: ids,
+                id: WayId(wid),
+                nodes: ids.into_iter().map(NodeId).collect::<Vec<_>>(),
                 tags: tags(&[
                     ("highway", "residential"),
                     ("name", names[(wid % 8) as usize]),
@@ -656,9 +658,9 @@ fn line_labels_section() {
     );
     let proj = vp.projector();
     #[allow(clippy::type_complexity)]
-    let mut verts: Vec<(i64, Vec<(i64, f64, f64)>, String)> = Vec::new();
+    let mut verts: Vec<(i64, Vec<(NodeId, f64, f64)>, String)> = Vec::new();
     for w in data.ways.values() {
-        let v: Vec<(i64, f64, f64)> = w
+        let v: Vec<(NodeId, f64, f64)> = w
             .nodes
             .iter()
             .map(|id| {
@@ -668,7 +670,7 @@ fn line_labels_section() {
                 (*id, mx, my)
             })
             .collect();
-        verts.push((w.id, v, w.tags["name"].clone()));
+        verts.push((w.id.get(), v, w.tags["name"].clone()));
     }
     println!("tolerance sweep at z16 (fill_tol / halo_tol px):");
     for (ft, ht) in [(0.05, 0.1), (0.1, 0.2), (0.2, 0.4), (0.4, 0.8)] {
@@ -864,7 +866,7 @@ fn ring_nodes(
             let a = i as f64 / n as f64 * std::f64::consts::TAU;
             let r = radius_deg * (1.0 + (rng.f64() - 0.5) * 0.1);
             OsmNode {
-                id: first_id + i as i64,
+                id: NodeId(first_id + i as i64),
                 lat: lat + r * a.sin(),
                 lon: lon + r * a.cos() * 1.3,
                 tags: HashMap::new(),
@@ -894,7 +896,7 @@ fn with_multipolygons(base: &OsmData) -> OsmData {
                     role: &str,
                     next_way: &mut i64|
      -> Vec<OsmMember> {
-        let ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
+        let ids: Vec<NodeId> = nodes.iter().map(|n| n.id).collect();
         for n in nodes {
             data.nodes.insert(n.id, n);
         }
@@ -908,16 +910,16 @@ fn with_multipolygons(base: &OsmData) -> OsmData {
             } else {
                 (s + 1) * per + 1
             };
-            let mut way_nodes: Vec<i64> = ids[lo..hi].to_vec();
+            let mut way_nodes: Vec<NodeId> = ids[lo..hi].to_vec();
             if s + 1 == split {
                 way_nodes.push(ids[0]);
             }
             let id = *next_way;
             *next_way += 1;
             data.ways.insert(
-                id,
+                WayId(id),
                 OsmWay {
-                    id,
+                    id: WayId(id),
                     nodes: way_nodes,
                     tags: HashMap::new(),
                     version: 1,
@@ -938,7 +940,7 @@ fn with_multipolygons(base: &OsmData) -> OsmData {
         let mut members = add_ring(&mut data, outer, 2, "outer", &mut next_way);
         members.extend(add_ring(&mut data, inner, 1, "inner", &mut next_way));
         relations.push(OsmRelation {
-            id: 1 + r,
+            id: RelationId(1 + r),
             members,
             version: 1,
             tags: if r % 2 == 0 {
@@ -954,7 +956,7 @@ fn with_multipolygons(base: &OsmData) -> OsmData {
     let mut members = add_ring(&mut data, outer, 40, "outer", &mut next_way);
     members.extend(add_ring(&mut data, inner, 1, "inner", &mut next_way));
     relations.push(OsmRelation {
-        id: HUGE_RELATION,
+        id: RelationId(HUGE_RELATION),
         members,
         version: 1,
         tags: tags(&[("type", "multipolygon"), ("natural", "water")]),
@@ -1047,14 +1049,14 @@ fn multipolygon_section(base: &Arc<OsmData>) {
         20,
         || {
             before
-                .commit_node_moves(&[(10_000_000 + 5, CENTER_LAT + 0.01, CENTER_LON)])
+                .commit_node_moves(&[(NodeId(10_000_000 + 5), CENTER_LAT + 0.01, CENTER_LON)])
                 .unwrap();
             before.is_modified() as u64
         },
     );
     bench("commit_node_moves, node of a small lake: AFTER", 20, || {
         after
-            .commit_node_moves(&[(10_000_000 + 5, CENTER_LAT + 0.01, CENTER_LON)])
+            .commit_node_moves(&[(NodeId(10_000_000 + 5), CENTER_LAT + 0.01, CENTER_LON)])
             .unwrap();
         after.is_modified() as u64
     });
@@ -1063,7 +1065,7 @@ fn multipolygon_section(base: &Arc<OsmData>) {
         10,
         || {
             before
-                .commit_node_moves(&[(HUGE_RING_NODE, CENTER_LAT + 0.0101, CENTER_LON)])
+                .commit_node_moves(&[(NodeId(HUGE_RING_NODE), CENTER_LAT + 0.0101, CENTER_LON)])
                 .unwrap();
             before.is_modified() as u64
         },
@@ -1073,20 +1075,20 @@ fn multipolygon_section(base: &Arc<OsmData>) {
         10,
         || {
             after
-                .commit_node_moves(&[(HUGE_RING_NODE, CENTER_LAT + 0.0101, CENTER_LON)])
+                .commit_node_moves(&[(NodeId(HUGE_RING_NODE), CENTER_LAT + 0.0101, CENTER_LON)])
                 .unwrap();
             after.is_modified() as u64
         },
     );
     bench("commit_node_moves, node in no relation: BEFORE", 20, || {
         before
-            .commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)])
+            .commit_node_moves(&[(NodeId(0), CENTER_LAT, CENTER_LON)])
             .unwrap();
         before.is_modified() as u64
     });
     bench("commit_node_moves, node in no relation: AFTER", 20, || {
         after
-            .commit_node_moves(&[(0, CENTER_LAT, CENTER_LON)])
+            .commit_node_moves(&[(NodeId(0), CENTER_LAT, CENTER_LON)])
             .unwrap();
         after.is_modified() as u64
     });

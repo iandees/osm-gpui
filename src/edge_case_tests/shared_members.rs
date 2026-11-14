@@ -5,6 +5,7 @@
 //! the server's 255-character limit through Reverse, Merge Nodes and Join.
 
 use super::*;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 
 fn undo_redo(s: &mut Session, before: &Snap) {
     let after = s.snap();
@@ -178,7 +179,7 @@ fn merging_nodes_in_many_relations_moves_every_membership_to_the_survivor(cx: &m
         let d = s.diff();
         // Restriction 900 already named node 2, so it is the one unchanged.
         assert_eq!(d.modified_relations.len(), 7);
-        assert_eq!(d.deleted_node_ids, vec![(3, 3)]);
+        assert_eq!(d.deleted_node_ids, vec![(NodeId(3), 3)]);
         // The relations stop naming node 3 before node 3 is deleted.
         let xml = s.xml();
         let del = at(&xml, "<delete>");
@@ -202,7 +203,7 @@ fn merging_in_the_other_order_keeps_the_same_memberships_on_the_other_node(
         assert!(s.has_node(3) && !s.has_node(2));
         check_merged_into(s, 3);
         s.assert_no_dangling();
-        assert_eq!(s.diff().deleted_node_ids, vec![(2, 3)]);
+        assert_eq!(s.diff().deleted_node_ids, vec![(NodeId(2), 3)]);
         undo_redo(s, &before);
     });
 }
@@ -283,7 +284,7 @@ fn deleting_a_node_that_is_a_stop_and_an_admin_centre_cleans_up_both_relations(
         let d = s.diff();
         assert_eq!(d.modified_relations.len(), 2);
         assert_eq!(d.modified_ways.len(), 2);
-        assert_eq!(d.deleted_node_ids, vec![(3, 3)]);
+        assert_eq!(d.deleted_node_ids, vec![(NodeId(3), 3)]);
         let xml = s.xml();
         assert!(at(&xml, "<modify>") < at(&xml, "<delete>"));
         undo_redo(s, &before);
@@ -366,9 +367,9 @@ fn deleting_a_refused_and_an_allowed_node_together_deletes_only_the_allowed_one_
     let mut data = stop_network(true);
     // A loose stop that only route 903 knows.
     data.nodes.insert(
-        20,
+        NodeId(20),
         OsmNode {
-            id: 20,
+            id: NodeId(20),
             lat: 40.01,
             lon: -74.01,
             version: 3,
@@ -376,7 +377,7 @@ fn deleting_a_refused_and_an_allowed_node_together_deletes_only_the_allowed_one_
         },
     );
     data.relations.push(OsmRelation {
-        id: 903,
+        id: RelationId(903),
         version: 2,
         tags: [("type", "route"), ("route", "bus")]
             .iter()
@@ -418,7 +419,7 @@ fn deleting_a_refused_and_an_allowed_node_together_deletes_only_the_allowed_one_
 fn disconnecting_a_stop_node_leaves_every_membership_on_the_original_node(cx: &mut TestAppContext) {
     let mut data = stop_network(false);
     data.relations.push(OsmRelation {
-        id: 906,
+        id: RelationId(906),
         version: 2,
         tags: [("type", "multipolygon")]
             .iter()
@@ -503,9 +504,9 @@ fn disconnecting_a_restriction_via_node_must_not_silently_break_the_restriction(
 fn disconnecting_an_unrelated_way_from_a_restriction_via_node_is_allowed(cx: &mut TestAppContext) {
     let mut data = stop_network(true);
     data.nodes.insert(
-        6,
+        NodeId(6),
         OsmNode {
-            id: 6,
+            id: NodeId(6),
             lat: 40.02,
             lon: -74.02,
             version: 3,
@@ -513,10 +514,10 @@ fn disconnecting_an_unrelated_way_from_a_restriction_via_node_is_allowed(cx: &mu
         },
     );
     data.ways.insert(
-        12,
+        WayId(12),
         OsmWay {
-            id: 12,
-            nodes: vec![3, 6],
+            id: WayId(12),
+            nodes: vec![NodeId(3), NodeId(6)],
             version: 3,
             tags: HashMap::new(),
         },

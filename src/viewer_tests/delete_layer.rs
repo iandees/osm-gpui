@@ -5,6 +5,7 @@ use crate::undo::UndoableAction;
 use crate::{DeleteLayer, MapViewer, Redo, Undo};
 use gpui::prelude::*;
 use gpui::{point, px, TestAppContext};
+use osm_gpui::ids::NodeId;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::LayerId;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
@@ -420,7 +421,7 @@ fn a_step_whose_layer_is_gone_is_skipped_with_a_message(cx: &mut TestAppContext)
             let create = |layer, id| UndoableAction::create_node(layer, id, CENTER_LAT, CENTER_LON);
             view.undo_stack.push(UndoableAction::Batch {
                 label: "stale".into(),
-                actions: vec![create(a, -100), create(b, -101)],
+                actions: vec![create(a, NodeId(-100)), create(b, NodeId(-101))],
             });
             let index = view
                 .layer_manager
@@ -438,7 +439,11 @@ fn a_step_whose_layer_is_gone_is_skipped_with_a_message(cx: &mut TestAppContext)
             );
             // Nothing was half-applied: layer A never had node -100.
             let layer = view.layer_manager.find_layer(a).unwrap();
-            assert!(layer.as_editable().unwrap().node_lat_lon(-100).is_none());
+            assert!(layer
+                .as_editable()
+                .unwrap()
+                .node_lat_lon(NodeId(-100))
+                .is_none());
             view.status_message = None;
             view.on_redo(&Redo, window, cx);
             assert!(view.status_message.is_some());
@@ -451,5 +456,5 @@ fn layer_has_no_node(view: &MapViewer, layer: LayerId, id: i64) -> bool {
     view.layer_manager
         .find_layer(layer)
         .and_then(|l| l.as_editable())
-        .is_some_and(|e| e.node_lat_lon(id).is_none())
+        .is_some_and(|e| e.node_lat_lon(NodeId(id)).is_none())
 }

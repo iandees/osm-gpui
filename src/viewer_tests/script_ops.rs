@@ -5,6 +5,7 @@ use crate::{script_harness, MapViewer};
 use gpui::prelude::*;
 use gpui::{px, size, TestAppContext};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::WayId;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::osm_upload;
 use osm_gpui::viewport::Viewport;
@@ -216,7 +217,7 @@ fn script_export_writes_the_active_layer(cx: &mut TestAppContext) {
     let (data, edits) = osm_gpui::osm::OsmParser::new()
         .parse_file_with_edits(path.to_str().unwrap())
         .unwrap();
-    assert!(data.ways.contains_key(&10));
+    assert!(data.ways.contains_key(&WayId(10)));
     let _ = edits;
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 }

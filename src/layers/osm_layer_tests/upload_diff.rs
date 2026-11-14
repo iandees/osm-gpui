@@ -1,6 +1,7 @@
 //! The diff a layer reports for upload and how an upload result is applied.
 
 use super::{data_with, empty_tags};
+use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::EditableLayer;
 use crate::layers::LayerId;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 #[test]
 fn diff_for_upload_no_changes_is_empty() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -26,7 +27,7 @@ fn diff_for_upload_no_changes_is_empty() {
 #[test]
 fn diff_for_upload_detects_tag_edit_as_modified() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -40,7 +41,7 @@ fn diff_for_upload_detects_tag_edit_as_modified() {
         .unwrap();
     let diff = layer.diff_for_upload();
     assert_eq!(diff.modified_nodes.len(), 1);
-    assert_eq!(diff.modified_nodes[0].id, 1);
+    assert_eq!(diff.modified_nodes[0].id, NodeId(1));
     assert!(diff.created_nodes.is_empty());
     assert!(diff.deleted_node_ids.is_empty());
 }
@@ -48,7 +49,7 @@ fn diff_for_upload_detects_tag_edit_as_modified() {
 #[test]
 fn diff_for_upload_detects_move_as_modified() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -57,7 +58,9 @@ fn diff_for_upload_detects_move_as_modified() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(1), 41.0, -75.0)])
+        .unwrap();
     let diff = layer.diff_for_upload();
     assert_eq!(diff.modified_nodes.len(), 1);
     assert_eq!(diff.modified_nodes[0].lat, 41.0);
@@ -66,7 +69,7 @@ fn diff_for_upload_detects_move_as_modified() {
 #[test]
 fn apply_upload_result_updates_version_for_modified_node() {
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -75,15 +78,17 @@ fn apply_upload_result_updates_version_for_modified_node() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
+    layer
+        .commit_node_moves(&[(NodeId(1), 41.0, -75.0)])
+        .unwrap();
     assert!(layer.is_modified());
 
     let mut result = crate::osm_upload::UploadResult::default();
-    result.node_id_remap.insert(1, (1, 2));
+    result.node_id_remap.insert(NodeId(1), (NodeId(1), 2));
     layer.apply_upload_result(&result);
 
     let updated = layer.get_osm_data().unwrap();
-    assert_eq!(updated.nodes.get(&1).unwrap().version, 2);
+    assert_eq!(updated.nodes.get(&NodeId(1)).unwrap().version, 2);
     assert!(
         !layer.is_modified(),
         "layer should be clean after a reconciled upload"
@@ -101,7 +106,7 @@ fn apply_upload_result_remaps_created_node_id_in_referencing_way() {
     // list must be updated to point at the new id, or its geometry
     // would silently corrupt from then on.
     let n1 = OsmNode {
-        id: 1,
+        id: NodeId(1),
         lat: 40.0,
         lon: -74.0,
         version: 1,
@@ -116,9 +121,9 @@ fn apply_upload_result_remaps_created_node_id_in_referencing_way() {
     let current = layer.get_osm_data().unwrap();
     let mut new_data = (*current).clone();
     new_data.nodes.insert(
-        -1,
+        NodeId(-1),
         OsmNode {
-            id: -1,
+            id: NodeId(-1),
             lat: 40.001,
             lon: -74.001,
             version: 0,
@@ -126,10 +131,10 @@ fn apply_upload_result_remaps_created_node_id_in_referencing_way() {
         },
     );
     new_data.ways.insert(
-        -2,
+        WayId(-2),
         OsmWay {
-            id: -2,
-            nodes: vec![1, -1],
+            id: WayId(-2),
+            nodes: vec![NodeId(1), NodeId(-1)],
             version: 0,
             tags: empty_tags(),
         },
@@ -141,23 +146,26 @@ fn apply_upload_result_remaps_created_node_id_in_referencing_way() {
     assert_eq!(diff.created_ways.len(), 1);
 
     let mut result = crate::osm_upload::UploadResult::default();
-    result.node_id_remap.insert(-1, (999, 1));
-    result.way_id_remap.insert(-2, (888, 1));
+    result.node_id_remap.insert(NodeId(-1), (NodeId(999), 1));
+    result.way_id_remap.insert(WayId(-2), (WayId(888), 1));
     layer.apply_upload_result(&result);
 
     let updated = layer.get_osm_data().unwrap();
     assert!(
-        updated.nodes.contains_key(&999),
+        updated.nodes.contains_key(&NodeId(999)),
         "new node id should be present"
     );
     assert!(
-        !updated.nodes.contains_key(&-1),
+        !updated.nodes.contains_key(&NodeId(-1)),
         "old local id should be gone"
     );
-    let way = updated.ways.get(&888).expect("way should have its new id");
+    let way = updated
+        .ways
+        .get(&WayId(888))
+        .expect("way should have its new id");
     assert_eq!(
         way.nodes,
-        vec![1, 999],
+        vec![NodeId(1), NodeId(999)],
         "way must reference the node's NEW id, not the stale local one"
     );
     assert!(!layer.is_modified());

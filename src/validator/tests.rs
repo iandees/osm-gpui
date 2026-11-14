@@ -10,7 +10,7 @@ fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 
 fn node(id: i64, lat: f64, lon: f64, pairs: &[(&str, &str)]) -> OsmNode {
     OsmNode {
-        id,
+        id: NodeId(id),
         lat,
         lon,
         version: 1,
@@ -20,8 +20,8 @@ fn node(id: i64, lat: f64, lon: f64, pairs: &[(&str, &str)]) -> OsmNode {
 
 fn way(id: i64, nodes: &[i64], pairs: &[(&str, &str)]) -> OsmWay {
     OsmWay {
-        id,
-        nodes: nodes.to_vec(),
+        id: WayId(id),
+        nodes: NodeId::from_raw_vec(nodes),
         version: 1,
         tags: tags(pairs),
     }
@@ -37,7 +37,7 @@ fn member(kind: MemberType, id: i64, role: &str) -> OsmMember {
 
 fn relation(id: i64, members: Vec<OsmMember>, pairs: &[(&str, &str)]) -> OsmRelation {
     OsmRelation {
-        id,
+        id: RelationId(id),
         members,
         version: 1,
         tags: tags(pairs),
@@ -55,9 +55,9 @@ fn data(nodes: Vec<OsmNode>, ways: Vec<OsmWay>, relations: Vec<OsmRelation>) -> 
 
 fn changed(nodes: &[i64], ways: &[i64], relations: &[i64]) -> Changes {
     Changes {
-        nodes: nodes.iter().copied().collect(),
-        ways: ways.iter().copied().collect(),
-        relations: relations.iter().copied().collect(),
+        nodes: NodeId::from_raw_vec(nodes).into_iter().collect(),
+        ways: WayId::from_raw_vec(ways).into_iter().collect(),
+        relations: RelationId::from_raw_vec(relations).into_iter().collect(),
     }
 }
 
@@ -460,7 +460,7 @@ fn an_old_crossing_nobody_touched_is_not_reported() {
     // The two crossing roads are untouched; only a distant node changed.
     let mut d = cross_data(&[("highway", "residential")], &[("highway", "path")]);
     d.nodes
-        .insert(99, node(99, 5.0, 5.0, &[("amenity", "bench")]));
+        .insert(NodeId(99), node(99, 5.0, 5.0, &[("amenity", "bench")]));
     let f = run(&d, &changed(&[99], &[], &[]));
     assert!(!has(&f, Check::CrossingWays));
 }
@@ -1066,13 +1066,13 @@ fn changes_from_a_diff_include_created_and_modified_but_not_deleted() {
     let diff = LayerDiff {
         created_nodes: vec![node(-1, 0.0, 0.0, &[])],
         modified_nodes: vec![node(2, 0.0, 0.0, &[])],
-        deleted_node_ids: vec![(3, 1)],
+        deleted_node_ids: vec![(NodeId(3), 1)],
         created_ways: vec![way(-10, &[], &[])],
         modified_ways: vec![way(11, &[], &[])],
-        deleted_way_ids: vec![(12, 1)],
+        deleted_way_ids: vec![(WayId(12), 1)],
         created_relations: vec![relation(-20, vec![], &[])],
         modified_relations: vec![relation(21, vec![], &[])],
-        deleted_relation_ids: vec![(22, 1)],
+        deleted_relation_ids: vec![(RelationId(22), 1)],
     };
     let c = Changes::from_diff(&diff);
     assert_eq!(c, changed(&[-1, 2], &[-10, 11], &[-20, 21]));
@@ -1089,7 +1089,7 @@ fn report_counts_and_labels() {
         vec![],
     );
     let diff = LayerDiff {
-        modified_nodes: vec![d.nodes[&1].clone(), d.nodes[&2].clone()],
+        modified_nodes: vec![d.nodes[&NodeId(1)].clone(), d.nodes[&NodeId(2)].clone()],
         ..Default::default()
     };
     let mut report = Report::default();
@@ -1171,7 +1171,7 @@ fn big_grid(side: i64, modified: usize) -> (OsmData, Changes) {
             }
         }
     }
-    let modified_ids: Vec<i64> = ways.iter().take(modified).map(|w| w.id).collect();
+    let modified_ids: Vec<i64> = ways.iter().take(modified).map(|w| w.id.get()).collect();
     let d = data(nodes, ways, vec![]);
     let c = changed(&[], &modified_ids, &[]);
     (d, c)
@@ -1200,7 +1200,7 @@ fn the_screenshot_fixture_reports_exactly_its_new_and_edited_objects() {
         .parse_file_with_edits(path)
         .unwrap();
     let baseline = baseline_for_loaded_file(&current, &edits);
-    let tags = &mut current.nodes.get_mut(&2002).unwrap().tags;
+    let tags = &mut current.nodes.get_mut(&NodeId(2002)).unwrap().tags;
     tags.insert("landuse".into(), "farm".into());
     tags.insert("fixme".into(), "check the field boundary".into());
     let diff = diff_osm_data(&baseline, &current);

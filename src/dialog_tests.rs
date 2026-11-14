@@ -353,7 +353,7 @@ fn relation_picker_arrows_move_the_selection_and_enter_submits_it(cx: &mut TestA
     let build = |w: &mut Window, cx: &mut Context<RelationPickerDialog>| {
         let choices = [(10, "A"), (20, "B")]
             .map(|(id, name)| RelationChoice {
-                id,
+                id: RelationId(id),
                 name: name.to_string(),
                 member_count: 1,
             })

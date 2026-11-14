@@ -262,9 +262,19 @@ impl MapViewer {
             ..ObjectState::default()
         };
         match feat.kind {
-            FeatureKind::Node => state.position = editable.node_lat_lon(feat.id),
-            FeatureKind::Way => state.nodes = editable.way_node_ids(feat.id)?,
-            FeatureKind::Relation => state.members = editable.relation(feat.id)?.members,
+            FeatureKind::Node => {
+                state.position = editable.node_lat_lon(osm_gpui::ids::NodeId(feat.id))
+            }
+            FeatureKind::Way => {
+                state.nodes = osm_gpui::ids::NodeId::to_raw_vec(
+                    &editable.way_node_ids(osm_gpui::ids::WayId(feat.id))?,
+                )
+            }
+            FeatureKind::Relation => {
+                state.members = editable
+                    .relation(osm_gpui::ids::RelationId(feat.id))?
+                    .members
+            }
         }
         Some(state)
     }

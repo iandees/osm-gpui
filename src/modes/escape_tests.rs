@@ -5,6 +5,7 @@ use super::state_tests::{has_gesture, start_gesture, GESTURE_MODES};
 use crate::test_support::*;
 use gpui::TestAppContext;
 use osm_gpui::edit_mode::EditMode;
+use osm_gpui::ids::WayId;
 use osm_gpui::selection::FeatureKind;
 
 #[gpui::test]
@@ -40,7 +41,7 @@ fn leaving_building_mode_forgets_its_reference(cx: &mut TestAppContext) {
         |view, _w, cx, layer| {
             view.set_building_reference(Some(crate::BuildingReference {
                 layer_id: layer,
-                way_id: 1,
+                way_id: WayId(1),
                 orientation: 0.5,
             }));
             start_gesture(view, layer);

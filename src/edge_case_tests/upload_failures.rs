@@ -16,6 +16,7 @@
 
 use super::*;
 use osm_gpui::http::{Body, HttpClient, HttpError, HttpRequest, HttpResponse, Method};
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::osm_upload::{run_upload, ConflictKind, UploadConflict, UploadError, UploadFailure};
 use osm_gpui::upload_chunks::{apply_to_layer, run_chunked_upload, ChunkedUpload, PlanError};
 use std::collections::{BTreeSet, HashMap as Map, VecDeque};
@@ -167,7 +168,7 @@ impl Server {
         };
         for n in data.nodes.values() {
             state.nodes.insert(
-                n.id,
+                n.id.get(),
                 Obj {
                     version: n.version,
                     visible: true,
@@ -177,17 +178,17 @@ impl Server {
         }
         for w in data.ways.values() {
             state.ways.insert(
-                w.id,
+                w.id.get(),
                 Obj {
                     version: w.version,
                     visible: true,
-                    refs: w.nodes.iter().map(|&n| ('n', n)).collect(),
+                    refs: w.nodes.iter().map(|&n| ('n', n.get())).collect(),
                 },
             );
         }
         for r in &data.relations {
             state.relations.insert(
-                r.id,
+                r.id.get(),
                 Obj {
                     version: r.version,
                     visible: true,
@@ -767,7 +768,7 @@ fn a_way_split_from_its_new_nodes_by_a_changeset_boundary_names_server_ids(
 ) {
     let server = Server::holding(&ways_net());
     let node = |id: i64| OsmNode {
-        id,
+        id: NodeId(id),
         lat: 1.0,
         lon: 2.0,
         version: 0,
@@ -776,8 +777,8 @@ fn a_way_split_from_its_new_nodes_by_a_changeset_boundary_names_server_ids(
     let diff = LayerDiff {
         created_nodes: (1..=4).map(|i| node(-i)).collect(),
         created_ways: vec![OsmWay {
-            id: -10,
-            nodes: vec![-1, -2, -3, -4],
+            id: WayId(-10),
+            nodes: vec![NodeId(-1), NodeId(-2), NodeId(-3), NodeId(-4)],
             version: 0,
             tags: Default::default(),
         }],
@@ -798,8 +799,12 @@ fn a_way_split_from_its_new_nodes_by_a_changeset_boundary_names_server_ids(
     .unwrap();
     assert!(up.failure.is_none());
     assert_eq!(up.total, 2);
-    let way = *up.completed[1].result.way_id_remap.get(&-10).unwrap();
-    let refs = server.way_refs(way.0);
+    let way = *up.completed[1]
+        .result
+        .way_id_remap
+        .get(&WayId(-10))
+        .unwrap();
+    let refs = server.way_refs(way.0.get());
     assert_eq!(refs.len(), 4);
     assert!(refs.iter().all(|&r| r > 0), "{refs:?}");
     let _ = cx;
@@ -1004,10 +1009,10 @@ fn big_net(count: i64) -> OsmData {
 }
 
 fn nudge_all(s: &mut Session, count: i64) {
-    let moves: Vec<(i64, f64, f64)> = (1..=count)
+    let moves: Vec<(NodeId, f64, f64)> = (1..=count)
         .map(|id| {
-            let (lat, lon) = s.editable().node_lat_lon(id).unwrap();
-            (id, lat + 0.01, lon + 0.01)
+            let (lat, lon) = s.editable().node_lat_lon(NodeId(id)).unwrap();
+            (NodeId(id), lat + 0.01, lon + 0.01)
         })
         .collect();
     s.editable_mut().commit_node_moves(&moves).unwrap();
@@ -1088,7 +1093,7 @@ fn a_cycle_of_new_relations_bigger_than_a_changeset_is_refused_before_anything_i
     // New relations that contain each other must be created together. The
     // real limit needs 10,001 of them; a limit of 1 shows the same refusal.
     let rel = |id: i64, other: i64| OsmRelation {
-        id,
+        id: RelationId(id),
         version: 0,
         tags: Default::default(),
         members: vec![OsmMember {

@@ -99,7 +99,7 @@ fn without_a_selected_way_a_click_picks_the_way_under_it(cx: &mut TestAppContext
     with_osm(cx, data(), EditMode::Improve, |view, _w, cx, layer| {
         let c = view.viewport.geo_to_screen(LatLon::new(LAT, LON));
         crate::modes::improve::click(view, c + point(px(0.0), px(2.0)), cx);
-        assert_eq!(view.improve_target(), Some((layer, 10)));
+        assert_eq!(view.improve_target(), Some((layer, WayId(10))));
         assert_eq!(view.undo_stack.cursor, 0, "picking edits nothing");
     });
 }

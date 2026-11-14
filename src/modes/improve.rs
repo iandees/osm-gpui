@@ -11,12 +11,13 @@ use super::preview::{blue, fill_square, line_width, red, stroke_polyline, Previe
 use crate::undo::{EditLabel, UndoableAction};
 use crate::MapViewer;
 use osm_gpui::edit_ops::Recording;
+use osm_gpui::ids::{NodeId, WayId};
 
 /// What a click would do to Improve Way mode's target way: the way, its node
 /// ids and their screen positions, and the planned edit (in screen space).
 pub(crate) struct ImprovePlan {
     pub(crate) layer_id: LayerId,
-    pub(crate) way_id: i64,
+    pub(crate) way_id: WayId,
     pub(crate) ids: Vec<i64>,
     pub(crate) points: Vec<osm_gpui::improve_way::Pt>,
     pub(crate) plan: osm_gpui::improve_way::Plan,
@@ -29,9 +30,11 @@ pub(crate) struct ImproveState;
 
 impl MapViewer {
     /// Improve Way mode's target: the one way that is selected, if any.
-    pub(crate) fn improve_target(&self) -> Option<(LayerId, i64)> {
+    pub(crate) fn improve_target(&self) -> Option<(LayerId, WayId)> {
         match self.selected.as_slice() {
-            [f] if f.kind == osm_gpui::selection::FeatureKind::Way => Some((f.layer_id, f.id)),
+            [f] if f.kind == osm_gpui::selection::FeatureKind::Way => {
+                Some((f.layer_id, WayId(f.id)))
+            }
             _ => None,
         }
     }
@@ -48,8 +51,9 @@ impl MapViewer {
     pub(crate) fn improve_plan_at(&self, cursor: Point<Pixels>) -> Option<ImprovePlan> {
         let (layer_id, way_id) = self.improve_target()?;
         let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
-        let ids = editable.way_node_ids(way_id)?;
-        let points: Vec<osm_gpui::improve_way::Pt> = ids
+        let node_ids = editable.way_node_ids(way_id)?;
+        let ids = NodeId::to_raw_vec(&node_ids);
+        let points: Vec<osm_gpui::improve_way::Pt> = node_ids
             .iter()
             .map(|&id| {
                 let (lat, lon) = editable.node_lat_lon(id)?;
@@ -106,10 +110,11 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
     let way_ref = FeatureRef {
         layer_id,
         kind: FeatureKind::Way,
-        id: way_id,
+        id: way_id.get(),
     };
     match plan {
         Plan::Move { node, to } => {
+            let node = NodeId(node);
             let LatLon { lat, lon } = to_geo(to);
             let Some(editable) = view
                 .layer_manager
@@ -148,7 +153,7 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
             let node_ref = FeatureRef {
                 layer_id,
                 kind: FeatureKind::Node,
-                id: node_id,
+                id: node_id.get(),
             };
             view.undo_stack.push(
                 UndoableAction::edit(layer_id, EditLabel::InsertedNode, rec.into_ops())
@@ -169,7 +174,7 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
                 .layer_manager
                 .find_layer(layer_id)
                 .and_then(|l| l.as_editable())
-                .is_some_and(|e| e.has_feature(FeatureKind::Way, way_id));
+                .is_some_and(|e| e.has_feature(FeatureKind::Way, way_id.get()));
             view.set_selection(if still_there {
                 vec![way_ref]
             } else {

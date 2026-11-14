@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind::{Node, Relation, Way};
 use std::collections::{HashMap, HashSet};
@@ -12,7 +13,7 @@ fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
 
 fn node(id: i64, lat: f64, lon: f64, t: &[(&str, &str)]) -> OsmNode {
     OsmNode {
-        id,
+        id: NodeId(id),
         lat,
         lon,
         version: 1,
@@ -22,8 +23,8 @@ fn node(id: i64, lat: f64, lon: f64, t: &[(&str, &str)]) -> OsmNode {
 
 fn way(id: i64, nodes: &[i64], t: &[(&str, &str)]) -> OsmWay {
     OsmWay {
-        id,
-        nodes: nodes.to_vec(),
+        id: WayId(id),
+        nodes: NodeId::from_raw_vec(nodes),
         version: 2,
         tags: tags(t),
     }
@@ -81,7 +82,7 @@ fn fixture() -> OsmData {
         nodes,
         ways,
         relations: vec![OsmRelation {
-            id: 20,
+            id: RelationId(20),
             members: vec![
                 member(MemberType::Way, 10, "street"),
                 member(MemberType::Node, 1, "stop"),
@@ -238,11 +239,11 @@ fn state_filters() {
 fn modified_compares_with_the_baseline() {
     let data = fixture();
     let mut original = data.clone();
-    original.nodes.remove(&-1);
-    original.nodes.get_mut(&4).unwrap().lat = 4.0;
+    original.nodes.remove(&NodeId(-1));
+    original.nodes.get_mut(&NodeId(4)).unwrap().lat = 4.0;
     original
         .ways
-        .get_mut(&10)
+        .get_mut(&WayId(10))
         .unwrap()
         .tags
         .insert("name".into(), "Old Name".into());
@@ -514,7 +515,8 @@ fn odd_input_never_panics() {
 #[test]
 fn keys_named_like_keywords_still_work() {
     let mut data = fixture();
-    data.nodes.get_mut(&2).unwrap().tags = tags(&[("new", "yes"), ("child", "x"), ("OR", "1")]);
+    data.nodes.get_mut(&NodeId(2)).unwrap().tags =
+        tags(&[("new", "yes"), ("child", "x"), ("OR", "1")]);
     let ctx = SearchContext::default();
     assert_eq!(run_ctx("new=yes", &data, &ctx), vec![(Node, 2)]);
     assert_eq!(run_ctx("child=x", &data, &ctx), vec![(Node, 2)]);
@@ -530,7 +532,7 @@ fn glob_edge_cases() {
         d.nodes.clear();
         d.ways.clear();
         d.relations.clear();
-        d.nodes.insert(1, node(1, 0.0, 0.0, &[("k", text)]));
+        d.nodes.insert(NodeId(1), node(1, 0.0, 0.0, &[("k", text)]));
         !search(&q, &d, &SearchContext::default()).is_empty()
     };
     assert!(g("a*b*c", "aXXbYYc"));
@@ -561,7 +563,7 @@ fn matching_a_big_layer_is_quick() {
         } else {
             &[]
         };
-        data.nodes.insert(i, node(i, 0.0, 0.0, t));
+        data.nodes.insert(NodeId(i), node(i, 0.0, 0.0, t));
     }
     let q = parse("amenity=cafe").unwrap();
     assert_eq!(search(&q, &data, &SearchContext::default()).len(), 10_000);
@@ -584,12 +586,14 @@ fn timing_on_a_300k_node_layer() {
             2 => &[("addr:housenumber", "12"), ("addr:street", "Main Street")],
             _ => &[],
         };
-        data.nodes.insert(i, node(i, 0.0, 0.0, t));
+        data.nodes.insert(NodeId(i), node(i, 0.0, 0.0, t));
     }
     for i in 0..50_000i64 {
         let ids: Vec<i64> = (1..=6).map(|k| i * 5 + k).collect();
-        data.ways
-            .insert(i + 1, way(i + 1, &ids, &[("highway", "residential")]));
+        data.ways.insert(
+            WayId(i + 1),
+            way(i + 1, &ids, &[("highway", "residential")]),
+        );
     }
     for q in [
         "amenity=cafe",

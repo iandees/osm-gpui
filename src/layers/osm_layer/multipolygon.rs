@@ -3,7 +3,7 @@ use super::*;
 /// The ids of the ways that are a member of any relation, for
 /// `way:in-relation` rules. Empty (and not worth computing) for a stylesheet
 /// with no such rule.
-pub(super) fn relation_member_ways(data: &OsmData, stylesheet: &Stylesheet) -> HashSet<i64> {
+pub(super) fn relation_member_ways(data: &OsmData, stylesheet: &Stylesheet) -> HashSet<WayId> {
     if !stylesheet.uses_relation_membership() {
         return HashSet::new();
     }
@@ -11,7 +11,7 @@ pub(super) fn relation_member_ways(data: &OsmData, stylesheet: &Stylesheet) -> H
         .iter()
         .flat_map(|r| &r.members)
         .filter(|m| m.member_type == crate::osm::MemberType::Way)
-        .map(|m| m.reference)
+        .map(|m| WayId(m.reference))
         .collect()
 }
 
@@ -22,7 +22,7 @@ pub(super) struct MpPolygon {
     /// `(node id, x, y)` in Web Mercator meters for the outer ring followed
     /// by each hole, none repeating its first vertex. The node ids let the
     /// renderer apply a drag preview.
-    pub(super) verts: Vec<(i64, f64, f64)>,
+    pub(super) verts: Vec<(NodeId, f64, f64)>,
     /// Start offset of each ring in `verts`, then `verts.len()`: ring `k` is
     /// `verts[ring_starts[k]..ring_starts[k + 1]]`; ring 0 is the outer one.
     pub(super) ring_starts: Vec<usize>,
@@ -33,7 +33,7 @@ pub(super) struct MpPolygon {
 }
 
 impl MpPolygon {
-    pub(super) fn ring(&self, k: usize) -> &[(i64, f64, f64)] {
+    pub(super) fn ring(&self, k: usize) -> &[(NodeId, f64, f64)] {
         &self.verts[self.ring_starts[k]..self.ring_starts[k + 1]]
     }
     pub(super) fn ring_count(&self) -> usize {
@@ -81,24 +81,24 @@ pub(crate) enum MpState {
 /// test can tell a rebuild happened.
 #[derive(Debug, Clone, Default)]
 pub(super) struct MpCache {
-    pub(super) entries: BTreeMap<i64, MpEntry>,
-    pub(super) invalid: BTreeMap<i64, crate::multipolygon::Problem>,
+    pub(super) entries: BTreeMap<RelationId, MpEntry>,
+    pub(super) invalid: BTreeMap<RelationId, crate::multipolygon::Problem>,
     /// Member way id -> area relations listing it (valid or not).
-    pub(super) way_to_rels: HashMap<i64, Vec<i64>>,
+    pub(super) way_to_rels: HashMap<WayId, Vec<RelationId>>,
     /// Relation id -> its member way ids, to unmap them on refresh.
-    pub(super) rel_ways: HashMap<i64, Vec<i64>>,
+    pub(super) rel_ways: HashMap<RelationId, Vec<WayId>>,
     /// Route relations (`type=route`) by id.
-    pub(super) routes: BTreeMap<i64, crate::relation_overlay::RouteEntry>,
+    pub(super) routes: BTreeMap<RelationId, crate::relation_overlay::RouteEntry>,
     /// Member way id -> the route relations listing it, ascending. The
     /// first one decides the way's overlay colour.
-    pub(super) route_ways: HashMap<i64, Vec<i64>>,
+    pub(super) route_ways: HashMap<WayId, Vec<RelationId>>,
     /// Turn restrictions (`type=restriction`) with a drawable position.
-    pub(super) restrictions: BTreeMap<i64, crate::relation_overlay::RestrictionEntry>,
+    pub(super) restrictions: BTreeMap<RelationId, crate::relation_overlay::RestrictionEntry>,
     /// Restriction member node id -> restriction relations, so moving,
     /// deleting or restoring that node refreshes them.
-    pub(super) node_to_rels: HashMap<i64, Vec<i64>>,
+    pub(super) node_to_rels: HashMap<NodeId, Vec<RelationId>>,
     /// Restriction id -> its member node ids, to unmap them on refresh.
-    pub(super) rel_nodes: HashMap<i64, Vec<i64>>,
+    pub(super) rel_nodes: HashMap<RelationId, Vec<NodeId>>,
     pub(super) version: u64,
 }
 
@@ -119,12 +119,15 @@ pub(super) fn build_mp(
         .iter()
         .filter(|m| m.member_type == crate::osm::MemberType::Way)
         .map(|m| WayMember {
-            way_id: m.reference,
+            way_id: WayId(m.reference),
             role: &m.role,
-            nodes: data.ways.get(&m.reference).map(|w| w.nodes.as_slice()),
+            nodes: data
+                .ways
+                .get(&WayId(m.reference))
+                .map(|w| w.nodes.as_slice()),
         })
         .collect();
-    let position = |id: i64| {
+    let position = |id: NodeId| {
         node_cache
             .index_by_id
             .get(&id)
@@ -138,7 +141,7 @@ pub(super) fn build_mp(
     let mut polygons = Vec::with_capacity(assembled.polygons.len());
     let mut total = WayBbox::empty();
     for polygon in &assembled.polygons {
-        let mut verts: Vec<(i64, f64, f64)> = Vec::new();
+        let mut verts: Vec<(NodeId, f64, f64)> = Vec::new();
         let mut ring_starts = vec![0];
         let mut bbox = WayBbox::empty();
         for (k, ring) in std::iter::once(&polygon.outer)
@@ -206,12 +209,12 @@ impl MpCache {
     }
 
     /// The overlay colour of a way that belongs to a route, if any.
-    pub(super) fn route_colour_of_way(&self, way_id: i64) -> Option<u32> {
+    pub(super) fn route_colour_of_way(&self, way_id: WayId) -> Option<u32> {
         let rel = self.route_ways.get(&way_id)?.first()?;
         self.routes.get(rel).map(|r| r.colour)
     }
 
-    pub(super) fn remove_overlay(&mut self, id: i64) {
+    pub(super) fn remove_overlay(&mut self, id: RelationId) {
         if let Some(route) = self.routes.remove(&id) {
             for way in route.ways {
                 if let Some(rels) = self.route_ways.get_mut(&way) {
@@ -261,12 +264,12 @@ impl MpCache {
         }
         // Map every member, drawable or not, so the edit that supplies a
         // missing via (an undo that restores it) refreshes the restriction.
-        let mut ways: Vec<i64> = Vec::new();
-        let mut nodes: Vec<i64> = Vec::new();
+        let mut ways: Vec<WayId> = Vec::new();
+        let mut nodes: Vec<NodeId> = Vec::new();
         for m in &relation.members {
             match m.member_type {
-                crate::osm::MemberType::Way => ways.push(m.reference),
-                crate::osm::MemberType::Node => nodes.push(m.reference),
+                crate::osm::MemberType::Way => ways.push(WayId(m.reference)),
+                crate::osm::MemberType::Node => nodes.push(NodeId(m.reference)),
                 crate::osm::MemberType::Relation => {}
             }
         }
@@ -282,7 +285,7 @@ impl MpCache {
         }
         self.rel_ways.insert(relation.id, ways);
         self.rel_nodes.insert(relation.id, nodes);
-        let position = |id: i64| {
+        let position = |id: NodeId| {
             node_cache
                 .index_by_id
                 .get(&id)
@@ -297,7 +300,7 @@ impl MpCache {
     /// longer area relations).
     pub(super) fn refresh(
         &mut self,
-        ids: &[i64],
+        ids: &[RelationId],
         data: &OsmData,
         node_cache: &NodeCache,
         stylesheet: &Stylesheet,
@@ -335,11 +338,11 @@ impl MpCache {
         let Some(built) = built else {
             return;
         };
-        let mut ways: Vec<i64> = relation
+        let mut ways: Vec<WayId> = relation
             .members
             .iter()
             .filter(|m| m.member_type == crate::osm::MemberType::Way)
-            .map(|m| m.reference)
+            .map(|m| WayId(m.reference))
             .collect();
         ways.sort_unstable();
         ways.dedup();
@@ -371,7 +374,7 @@ impl OsmLayer {
             return;
         };
         let now = relation_member_ways(&data, &self.store.stylesheet);
-        let changed: Vec<i64> = now
+        let changed: Vec<WayId> = now
             .symmetric_difference(&self.render.member_ways)
             .copied()
             .collect();
@@ -396,7 +399,7 @@ impl OsmLayer {
     /// Reassemble and retriangulate these relations (and drop any that are
     /// gone or no longer multipolygons). Every edit that can change a
     /// relation's rings ends in one of the `mp_refresh_*` calls.
-    pub(super) fn mp_refresh_relations(&mut self, relation_ids: &[i64]) {
+    pub(super) fn mp_refresh_relations(&mut self, relation_ids: &[RelationId]) {
         let Some(data) = self.store.osm_data.clone() else {
             return;
         };
@@ -414,8 +417,8 @@ impl OsmLayer {
 
     /// Refresh the multipolygon relations that list any of these ways. Cheap
     /// (a map lookup) when none does, which is the common case.
-    pub(super) fn mp_refresh_ways(&mut self, way_ids: &[i64]) {
-        let mut relations: Vec<i64> = way_ids
+    pub(super) fn mp_refresh_ways(&mut self, way_ids: &[WayId]) {
+        let mut relations: Vec<RelationId> = way_ids
             .iter()
             .filter_map(|w| self.derived.mp.way_to_rels.get(w))
             .flatten()
@@ -428,13 +431,13 @@ impl OsmLayer {
 
     /// The route overlay colour of a way, as the renderer sees it.
     #[cfg(test)]
-    pub(crate) fn route_overlay_colour(&self, way_id: i64) -> Option<u32> {
+    pub(crate) fn route_overlay_colour(&self, way_id: WayId) -> Option<u32> {
         self.derived.mp.route_colour_of_way(way_id)
     }
 
     /// The drawn restriction markers: `(relation id, mercator x, y, only)`.
     #[cfg(test)]
-    pub(crate) fn restriction_markers(&self) -> Vec<(i64, f64, f64, bool)> {
+    pub(crate) fn restriction_markers(&self) -> Vec<(RelationId, f64, f64, bool)> {
         self.derived
             .mp
             .restrictions
@@ -444,11 +447,11 @@ impl OsmLayer {
     }
 
     /// Refresh the turn restrictions whose `via` node is one of these.
-    pub(super) fn mp_refresh_nodes(&mut self, node_ids: &[i64]) {
+    pub(super) fn mp_refresh_nodes(&mut self, node_ids: &[NodeId]) {
         if self.derived.mp.node_to_rels.is_empty() {
             return;
         }
-        let mut relations: Vec<i64> = node_ids
+        let mut relations: Vec<RelationId> = node_ids
             .iter()
             .filter_map(|n| self.derived.mp.node_to_rels.get(n))
             .flatten()
@@ -470,8 +473,8 @@ impl OsmLayer {
     #[cfg(test)]
     pub(crate) fn multipolygon_geometry(
         &self,
-        relation_id: i64,
-        node_id: i64,
+        relation_id: RelationId,
+        node_id: NodeId,
     ) -> Option<((f64, f64), usize)> {
         let entry = self.derived.mp.entries.get(&relation_id)?;
         let tris = entry.polygons.iter().map(|p| p.tris.len() / 3).sum();
@@ -486,7 +489,7 @@ impl OsmLayer {
 
     /// What became of this relation in the multipolygon cache.
     #[cfg(test)]
-    pub(crate) fn multipolygon_state(&self, relation_id: i64) -> MpState {
+    pub(crate) fn multipolygon_state(&self, relation_id: RelationId) -> MpState {
         if let Some(entry) = self.derived.mp.entries.get(&relation_id) {
             MpState::Valid {
                 polygons: entry.polygons.len(),
@@ -503,7 +506,7 @@ impl OsmLayer {
         &self,
         member_type: crate::osm::MemberType,
         id: i64,
-    ) -> Vec<i64> {
+    ) -> Vec<RelationId> {
         self.store
             .osm_data
             .as_ref()

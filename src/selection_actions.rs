@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use gpui::SharedString;
 use osm_gpui::geometry::{self, LatLon};
 use osm_gpui::i18n::tr_dynamic;
+use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::{EditError, EditableLayer, LayerId, LayerManager};
 use osm_gpui::osm::MemberType;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
@@ -84,13 +85,13 @@ impl<'a> ActionEnv<'a> {
             return false;
         };
         let ways = ways_using(editable, node);
-        topology::can_separate(node, &ways, way)
+        topology::can_separate(node.get(), &ways, way.map(WayId::get))
     }
 }
 
 struct WayGeometry {
-    way_id: i64,
-    node_ids: Vec<i64>,
+    way_id: WayId,
+    node_ids: Vec<NodeId>,
     points: Vec<LatLon>,
 }
 
@@ -103,13 +104,13 @@ fn selected_ways_in(
         .iter()
         .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Way)
         .filter_map(|f| {
-            let node_ids = editable.way_node_ids(f.id)?;
+            let node_ids = editable.way_node_ids(WayId(f.id))?;
             let points = node_ids
                 .iter()
                 .map(|&id| editable.node_lat_lon(id))
                 .collect::<Option<Vec<_>>>()?;
             Some(WayGeometry {
-                way_id: f.id,
+                way_id: WayId(f.id),
                 node_ids,
                 points,
             })
@@ -132,10 +133,10 @@ fn join_ways_in(
             continue;
         }
         seen.push(f.id);
-        if let Some(nodes) = editable.way_node_ids(f.id) {
+        if let Some(nodes) = editable.way_node_ids(WayId(f.id)) {
             ways.push(JoinWay {
                 id: f.id,
-                nodes,
+                nodes: NodeId::to_raw_vec(&nodes),
                 tags: editable.feature_tags(f).unwrap_or_default(),
             });
         }
@@ -146,18 +147,18 @@ fn join_ways_in(
 /// The node to separate, and the way to detach it from if one is selected
 /// too. `None` unless the active layer's part of the selection is exactly one
 /// node and at most one way.
-fn separate_target(layer_id: LayerId, selection: &[FeatureRef]) -> Option<(i64, Option<i64>)> {
+fn separate_target(layer_id: LayerId, selection: &[FeatureRef]) -> Option<(NodeId, Option<WayId>)> {
     let mut nodes = selection
         .iter()
         .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Node);
-    let node = nodes.next()?.id;
+    let node = NodeId(nodes.next()?.id);
     if nodes.next().is_some() {
         return None;
     }
     let mut ways = selection
         .iter()
         .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Way);
-    let way = ways.next().map(|f| f.id);
+    let way = ways.next().map(|f| WayId(f.id));
     if ways.next().is_some() {
         return None;
     }
@@ -176,21 +177,24 @@ fn extend_target(
         return None;
     }
     match feature.kind {
-        FeatureKind::Way => topology::continue_way(feature.id, &editable.way_node_ids(feature.id)?),
+        FeatureKind::Way => topology::continue_way(
+            feature.id,
+            &NodeId::to_raw_vec(&editable.way_node_ids(WayId(feature.id))?),
+        ),
         FeatureKind::Node => {
-            editable.node_lat_lon(feature.id)?;
-            topology::continue_from_node(feature.id, &ways_using(editable, feature.id))
+            editable.node_lat_lon(NodeId(feature.id))?;
+            topology::continue_from_node(feature.id, &ways_using(editable, NodeId(feature.id)))
         }
         FeatureKind::Relation => None,
     }
 }
 
 /// `(way id, node ids)` for every way that uses `node`.
-fn ways_using(editable: &dyn EditableLayer, node: i64) -> Vec<(i64, Vec<i64>)> {
+fn ways_using(editable: &dyn EditableLayer, node: NodeId) -> Vec<(i64, Vec<i64>)> {
     editable
         .ways_using_node(node)
         .into_iter()
-        .filter_map(|id| Some((id, editable.way_node_ids(id)?)))
+        .filter_map(|id| Some((id.get(), NodeId::to_raw_vec(&editable.way_node_ids(id)?))))
         .collect()
 }
 
@@ -937,8 +941,8 @@ fn reshape_ways(
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let ways = selected_ways_in(editable, layer_id, selection);
 
-    let mut original: HashMap<i64, LatLon> = HashMap::new();
-    let mut current: HashMap<i64, LatLon> = HashMap::new();
+    let mut original: HashMap<NodeId, LatLon> = HashMap::new();
+    let mut current: HashMap<NodeId, LatLon> = HashMap::new();
     let mut changed_ways = 0usize;
     for way in &ways {
         let points: Vec<LatLon> = way
@@ -960,7 +964,7 @@ fn reshape_ways(
         return Err(none_changed().to_string());
     }
 
-    let mut moves: Vec<(i64, f64, f64)> = current
+    let mut moves: Vec<(NodeId, f64, f64)> = current
         .iter()
         .filter(|(id, after)| original[id] != **after)
         .map(|(&id, &(lat, lon))| (id, lat, lon))
@@ -1035,14 +1039,18 @@ fn apply_straighten(
 /// of `node_ids`: shared with another way (or visited twice by this one),
 /// tagged, or a relation member. (The end nodes are always kept by
 /// `geometry::simplify_keep`.)
-fn simplify_pins(editable: &dyn EditableLayer, layer_id: LayerId, node_ids: &[i64]) -> Vec<bool> {
+fn simplify_pins(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    node_ids: &[NodeId],
+) -> Vec<bool> {
     node_ids
         .iter()
         .map(|&id| {
             let node = FeatureRef {
                 layer_id,
                 kind: FeatureKind::Node,
-                id,
+                id: id.get(),
             };
             node_ids.iter().filter(|&&n| n == id).count() > 1
                 || editable.ways_using_node(id).len() > 1
@@ -1079,9 +1087,9 @@ pub(crate) fn simplify_ways(
     tolerance: f64,
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
-    let mut way_edits: Vec<(i64, Vec<i64>)> = Vec::new();
-    let mut dropped: Vec<i64> = Vec::new();
-    let mut done_ways: Vec<i64> = Vec::new();
+    let mut way_edits: Vec<(WayId, Vec<NodeId>)> = Vec::new();
+    let mut dropped: Vec<NodeId> = Vec::new();
+    let mut done_ways: Vec<WayId> = Vec::new();
     for way in selected_ways_in(editable, layer_id, selection) {
         if done_ways.contains(&way.way_id) {
             continue;
@@ -1089,7 +1097,7 @@ pub(crate) fn simplify_ways(
         done_ways.push(way.way_id);
         let pins = simplify_pins(editable, layer_id, &way.node_ids);
         let keep = geometry::simplify_keep(&way.points, &pins, tolerance);
-        let after: Vec<i64> = way
+        let after: Vec<NodeId> = way
             .node_ids
             .iter()
             .zip(&keep)
@@ -1120,14 +1128,16 @@ pub(crate) fn simplify_ways(
         }
         for &id in &dropped {
             // A dropped node another way still uses is refused, and stays.
-            let _ = rec.delete_feature(FeatureKind::Node, id);
+            let _ = rec.delete_feature(FeatureKind::Node, id.get());
         }
         Ok(())
     })?;
     let select = selection
         .iter()
         .filter(|f| {
-            !(f.layer_id == layer_id && f.kind == FeatureKind::Node && dropped.contains(&f.id))
+            !(f.layer_id == layer_id
+                && f.kind == FeatureKind::Node
+                && dropped.contains(&NodeId(f.id)))
         })
         .cloned()
         .collect();
@@ -1184,7 +1194,7 @@ fn apply_reverse(
         let way_ref = FeatureRef {
             layer_id,
             kind: FeatureKind::Way,
-            id: way.way_id,
+            id: way.way_id.get(),
         };
         let mut over = too_long(topology::reversed_tag_changes(
             &editable.feature_tags(&way_ref).unwrap_or_default(),
@@ -1193,7 +1203,7 @@ fn apply_reverse(
             let node_ref = FeatureRef {
                 layer_id,
                 kind: FeatureKind::Node,
-                id: node_id,
+                id: node_id.get(),
             };
             over |= too_long(topology::reversed_node_tag_changes(
                 &editable.feature_tags(&node_ref).unwrap_or_default(),
@@ -1216,11 +1226,17 @@ fn apply_reverse(
             let way_ref = FeatureRef {
                 layer_id,
                 kind: FeatureKind::Way,
-                id: way.way_id,
+                id: way.way_id.get(),
             };
             let tags = rec.layer().feature_tags(&way_ref).unwrap_or_default();
             for (key, _, after) in topology::reversed_tag_changes(&tags) {
-                write_tag(rec, FeatureKind::Way, way.way_id, &key, after.as_deref())?;
+                write_tag(
+                    rec,
+                    FeatureKind::Way,
+                    way.way_id.get(),
+                    &key,
+                    after.as_deref(),
+                )?;
             }
         }
         // Facing tags on the ways' nodes (a stop sign's `direction=forward`,
@@ -1245,16 +1261,22 @@ fn apply_reverse(
                 let node_ref = FeatureRef {
                     layer_id,
                     kind: FeatureKind::Node,
-                    id: node_id,
+                    id: node_id.get(),
                 };
                 let tags = rec.layer().feature_tags(&node_ref).unwrap_or_default();
                 for (key, _, after) in topology::reversed_node_tag_changes(&tags) {
-                    write_tag(rec, FeatureKind::Node, node_id, &key, after.as_deref())?;
+                    write_tag(
+                        rec,
+                        FeatureKind::Node,
+                        node_id.get(),
+                        &key,
+                        after.as_deref(),
+                    )?;
                 }
             }
         }
         // Route relations: a member's `forward`/`backward` role swaps with its way.
-        let mut relation_ids: Vec<i64> = reversed
+        let mut relation_ids: Vec<RelationId> = reversed
             .iter()
             .flat_map(|id| rec.layer().relations_containing_way(*id))
             .collect();
@@ -1268,7 +1290,7 @@ fn apply_reverse(
             let mut changed = false;
             for member in after.iter_mut() {
                 if member.member_type == osm_gpui::osm::MemberType::Way
-                    && reversed.contains(&member.reference)
+                    && reversed.contains(&WayId(member.reference))
                 {
                     let flipped = match member.role.as_str() {
                         "forward" => "backward",
@@ -1322,8 +1344,9 @@ fn apply_join(
     }
     // Work out the relations' new member lists before changing anything, so
     // a refusal leaves no trace.
-    let mut relation_ids: Vec<i64> = plan
-        .remove
+    let keep_way = WayId(plan.keep);
+    let removed_ways: Vec<WayId> = plan.remove.iter().copied().map(WayId).collect();
+    let mut relation_ids: Vec<RelationId> = removed_ways
         .iter()
         .flat_map(|&id| editable.relations_containing_way(id))
         .collect();
@@ -1334,7 +1357,7 @@ fn apply_join(
         let Some(relation) = editable.relation(relation_id) else {
             continue;
         };
-        let after = osm_gpui::relations::join_members(&relation, plan.keep, &plan.remove)
+        let after = osm_gpui::relations::join_members(&relation, keep_way, &removed_ways)
             .map_err(|e| e.message())?;
         if let Some(after) = after {
             relation_edits.push((relation_id, relation.members, after));
@@ -1351,7 +1374,7 @@ fn apply_join(
     };
 
     let ((), ops) = record_edit(layer_id, editable, |rec| {
-        rec.set_way_nodes(plan.keep, plan.nodes.clone())
+        rec.set_way_nodes(keep_way, NodeId::from_raw_vec(&plan.nodes))
             .map_err(refused)?;
         for (key, value) in &plan.tags {
             if !kept.tags.iter().any(|(k, _)| k == key) {
@@ -1405,7 +1428,7 @@ fn extract_plans(
             let way = FeatureRef {
                 layer_id,
                 kind: FeatureKind::Way,
-                id: w.way_id,
+                id: w.way_id.get(),
             };
             let split = topology::extract_split(&editable.feature_tags(&way)?);
             if split.moved.is_empty() {
@@ -1446,7 +1469,7 @@ fn apply_extract(
             let (lat, lon) = plan.at;
             let id = rec.add_node(lat, lon);
             for (key, value) in plan.split.moved.iter().chain(&plan.split.copied) {
-                write_tag(rec, FeatureKind::Node, id, key, Some(value.as_str()))?;
+                write_tag(rec, FeatureKind::Node, id.get(), key, Some(value.as_str()))?;
             }
             for (key, _) in &plan.split.moved {
                 write_tag(rec, FeatureKind::Way, plan.way.id, key, None)?;
@@ -1457,7 +1480,7 @@ fn apply_extract(
             created.push(FeatureRef {
                 layer_id,
                 kind: FeatureKind::Node,
-                id,
+                id: id.get(),
             });
         }
         Ok(created)
@@ -1523,10 +1546,10 @@ fn unjoin_problem(
     if !nodes.contains(&node) {
         return hint();
     }
-    if !topology::is_unjoinable_vertex(&nodes, node) {
+    if !topology::is_unjoinable_vertex(&NodeId::to_raw_vec(&nodes), node.get()) {
         return Some(tr!("action.unjoin.error.end_node").to_string());
     }
-    if !topology::can_unjoin(node, &ways_using(editable, node), way) {
+    if !topology::can_unjoin(node.get(), &ways_using(editable, node), way.get()) {
         return Some(tr!("action.unjoin.error.not_shared").to_string());
     }
     None
@@ -1556,8 +1579,8 @@ fn separate_node(
     // is created if a way it detaches is such a member.
     let mut fake = i64::MIN;
     let plan = |alloc: &mut dyn FnMut() -> i64| match (unjoin, detach) {
-        (true, Some(way)) => topology::plan_unjoin(node, &ways, way, alloc),
-        _ => topology::plan_separate(node, &ways, detach, alloc),
+        (true, Some(way)) => topology::plan_unjoin(node.get(), &ways, way.get(), alloc),
+        _ => topology::plan_separate(node.get(), &ways, detach.map(WayId::get), alloc),
     };
     let dry = plan(&mut || {
         fake += 1;
@@ -1570,13 +1593,13 @@ fn separate_node(
         };
         if !osm_gpui::relations::is_restriction(&relation)
             || !relation.members.iter().any(|m| {
-                m.member_type == MemberType::Node && m.reference == node && m.role == "via"
+                m.member_type == MemberType::Node && m.reference == node.get() && m.role == "via"
             })
         {
             continue;
         }
         for edit in &dry {
-            let detached = !edit.after.contains(&node);
+            let detached = !edit.after.contains(&node.get());
             let is_end = relation.members.iter().any(|m| {
                 m.member_type == MemberType::Way
                     && m.reference == edit.way_id
@@ -1598,11 +1621,11 @@ fn separate_node(
         let edits = plan(&mut || {
             let id = rec.add_node(lat, lon);
             created.push(id);
-            id
+            id.get()
         })
         .ok_or_else(hint)?;
         for edit in edits {
-            rec.set_way_nodes(edit.way_id, edit.after)
+            rec.set_way_nodes(WayId(edit.way_id), NodeId::from_raw_vec(&edit.after))
                 .map_err(refused)?;
         }
         Ok(created)
@@ -1766,7 +1789,7 @@ fn split_plans(
     }
     let mut ways: Vec<(i64, Vec<i64>)> = Vec::new();
     for &node in &nodes {
-        for way in ways_using(editable, node) {
+        for way in ways_using(editable, NodeId(node)) {
             if !ways.iter().any(|(id, _)| *id == way.0) {
                 ways.push(way);
             }
@@ -1784,30 +1807,35 @@ fn split_plans(
 fn split_relations(
     editable: &dyn EditableLayer,
     plans: &[topology::SplitPlan],
-) -> Result<(Vec<osm_gpui::osm::OsmRelation>, Vec<Vec<i64>>), String> {
+) -> Result<(Vec<osm_gpui::osm::OsmRelation>, Vec<Vec<WayId>>), String> {
     let mut relations: Vec<osm_gpui::osm::OsmRelation> = Vec::new();
-    let mut way_nodes: HashMap<i64, Vec<i64>> = HashMap::new();
-    let mut placeholders: Vec<i64> = Vec::new();
-    let mut ids_by_plan: Vec<Vec<i64>> = Vec::new();
+    let mut way_nodes: HashMap<WayId, Vec<NodeId>> = HashMap::new();
+    let mut placeholders: Vec<WayId> = Vec::new();
+    let mut ids_by_plan: Vec<Vec<WayId>> = Vec::new();
     for plan in plans.iter() {
         let cuts = plan.cuts();
-        let mut ids = vec![plan.way_id];
+        let mut ids = vec![WayId(plan.way_id)];
         for _ in &cuts {
-            let id = i64::MIN + placeholders.len() as i64;
+            let id = WayId(i64::MIN + placeholders.len() as i64);
             placeholders.push(id);
             ids.push(id);
         }
         // A part cut off more than once is several steps of one split: each
         // is worked out as if the user had split at one node at a time.
         for (i, cut) in cuts.iter().enumerate() {
+            let (before, keep, new) = (
+                NodeId::from_raw_vec(&cut.before),
+                NodeId::from_raw_vec(&cut.keep),
+                NodeId::from_raw_vec(&cut.new),
+            );
             let step = osm_gpui::relations::SplitStep {
                 way_id: ids[cut.holder],
                 new_id: ids[i + 1],
-                before: &cut.before,
-                keep: &cut.keep,
-                new: &cut.new,
+                before: &before,
+                keep: &keep,
+                new: &new,
             };
-            for relation_id in editable.relations_containing_way(plan.way_id) {
+            for relation_id in editable.relations_containing_way(WayId(plan.way_id)) {
                 let at = match relations.iter().position(|r| r.id == relation_id) {
                     Some(at) => at,
                     None => {
@@ -1818,7 +1846,7 @@ fn split_relations(
                         relations.len() - 1
                     }
                 };
-                let lookup = |id: i64| {
+                let lookup = |id: WayId| {
                     way_nodes
                         .get(&id)
                         .cloned()
@@ -1830,8 +1858,8 @@ fn split_relations(
                     relations[at].members = members;
                 }
             }
-            way_nodes.insert(step.way_id, cut.keep.clone());
-            way_nodes.insert(step.new_id, cut.new.clone());
+            way_nodes.insert(step.way_id, keep.clone());
+            way_nodes.insert(step.new_id, new.clone());
         }
         ids_by_plan.push(ids);
     }
@@ -1890,15 +1918,18 @@ fn apply_split(
                 finals.push(cut.new);
             }
             for (k, nodes) in finals.iter().enumerate().skip(1) {
-                let new_id = rec.add_way(nodes.clone(), tags.clone());
+                let new_id = rec.add_way(NodeId::from_raw_vec(nodes), tags.clone());
                 new_ids.push((ids[k], new_id));
             }
             if plan.cuts().is_empty() {
                 // A closed way only turned to start at the node.
                 finals[0] = plan.keep().to_vec();
             }
-            rec.set_way_nodes(plan.way_id, finals.swap_remove(0))
-                .map_err(refused)?;
+            rec.set_way_nodes(
+                WayId(plan.way_id),
+                NodeId::from_raw_vec(&finals.swap_remove(0)),
+            )
+            .map_err(refused)?;
         }
         retarget_relations(rec, relations, &new_ids)
     })?;
@@ -1923,7 +1954,7 @@ fn apply_split(
 fn retarget_relations(
     rec: &mut Recording<'_>,
     relations: Vec<osm_gpui::osm::OsmRelation>,
-    new_ids: &[(i64, i64)],
+    new_ids: &[(WayId, WayId)],
 ) -> Result<(), String> {
     for relation in relations {
         let Some(before) = rec.layer().relation(relation.id).map(|r| r.members) else {
@@ -1931,8 +1962,8 @@ fn retarget_relations(
         };
         let mut after = relation.members;
         for member in &mut after {
-            if let Some(&(_, real)) = new_ids.iter().find(|(p, _)| *p == member.reference) {
-                member.reference = real;
+            if let Some(&(_, real)) = new_ids.iter().find(|(p, _)| p.get() == member.reference) {
+                member.reference = real.get();
             }
         }
         if after != before {
@@ -1976,7 +2007,7 @@ fn segment_target(
     let ([a, b], true) = (nodes.as_slice(), named.len() <= 1) else {
         return None;
     };
-    let ways: Vec<_> = ways_using(editable, *a)
+    let ways: Vec<_> = ways_using(editable, NodeId(*a))
         .into_iter()
         .filter(|(id, _)| named.is_empty() || named.contains(id))
         .filter_map(
@@ -2057,26 +2088,29 @@ fn apply_delete_segment(
             let (relations, mut ids) = split_relations(editable, std::slice::from_ref(plan))?;
             (relations, ids.remove(0))
         }
-        None => (Vec::new(), vec![way_id]),
+        None => (Vec::new(), vec![WayId(way_id)]),
     };
     let middle_idx = split.as_ref().map(|p| if p.keeper == 0 { 1 } else { 2 });
     if let Some(middle_idx) = middle_idx {
         let middle = ids[middle_idx];
         for relation in &mut relations {
             if osm_gpui::relations::is_restriction(relation)
-                && relation.members.iter().any(|m| is_end_role(m, middle))
+                && relation
+                    .members
+                    .iter()
+                    .any(|m| is_end_role(m, middle.get()))
             {
-                return Err(restriction_error(relation.id, way_id));
+                return Err(restriction_error(relation.id.get(), way_id));
             }
             relation
                 .members
-                .retain(|m| !(m.member_type == MemberType::Way && m.reference == middle));
+                .retain(|m| !(m.member_type == MemberType::Way && m.reference == middle.get()));
         }
     } else {
         // Only shortened or opened: a restriction needs its via node to stay
         // on the from / to way.
         let kept = &deletion.pieces[0];
-        for relation_id in editable.relations_containing_way(way_id) {
+        for relation_id in editable.relations_containing_way(WayId(way_id)) {
             let Some(relation) = editable.relation(relation_id) else {
                 continue;
             };
@@ -2092,7 +2126,7 @@ fn apply_delete_segment(
                     && !kept.contains(&m.reference)
             });
             if lost_via {
-                return Err(restriction_error(relation_id, way_id));
+                return Err(restriction_error(relation_id.get(), way_id));
             }
         }
     }
@@ -2117,7 +2151,7 @@ fn apply_delete_segment(
     };
     let tags = editable.feature_tags(&way_ref).unwrap_or_default();
     let ((), ops) = record_edit(layer_id, editable, |rec| {
-        let mut new_ids: Vec<(i64, i64)> = Vec::new();
+        let mut new_ids: Vec<(WayId, WayId)> = Vec::new();
         let kept = match &split {
             Some(plan) => {
                 // Where every way of the split ends up; the middle one is not made.
@@ -2130,20 +2164,21 @@ fn apply_delete_segment(
                     if Some(k) == middle_idx {
                         continue;
                     }
-                    let new_id = rec.add_way(nodes.clone(), tags.clone());
+                    let new_id = rec.add_way(NodeId::from_raw_vec(nodes), tags.clone());
                     new_ids.push((ids[k], new_id));
                 }
                 finals.swap_remove(0)
             }
             None => deletion.pieces[0].clone(),
         };
-        rec.set_way_nodes(way_id, kept).map_err(refused)?;
+        rec.set_way_nodes(WayId(way_id), NodeId::from_raw_vec(&kept))
+            .map_err(refused)?;
         retarget_relations(rec, relations, &new_ids)?;
-        for node_id in deletion.dropped_nodes() {
+        for node_id in NodeId::from_raw_vec(&deletion.dropped_nodes()) {
             let node = FeatureRef {
                 layer_id,
                 kind: FeatureKind::Node,
-                id: node_id,
+                id: node_id.get(),
             };
             let layer = rec.layer();
             if !layer.ways_using_node(node_id).is_empty()
@@ -2154,7 +2189,7 @@ fn apply_delete_segment(
             {
                 continue;
             }
-            rec.delete_feature(FeatureKind::Node, node_id)
+            rec.delete_feature(FeatureKind::Node, node_id.get())
                 .map_err(refused)?;
         }
         Ok(())
@@ -2186,7 +2221,7 @@ fn merge_nodes_in(
         .iter()
         .filter(|f| f.layer_id == layer_id && f.kind == FeatureKind::Node)
     {
-        if nodes.iter().any(|n| n.id == f.id) || editable.node_lat_lon(f.id).is_none() {
+        if nodes.iter().any(|n| n.id == f.id) || editable.node_lat_lon(NodeId(f.id)).is_none() {
             continue;
         }
         nodes.push(topology::MergeNode {
@@ -2212,7 +2247,7 @@ pub(crate) fn apply_merge(
     let nodes = merge_nodes_in(editable, layer_id, selection);
     let mut ways: Vec<(i64, Vec<i64>)> = Vec::new();
     for node in &nodes {
-        for way in ways_using(editable, node.id) {
+        for way in ways_using(editable, NodeId(node.id)) {
             if !ways.iter().any(|(id, _)| *id == way.0) {
                 ways.push(way);
             }
@@ -2236,13 +2271,15 @@ pub(crate) fn apply_merge(
         })
         .collect();
     if let Some(node) = node_left_in_a_way(&plan.remove, &way_lists) {
-        return Err(refused(EditError::NodeInWay(node)));
+        return Err(refused(EditError::NodeInWay(NodeId(node))));
     }
 
     let kept = nodes
         .iter()
         .find(|n| n.id == plan.keep)
         .expect("the plan keeps one of the given nodes");
+    let keep_node = NodeId(plan.keep);
+    let removed_nodes = NodeId::from_raw_vec(&plan.remove);
     let ((), ops) = record_edit(layer_id, editable, |rec| {
         for (key, value) in &plan.tags {
             if !kept.tags.iter().any(|(k, _)| k == key) {
@@ -2251,11 +2288,10 @@ pub(crate) fn apply_merge(
             }
         }
         for edit in &plan.way_edits {
-            rec.set_way_nodes(edit.way_id, edit.after.clone())
+            rec.set_way_nodes(WayId(edit.way_id), NodeId::from_raw_vec(&edit.after))
                 .map_err(refused)?;
         }
-        let mut relation_ids: Vec<i64> = plan
-            .remove
+        let mut relation_ids: Vec<RelationId> = removed_nodes
             .iter()
             .flat_map(|&id| rec.layer().relations_containing_node(id))
             .collect();
@@ -2265,9 +2301,11 @@ pub(crate) fn apply_merge(
             let Some(relation) = rec.layer().relation(relation_id) else {
                 continue;
             };
-            if let Some(after) =
-                osm_gpui::relations::merge_node_members(&relation.members, &plan.remove, plan.keep)
-            {
+            if let Some(after) = osm_gpui::relations::merge_node_members(
+                &relation.members,
+                &removed_nodes,
+                keep_node,
+            ) {
                 rec.set_relation_members(relation_id, after)
                     .map_err(refused)?;
             }
@@ -2308,7 +2346,7 @@ fn join_node_way_target(
     editable: &dyn EditableLayer,
     layer_id: LayerId,
     selection: &[FeatureRef],
-) -> Option<(i64, i64)> {
+) -> Option<(NodeId, WayId)> {
     let (node, way) = separate_target(layer_id, selection)?;
     let way = way?;
     editable.node_lat_lon(node)?;
@@ -2331,8 +2369,8 @@ fn join_node_way_target(
 pub(crate) fn join_node_into_way(
     editable: &mut dyn EditableLayer,
     layer_id: LayerId,
-    node: i64,
-    way: i64,
+    node: NodeId,
+    way: WayId,
     segment: Option<usize>,
     drop_at: Option<LatLon>,
 ) -> Result<Vec<EditOp>, String> {
@@ -2360,8 +2398,14 @@ pub(crate) fn join_node_into_way(
         .collect::<Option<_>>()
         .ok_or_else(|| tr!("action.join_node_way.hint").to_string())?;
     let plan = match segment {
-        Some(i) => plan_join_at_segment(node, position, &before, &points, i),
-        None => plan_join_nearest(node, position, &before, &points),
+        Some(i) => plan_join_at_segment(
+            node.get(),
+            position,
+            &NodeId::to_raw_vec(&before),
+            &points,
+            i,
+        ),
+        None => plan_join_nearest(node.get(), position, &NodeId::to_raw_vec(&before), &points),
     }
     .map_err(|e| match e {
         JoinError::AlreadyInWay => tr!("action.join_node_way.error.in_way").to_string(),
@@ -2447,8 +2491,14 @@ fn member_candidates(
     let mut out: Vec<(MemberType, i64)> = Vec::new();
     for f in selection.iter().filter(|f| f.layer_id == layer_id) {
         let (member_type, exists) = match f.kind {
-            FeatureKind::Node => (MemberType::Node, editable.node_lat_lon(f.id).is_some()),
-            FeatureKind::Way => (MemberType::Way, editable.way_node_ids(f.id).is_some()),
+            FeatureKind::Node => (
+                MemberType::Node,
+                editable.node_lat_lon(NodeId(f.id)).is_some(),
+            ),
+            FeatureKind::Way => (
+                MemberType::Way,
+                editable.way_node_ids(WayId(f.id)).is_some(),
+            ),
             FeatureKind::Relation => continue,
         };
         if exists && !out.contains(&(member_type, f.id)) {
@@ -2469,9 +2519,18 @@ fn relation_member_candidates(
     let mut out = Vec::new();
     for f in selection.iter().filter(|f| f.layer_id == layer_id) {
         let (member_type, exists) = match f.kind {
-            FeatureKind::Node => (MemberType::Node, editable.node_lat_lon(f.id).is_some()),
-            FeatureKind::Way => (MemberType::Way, editable.way_node_ids(f.id).is_some()),
-            FeatureKind::Relation => (MemberType::Relation, editable.relation(f.id).is_some()),
+            FeatureKind::Node => (
+                MemberType::Node,
+                editable.node_lat_lon(NodeId(f.id)).is_some(),
+            ),
+            FeatureKind::Way => (
+                MemberType::Way,
+                editable.way_node_ids(WayId(f.id)).is_some(),
+            ),
+            FeatureKind::Relation => (
+                MemberType::Relation,
+                editable.relation(RelationId(f.id)).is_some(),
+            ),
         };
         if exists && !out.contains(&(member_type, f.id)) {
             out.push((member_type, f.id));
@@ -2526,7 +2585,7 @@ fn apply_new_relation(
         select: Some(vec![FeatureRef {
             layer_id,
             kind: FeatureKind::Relation,
-            id,
+            id: id.get(),
         }]),
         continue_way: None,
     })
@@ -2578,19 +2637,19 @@ fn apply_create_multipolygon(
         if ways.iter().any(|(id, _)| *id == f.id) {
             continue;
         }
-        if let Some(nodes) = editable.way_node_ids(f.id) {
-            ways.push((f.id, nodes));
+        if let Some(nodes) = editable.way_node_ids(WayId(f.id)) {
+            ways.push((f.id, NodeId::to_raw_vec(&nodes)));
         }
     }
     // Planar coordinates: longitude scaled by the cosine of the first
     // node's latitude, which is plenty for containment and crossing tests.
     let scale = ways
         .iter()
-        .find_map(|(_, nodes)| editable.node_lat_lon(*nodes.first()?))
+        .find_map(|(_, nodes)| editable.node_lat_lon(NodeId(*nodes.first()?)))
         .map_or(1.0, |(lat, _)| lat.to_radians().cos());
     let coord = |id: i64| {
         editable
-            .node_lat_lon(id)
+            .node_lat_lon(NodeId(id))
             .map(|(lat, lon)| (lon * scale, lat))
     };
     let plan = plan(&ways, &coord).map_err(|p| match p {
@@ -2665,11 +2724,14 @@ fn apply_create_multipolygon(
         .iter()
         .flat_map(|r| r.ways.iter())
         .filter(|&&way| {
-            editable.relations_containing_way(way).into_iter().any(|r| {
-                editable
-                    .relation(r)
-                    .is_some_and(|r| r.tags.get("type").is_some_and(|t| t == "multipolygon"))
-            })
+            editable
+                .relations_containing_way(WayId(way))
+                .into_iter()
+                .any(|r| {
+                    editable
+                        .relation(r)
+                        .is_some_and(|r| r.tags.get("type").is_some_and(|t| t == "multipolygon"))
+                })
         })
         .count();
 
@@ -2709,7 +2771,7 @@ fn apply_create_multipolygon(
         select: Some(vec![FeatureRef {
             layer_id,
             kind: FeatureKind::Relation,
-            id,
+            id: id.get(),
         }]),
         continue_way: None,
     })
@@ -2722,7 +2784,7 @@ pub(crate) fn add_to_relation(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
-    relation_id: i64,
+    relation_id: RelationId,
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
     let relation = editable
@@ -2763,7 +2825,7 @@ pub(crate) fn add_to_relation(
 
 /// One relation's member list before and after a feature leaves it.
 type MemberEdit = (
-    i64,
+    RelationId,
     Vec<osm_gpui::osm::OsmMember>,
     Vec<osm_gpui::osm::OsmMember>,
 );
@@ -2778,12 +2840,12 @@ fn plan_member_edits(
     let (member_type, relation_ids, what) = match kind {
         FeatureKind::Node => (
             MemberType::Node,
-            editable.relations_containing_node(id),
+            editable.relations_containing_node(NodeId(id)),
             tr!("action.delete.kind.node"),
         ),
         FeatureKind::Way => (
             MemberType::Way,
-            editable.relations_containing_way(id),
+            editable.relations_containing_way(WayId(id)),
             tr!("action.delete.kind.way"),
         ),
         FeatureKind::Relation => return Ok(Vec::new()),
@@ -2807,7 +2869,7 @@ fn plan_member_edits(
 fn apply_member_edits(
     rec: &mut Recording<'_>,
     edits: Vec<MemberEdit>,
-    changed_relations: &mut Vec<(LayerId, i64)>,
+    changed_relations: &mut Vec<(LayerId, RelationId)>,
 ) -> Result<(), String> {
     for (relation_id, _, after) in edits {
         rec.set_relation_members(relation_id, after)
@@ -2827,19 +2889,19 @@ fn apply_member_edits(
 /// `rec`; the caller rolls that back.
 fn delete_way_and_orphans(
     rec: &mut Recording<'_>,
-    way_id: i64,
-    keep: Option<i64>,
+    way_id: WayId,
+    keep: Option<NodeId>,
     selection: &[FeatureRef],
-    changed_relations: &mut Vec<(LayerId, i64)>,
+    changed_relations: &mut Vec<(LayerId, RelationId)>,
 ) -> Result<bool, String> {
     let Some(way_nodes) = rec.layer().way_node_ids(way_id) else {
         return Ok(false);
     };
     let layer_id = rec.layer_id();
-    let edits = plan_member_edits(rec.layer(), FeatureKind::Way, way_id)?;
+    let edits = plan_member_edits(rec.layer(), FeatureKind::Way, way_id.get())?;
     // The layer refuses to delete a way a relation still lists.
     apply_member_edits(rec, edits, changed_relations)?;
-    rec.delete_feature(FeatureKind::Way, way_id)
+    rec.delete_feature(FeatureKind::Way, way_id.get())
         .map_err(refused)?;
     let mut seen = Vec::new();
     for node_id in way_nodes {
@@ -2850,7 +2912,7 @@ fn delete_way_and_orphans(
         let node = FeatureRef {
             layer_id,
             kind: FeatureKind::Node,
-            id: node_id,
+            id: node_id.get(),
         };
         let layer = rec.layer();
         if Some(node_id) == keep
@@ -2863,7 +2925,7 @@ fn delete_way_and_orphans(
         {
             continue;
         }
-        rec.delete_feature(FeatureKind::Node, node_id)
+        rec.delete_feature(FeatureKind::Node, node_id.get())
             .map_err(refused)?;
     }
     Ok(true)
@@ -2872,16 +2934,16 @@ fn delete_way_and_orphans(
 /// What deleting a vertex does to one way that uses it.
 enum WayFate {
     /// The way keeps going without the node.
-    Shorten(Vec<i64>),
+    Shorten(Vec<NodeId>),
     /// Too few nodes would be left, so the way goes too.
     Delete,
 }
 
 /// `way_nodes` with every occurrence of `node` taken out (a closed way stays
 /// closed), or `Delete` if what is left can no longer be a way.
-fn way_without_node(way_nodes: &[i64], node: i64) -> WayFate {
+fn way_without_node(way_nodes: &[NodeId], node: NodeId) -> WayFate {
     let closed = way_nodes.len() > 1 && way_nodes.first() == way_nodes.last();
-    let mut rest: Vec<i64> = way_nodes.iter().copied().filter(|&n| n != node).collect();
+    let mut rest: Vec<NodeId> = way_nodes.iter().copied().filter(|&n| n != node).collect();
     rest.dedup();
     if closed {
         // The ring's start and end are the same node; losing it moves both.
@@ -2906,14 +2968,14 @@ fn way_without_node(way_nodes: &[i64], node: i64) -> WayFate {
 /// recorded in `rec`, for the caller to roll back.
 fn delete_vertex(
     rec: &mut Recording<'_>,
-    node_id: i64,
+    node_id: NodeId,
     selection: &[FeatureRef],
-    changed_relations: &mut Vec<(LayerId, i64)>,
+    changed_relations: &mut Vec<(LayerId, RelationId)>,
 ) -> Result<bool, String> {
     if rec.layer().node_lat_lon(node_id).is_none() {
         return Ok(false);
     }
-    let node_edits = plan_member_edits(rec.layer(), FeatureKind::Node, node_id)?;
+    let node_edits = plan_member_edits(rec.layer(), FeatureKind::Node, node_id.get())?;
     let mut fates = Vec::new();
     let mut way_ids = rec.layer().ways_using_node(node_id);
     way_ids.sort_unstable();
@@ -2923,7 +2985,7 @@ fn delete_vertex(
         };
         let fate = way_without_node(&way_nodes, node_id);
         if matches!(fate, WayFate::Delete) {
-            plan_member_edits(rec.layer(), FeatureKind::Way, way_id)?;
+            plan_member_edits(rec.layer(), FeatureKind::Way, way_id.get())?;
         }
         fates.push((way_id, fate));
     }
@@ -2939,7 +3001,7 @@ fn delete_vertex(
     }
     // The layer refuses to delete a node a relation still lists.
     apply_member_edits(rec, node_edits, changed_relations)?;
-    rec.delete_feature(FeatureKind::Node, node_id)
+    rec.delete_feature(FeatureKind::Node, node_id.get())
         .map_err(refused)?;
     Ok(true)
 }
@@ -2958,7 +3020,7 @@ fn apply_delete(
 ) -> Result<ActionOutcome, String> {
     let mut recorded: Vec<(LayerId, Vec<EditOp>)> = Vec::new();
     let mut deleted = 0usize;
-    let mut changed_relations: Vec<(LayerId, i64)> = Vec::new();
+    let mut changed_relations: Vec<(LayerId, RelationId)> = Vec::new();
     let mut refusal: Option<String> = None;
     // Relations go first, so a node or way that is a member of a relation
     // being deleted along with it needs no membership edit.
@@ -2973,11 +3035,11 @@ fn apply_delete(
         let before = pending.len();
         pending.retain(|feature| {
             let outcome = with_recording(layers, &mut recorded, feature.layer_id, |rec| {
-                match rec.delete_relation(feature.id) {
+                match rec.delete_relation(RelationId(feature.id)) {
                     Ok(_) => None,
                     // Gone already: nothing to do. Otherwise another relation
                     // still has it as a member.
-                    Err(_) => Some(rec.layer().relation(feature.id).is_some()),
+                    Err(_) => Some(rec.layer().relation(RelationId(feature.id)).is_some()),
                 }
             });
             match outcome {
@@ -3001,10 +3063,10 @@ fn apply_delete(
             continue;
         };
         let parent = editable
-            .relations_containing_relation(feature.id)
+            .relations_containing_relation(RelationId(feature.id))
             .first()
             .and_then(|&id| editable.relation(id));
-        let relation = editable.relation(feature.id);
+        let relation = editable.relation(RelationId(feature.id));
         if let (Some(parent), Some(relation)) = (parent, relation) {
             refusal.get_or_insert_with(|| {
                 tr!(
@@ -3026,11 +3088,15 @@ fn apply_delete(
         let result = with_recording(layers, &mut recorded, feature.layer_id, |rec| {
             let mark = rec.mark();
             let result = match feature.kind {
-                FeatureKind::Way => {
-                    delete_way_and_orphans(rec, feature.id, None, selection, &mut changed_relations)
-                }
+                FeatureKind::Way => delete_way_and_orphans(
+                    rec,
+                    WayId(feature.id),
+                    None,
+                    selection,
+                    &mut changed_relations,
+                ),
                 FeatureKind::Node => {
-                    delete_vertex(rec, feature.id, selection, &mut changed_relations)
+                    delete_vertex(rec, NodeId(feature.id), selection, &mut changed_relations)
                 }
                 FeatureKind::Relation => Ok(false),
             };
@@ -3152,7 +3218,7 @@ fn apply_purge(
         }
     }
     // (layer, nodes, ways, relations) to purge, and how many child nodes stay.
-    type Plan = (LayerId, Vec<i64>, Vec<i64>, Vec<i64>);
+    type Plan = (LayerId, Vec<NodeId>, Vec<WayId>, Vec<RelationId>);
     let mut plans: Vec<Plan> = Vec::new();
     let mut kept = 0usize;
     for layer_id in layer_ids {
@@ -3166,13 +3232,22 @@ fn apply_purge(
                 .map(|f| f.id)
                 .collect()
         };
-        let nodes = ids_of(FeatureKind::Node);
-        let ways = ids_of(FeatureKind::Way);
-        let relations = ids_of(FeatureKind::Relation);
+        let nodes: BTreeSet<NodeId> = ids_of(FeatureKind::Node).into_iter().map(NodeId).collect();
+        let ways: BTreeSet<WayId> = ids_of(FeatureKind::Way).into_iter().map(WayId).collect();
+        let relations: BTreeSet<RelationId> = ids_of(FeatureKind::Relation)
+            .into_iter()
+            .map(RelationId)
+            .collect();
         let named = [
-            (FeatureKind::Node, &nodes),
-            (FeatureKind::Way, &ways),
-            (FeatureKind::Relation, &relations),
+            (
+                FeatureKind::Node,
+                nodes.iter().map(|id| id.get()).collect::<Vec<_>>(),
+            ),
+            (FeatureKind::Way, ways.iter().map(|id| id.get()).collect()),
+            (
+                FeatureKind::Relation,
+                relations.iter().map(|id| id.get()).collect(),
+            ),
         ];
         for (kind, ids) in &named {
             for &id in ids.iter() {
@@ -3222,7 +3297,7 @@ fn apply_purge(
                     .any(|r| !relations.contains(r));
                 if in_other_way
                     || in_relation
-                    || editable.has_pending_edit(FeatureKind::Node, child)
+                    || editable.has_pending_edit(FeatureKind::Node, child.get())
                 {
                     kept += 1;
                 } else {
@@ -3282,12 +3357,12 @@ pub(crate) fn rotatable_nodes(
     editable: &dyn EditableLayer,
     layer_id: LayerId,
     selection: &[FeatureRef],
-) -> Vec<(i64, LatLon)> {
-    let mut ids: Vec<i64> = Vec::new();
+) -> Vec<(NodeId, LatLon)> {
+    let mut ids: Vec<NodeId> = Vec::new();
     for f in selection.iter().filter(|f| f.layer_id == layer_id) {
         match f.kind {
-            FeatureKind::Node => ids.push(f.id),
-            FeatureKind::Way => ids.extend(editable.way_node_ids(f.id).unwrap_or_default()),
+            FeatureKind::Node => ids.push(NodeId(f.id)),
+            FeatureKind::Way => ids.extend(editable.way_node_ids(WayId(f.id)).unwrap_or_default()),
             _ => {}
         }
     }
@@ -3317,7 +3392,7 @@ fn reposition_nodes(
     if nodes.len() < 3 {
         return Err(tr!("action.align.hint").to_string());
     }
-    let ids: Vec<i64> = nodes.iter().map(|n| n.id).collect();
+    let ids: Vec<NodeId> = nodes.iter().map(|n| NodeId(n.id)).collect();
     let before: Vec<LatLon> = ids
         .iter()
         .filter_map(|&id| editable.node_lat_lon(id))
@@ -3327,7 +3402,7 @@ fn reposition_nodes(
     }
     let after =
         reposition(&before).ok_or_else(|| tr!("action.align.error.same_place").to_string())?;
-    let moves: Vec<(i64, f64, f64)> = ids
+    let moves: Vec<(NodeId, f64, f64)> = ids
         .iter()
         .zip(before.iter().zip(&after))
         .filter(|(_, (b, a))| b != a)
@@ -3399,7 +3474,7 @@ pub(crate) fn create_parallel_ways(
     // Plan everything first, so a refusal leaves no trace.
     type Plan = (Vec<LatLon>, Vec<(String, String)>);
     let mut plans: Vec<Plan> = Vec::new();
-    let mut seen: Vec<i64> = Vec::new();
+    let mut seen: Vec<WayId> = Vec::new();
     for way in &ways {
         if seen.contains(&way.way_id) {
             continue;
@@ -3420,7 +3495,7 @@ pub(crate) fn create_parallel_ways(
             let way_ref = FeatureRef {
                 layer_id,
                 kind: FeatureKind::Way,
-                id: way.way_id,
+                id: way.way_id.get(),
             };
             editable.feature_tags(&way_ref).unwrap_or_default()
         } else {
@@ -3449,7 +3524,7 @@ pub(crate) fn create_parallel_ways(
             new_ways.push(FeatureRef {
                 layer_id,
                 kind: FeatureKind::Way,
-                id: way_id,
+                id: way_id.get(),
             });
         }
         Ok(new_ways)
@@ -3482,6 +3557,7 @@ pub(crate) fn create_parallel_ways(
 /// - node 7 is on no way, and is a member of relation 900 (as is way 102).
 #[cfg(test)]
 pub(crate) mod test_support {
+    use osm_gpui::ids::{NodeId, RelationId, WayId};
     use osm_gpui::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
     use std::collections::HashMap;
 
@@ -3489,7 +3565,7 @@ pub(crate) mod test_support {
         let nodes = (1..=16)
             .map(|id| {
                 let node = OsmNode {
-                    id,
+                    id: NodeId(id),
                     lat: 40.0 + (id % 4) as f64 * 0.001,
                     lon: -74.0 + id as f64 * 0.001,
                     version: 1,
@@ -3499,15 +3575,15 @@ pub(crate) mod test_support {
                         HashMap::new()
                     },
                 };
-                (id, node)
+                (NodeId(id), node)
             })
             .collect();
         let way = |id: i64, nodes: &[i64], tags: &[(&str, &str)]| {
             (
-                id,
+                WayId(id),
                 OsmWay {
-                    id,
-                    nodes: nodes.to_vec(),
+                    id: WayId(id),
+                    nodes: NodeId::from_raw_vec(nodes),
                     version: 3,
                     tags: tags
                         .iter()
@@ -3530,7 +3606,7 @@ pub(crate) mod test_support {
                 way(108, &[14, 15, 16, 14], &[("building", "yes")]),
             ]),
             relations: vec![OsmRelation {
-                id: 900,
+                id: RelationId(900),
                 members: vec![
                     OsmMember {
                         member_type: MemberType::Way,
@@ -3559,6 +3635,7 @@ mod tests {
     };
 
     use super::*;
+    use osm_gpui::ids::{NodeId, RelationId, WayId};
     use osm_gpui::layers::osm_layer::OsmLayer;
     use osm_gpui::osm::{OsmMember, OsmRelation};
 
@@ -3603,7 +3680,7 @@ mod tests {
         let layer_id = LayerId(1);
         let mut layer = OsmLayer::new(layer_id);
         // ~40 m x 20 m, top edge sheared by ~8 degrees, near Boston.
-        let nodes: Vec<i64> = [
+        let nodes: Vec<NodeId> = [
             (42.36000, -71.06000),
             (42.36000, -71.05940),
             (42.36018, -71.05937),
@@ -3623,9 +3700,9 @@ mod tests {
         Fixture {
             layers,
             layer_id,
-            rect,
-            rect_nodes: nodes,
-            line,
+            rect: rect.get(),
+            rect_nodes: NodeId::to_raw_vec(&nodes),
+            line: line.get(),
         }
     }
 
@@ -3656,7 +3733,7 @@ mod tests {
         let editable = layer.as_editable().unwrap();
         f.rect_nodes
             .iter()
-            .map(|&id| editable.node_lat_lon(id).unwrap())
+            .map(|&id| editable.node_lat_lon(NodeId(id)).unwrap())
             .collect()
     }
 
@@ -3723,7 +3800,7 @@ mod tests {
             panic!("expected one PutRelation op");
         };
         assert_eq!(layer, f.layer_id);
-        assert!(snapshot.relation.id < 0);
+        assert!(snapshot.relation.id < RelationId(0));
         assert!(snapshot.relation.tags.is_empty());
         // Selection order, once each, empty roles.
         let members: Vec<(MemberType, i64, &str)> = snapshot
@@ -3745,7 +3822,7 @@ mod tests {
             Some(vec![FeatureRef {
                 layer_id: f.layer_id,
                 kind: FeatureKind::Relation,
-                id: snapshot.relation.id
+                id: snapshot.relation.id.get()
             }])
         );
 
@@ -3846,7 +3923,7 @@ mod tests {
         };
         // Each entry's `before` is the original position.
         for (id, b, _) in moves {
-            let idx = f.rect_nodes.iter().position(|n| n == id).unwrap();
+            let idx = f.rect_nodes.iter().position(|n| *n == id.get()).unwrap();
             assert_eq!(*b, before[idx]);
         }
         assert_ne!(node_positions(&f), before);
@@ -3870,9 +3947,13 @@ mod tests {
         assert!(ops.iter().all(|op| matches!(op, EditOp::ReverseWay { .. })));
         assert_eq!(ops.len(), 2);
         let layer = f.layers.find_layer(f.layer_id).unwrap();
-        let nodes = layer.as_editable().unwrap().way_node_ids(f.rect).unwrap();
-        assert_eq!(nodes.first(), Some(&f.rect_nodes[0]));
-        assert_eq!(nodes[1], f.rect_nodes[3]);
+        let nodes = layer
+            .as_editable()
+            .unwrap()
+            .way_node_ids(WayId(f.rect))
+            .unwrap();
+        assert_eq!(nodes.first(), Some(&NodeId(f.rect_nodes[0])));
+        assert_eq!(nodes[1], NodeId(f.rect_nodes[3]));
     }
 
     #[test]
@@ -3927,7 +4008,13 @@ mod tests {
         // The relation stops listing the way before the way goes, so the
         // layer never holds a way a relation still names.
         assert_eq!(shape(ops), ["members", "remove", "remove"]);
-        assert!(matches!(ops[0], EditOp::SetRelationMembers { id: 900, .. }));
+        assert!(matches!(
+            ops[0],
+            EditOp::SetRelationMembers {
+                id: RelationId(900),
+                ..
+            }
+        ));
 
         // A node that is on no way works the same.
         let mut n = net();
@@ -3940,7 +4027,7 @@ mod tests {
 
         // Several features, several relations, properly pluralised.
         let mut other = relation_900("route", &[(Way, 102, ""), (Way, 106, "")]);
-        other.id = 901;
+        other.id = RelationId(901);
         let mut n = net_with_relations(vec![
             relation_900("route", &[(Way, 102, ""), (Node, 7, "stop")]),
             other,
@@ -3954,7 +4041,7 @@ mod tests {
 
         // Two features in two relations: plural on both counts.
         let mut second = relation_900("route", &[(Way, 106, ""), (Way, 107, "")]);
-        second.id = 901;
+        second.id = RelationId(901);
         let mut n = net_with_relations(vec![
             relation_900("route", &[(Way, 102, ""), (Node, 7, "stop")]),
             second,
@@ -3996,7 +4083,7 @@ mod tests {
             "Can't delete way 102: it is the only member of relation 900"
         );
         assert!(!n.layer().is_modified());
-        assert!(n.editable().way_node_ids(102).is_some());
+        assert!(n.editable().way_node_ids(WayId(102)).is_some());
 
         // Node 7 is the restriction's via member.
         let mut n = net_with(relation_900(
@@ -4011,7 +4098,7 @@ mod tests {
             "Can't delete node 7: turn restriction 900 would be left without a 'via' member"
         );
         assert!(!n.layer().is_modified());
-        assert!(n.editable().node_lat_lon(7).is_some());
+        assert!(n.editable().node_lat_lon(NodeId(7)).is_some());
 
         // Part of a selection refused: the rest is still deleted, and the
         // status says why the other wasn't.
@@ -4021,8 +4108,8 @@ mod tests {
             out.status,
             "Deleted 1 feature; Can't delete way 102: it is the only member of relation 900"
         );
-        assert!(n.editable().way_node_ids(102).is_some());
-        assert!(n.editable().way_node_ids(106).is_none());
+        assert!(n.editable().way_node_ids(WayId(102)).is_some());
+        assert!(n.editable().way_node_ids(WayId(106)).is_none());
         // The undo step is just way 106 and its orphaned node.
         let (_, ops) = edit_of(&out);
         assert!(ops
@@ -4206,8 +4293,11 @@ mod tests {
         assert_eq!(out.status, "Joined 2 ways");
         assert_eq!(out.select, Some(n.ways(&[100])));
         assert!(!out.clear_selection);
-        assert_eq!(n.editable().way_node_ids(100), Some(vec![1, 2, 3, 4, 5]));
-        assert_eq!(n.editable().way_node_ids(101), None);
+        assert_eq!(
+            n.editable().way_node_ids(WayId(100)),
+            Some(vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5)])
+        );
+        assert_eq!(n.editable().way_node_ids(WayId(101)), None);
         let tags = n
             .editable()
             .feature_tags(&n.feature(FeatureKind::Way, 100))
@@ -4228,8 +4318,11 @@ mod tests {
     fn join_keeps_the_first_selected_when_several_are_server_ways() {
         let mut n = net();
         n.run("join", &n.ways(&[101, 100])).unwrap();
-        assert_eq!(n.editable().way_node_ids(101), Some(vec![1, 2, 3, 4, 5]));
-        assert_eq!(n.editable().way_node_ids(100), None);
+        assert_eq!(
+            n.editable().way_node_ids(WayId(101)),
+            Some(vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5)])
+        );
+        assert_eq!(n.editable().way_node_ids(WayId(100)), None);
     }
 
     #[test]
@@ -4253,15 +4346,27 @@ mod tests {
         // membership is re-pointed at it.
         let out = n.run("join", &n.ways(&[101, 102])).unwrap();
         assert_eq!(n.members(), members_of(&[(101, ""), (7, "stop")]));
-        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5, 6]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(101)),
+            Some(vec![NodeId(3), NodeId(4), NodeId(5), NodeId(6)])
+        );
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 2, 1));
         let (_, ops) = edit_of(&out);
         assert_eq!(shape(ops), ["way_nodes", "members", "remove"]);
-        assert!(matches!(ops[1], EditOp::SetRelationMembers { id: 900, .. }));
+        assert!(matches!(
+            ops[1],
+            EditOp::SetRelationMembers {
+                id: RelationId(900),
+                ..
+            }
+        ));
         // Selected the other way round, the member way survives untouched.
         let mut n = net();
         assert!(n.run("join", &n.ways(&[102, 101])).is_ok());
-        assert_eq!(n.editable().way_node_ids(102), Some(vec![3, 4, 5, 6]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(102)),
+            Some(vec![NodeId(3), NodeId(4), NodeId(5), NodeId(6)])
+        );
         assert_eq!(n.relation_edits(), 0);
     }
 
@@ -4291,7 +4396,10 @@ mod tests {
             "Can't join: way 101 has a different role in relation 900 than the way it would be joined into"
         );
         assert!(!n.layer().is_modified());
-        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(101)),
+            Some(vec![NodeId(3), NodeId(4), NodeId(5)])
+        );
 
         let mut n = net_with(relation_900(
             "restriction",
@@ -4327,18 +4435,21 @@ mod tests {
         assert!(out.select.is_none() && !out.clear_selection);
 
         // Way 101 keeps node 4; 103 got a new negative node.
-        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
-        let moved = n.editable().way_node_ids(103).unwrap();
-        assert_eq!((moved[0], moved[2]), (8, 9));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(101)),
+            Some(vec![NodeId(3), NodeId(4), NodeId(5)])
+        );
+        let moved = n.editable().way_node_ids(WayId(103)).unwrap();
+        assert_eq!((moved[0], moved[2]), (NodeId(8), NodeId(9)));
         let new_id = moved[1];
-        assert!(new_id < 0);
+        assert!(new_id < NodeId(0));
         assert_eq!(
             n.editable().node_lat_lon(new_id),
-            n.editable().node_lat_lon(4)
+            n.editable().node_lat_lon(NodeId(4))
         );
         assert!(n
             .editable()
-            .feature_tags(&n.feature(FeatureKind::Node, new_id))
+            .feature_tags(&n.feature(FeatureKind::Node, new_id.get()))
             .unwrap()
             .is_empty());
         assert_eq!(
@@ -4365,9 +4476,12 @@ mod tests {
         ];
         n.run("separate", &sel).unwrap();
         // 103 keeps the original this time; 101 got the new node.
-        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4, 9]));
-        let nodes = n.editable().way_node_ids(101).unwrap();
-        assert!(nodes[1] < 0 && nodes[0] == 3 && nodes[2] == 5);
+        assert_eq!(
+            n.editable().way_node_ids(WayId(103)),
+            Some(vec![NodeId(8), NodeId(4), NodeId(9)])
+        );
+        let nodes = n.editable().way_node_ids(WayId(101)).unwrap();
+        assert!(nodes[1] < NodeId(0) && nodes[0] == NodeId(3) && nodes[2] == NodeId(5));
     }
 
     impl Net {
@@ -4424,10 +4538,10 @@ mod tests {
             pairs(&[("name", "Bread"), ("shop", "bakery")])
         );
         // Inside the ring's bounding box.
-        let (lat, lon) = n.editable().node_lat_lon(new.id).unwrap();
+        let (lat, lon) = n.editable().node_lat_lon(NodeId(new.id)).unwrap();
         let pts: Vec<_> = [14, 15, 16]
             .iter()
-            .map(|&i| n.editable().node_lat_lon(i).unwrap())
+            .map(|&i| n.editable().node_lat_lon(NodeId(i)).unwrap())
             .collect();
         let range = |f: fn(&(f64, f64)) -> f64| {
             let v: Vec<f64> = pts.iter().map(f).collect();
@@ -4457,7 +4571,10 @@ mod tests {
         n.tag(FeatureKind::Way, 106, "lanes:forward", "2");
         n.tag(FeatureKind::Way, 106, "incline", "8%");
         let out = n.run("reverse", &n.ways(&[106])).unwrap();
-        assert_eq!(n.editable().way_node_ids(106), Some(vec![12, 11]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(106)),
+            Some(vec![NodeId(12), NodeId(11)])
+        );
         // oneway=yes stays; the direction-relative tags flip.
         assert_eq!(
             n.tags_of(FeatureKind::Way, 106),
@@ -4482,7 +4599,7 @@ mod tests {
                 .unwrap()
                 .as_editable_mut()
                 .unwrap()
-                .commit_node_moves(&[(node, lat, lon)])
+                .commit_node_moves(&[(NodeId(node), lat, lon)])
                 .unwrap();
         }
     }
@@ -4495,7 +4612,7 @@ mod tests {
         let mut n = net();
         let layer_id = n.layer_id;
         let way = 100;
-        let ids = n.editable().way_node_ids(way).unwrap();
+        let ids = n.editable().way_node_ids(WayId(way)).unwrap();
         let a = n.editable().node_lat_lon(ids[0]).unwrap();
         let b = n.editable().node_lat_lon(ids[1]).unwrap();
         let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
@@ -4504,10 +4621,17 @@ mod tests {
             .editable_mut()
             .create_node(a.0 + 1.0, a.1 + 1.0, None)
             .unwrap();
-        let actions =
-            join_node_into_way(n.editable_mut(), layer_id, node, way, Some(0), Some(mid)).unwrap();
+        let actions = join_node_into_way(
+            n.editable_mut(),
+            layer_id,
+            node,
+            WayId(way),
+            Some(0),
+            Some(mid),
+        )
+        .unwrap();
         assert_eq!(actions.len(), 2);
-        let after = n.editable().way_node_ids(way).unwrap();
+        let after = n.editable().way_node_ids(WayId(way)).unwrap();
         assert_eq!(after[1], node);
         let (lat, lon) = n.editable().node_lat_lon(node).unwrap();
         assert!((lat - mid.0).abs() < 1e-9 && (lon - mid.1).abs() < 1e-9);
@@ -4716,24 +4840,33 @@ mod tests {
         assert_eq!(out.status, "Split 2 ways");
         assert!(out.select.is_none() && !out.clear_selection);
         // Equal halves: the originals keep their first part.
-        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4]));
-        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(101)),
+            Some(vec![NodeId(3), NodeId(4)])
+        );
+        assert_eq!(
+            n.editable().way_node_ids(WayId(103)),
+            Some(vec![NodeId(8), NodeId(4)])
+        );
         // The new ways (negative ids) take the rest, and everything still
         // meets at node 4.
-        let users = n.editable().ways_using_node(4);
-        let new: Vec<i64> = users.iter().copied().filter(|&id| id < 0).collect();
+        let users = n.editable().ways_using_node(NodeId(4));
+        let new: Vec<WayId> = users.iter().copied().filter(|&id| id < WayId(0)).collect();
         assert_eq!(new.len(), 2);
         assert_eq!(users.len(), 4);
-        let mut rests: Vec<Vec<i64>> = new
+        let mut rests: Vec<Vec<NodeId>> = new
             .iter()
             .map(|&id| n.editable().way_node_ids(id).unwrap())
             .collect();
         rests.sort();
-        assert_eq!(rests, vec![vec![4, 5], vec![4, 9]]);
+        assert_eq!(
+            rests,
+            vec![vec![NodeId(4), NodeId(5)], vec![NodeId(4), NodeId(9)]]
+        );
         // Each new way carries a copy of its original's tags.
         let tags_of_new: Vec<Vec<(String, String)>> = new
             .iter()
-            .map(|&id| n.tags_of(FeatureKind::Way, id))
+            .map(|&id| n.tags_of(FeatureKind::Way, id.get()))
             .collect();
         assert!(tags_of_new.contains(&pairs(&[("highway", "residential"), ("name", "Main")])));
         assert!(tags_of_new.contains(&pairs(&[("highway", "footway")])));
@@ -4759,8 +4892,14 @@ mod tests {
         ];
         let out = n.run("split", &sel).unwrap();
         assert_eq!(out.status, "Split 1 way");
-        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
-        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(101)),
+            Some(vec![NodeId(3), NodeId(4), NodeId(5)])
+        );
+        assert_eq!(
+            n.editable().way_node_ids(WayId(103)),
+            Some(vec![NodeId(8), NodeId(4)])
+        );
         assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
     }
 
@@ -4769,13 +4908,22 @@ mod tests {
         let mut n = net();
         // Make way 100 longer: [1,2,3,4,5]-ish by pointing it at more nodes.
         n.editable_mut()
-            .set_way_nodes(100, vec![1, 2, 3, 9, 10])
+            .set_way_nodes(
+                WayId(100),
+                vec![NodeId(1), NodeId(2), NodeId(3), NodeId(9), NodeId(10)],
+            )
             .unwrap();
         n.run("split", &n.nodes(&[2])).unwrap();
-        assert_eq!(n.editable().way_node_ids(100), Some(vec![2, 3, 9, 10]));
-        let new = n.editable().ways_using_node(1)[0];
-        assert!(new < 0);
-        assert_eq!(n.editable().way_node_ids(new), Some(vec![1, 2]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(100)),
+            Some(vec![NodeId(2), NodeId(3), NodeId(9), NodeId(10)])
+        );
+        let new = n.editable().ways_using_node(NodeId(1))[0];
+        assert!(new < WayId(0));
+        assert_eq!(
+            n.editable().way_node_ids(new),
+            Some(vec![NodeId(1), NodeId(2)])
+        );
     }
 
     #[test]
@@ -4784,12 +4932,18 @@ mod tests {
         let out = n.run("split", &n.nodes(&[16, 14])).unwrap();
         assert_eq!(out.status, "Split 1 way");
         // Ring [14,15,16,14]: arcs 14-15-16 (3 nodes) and 16-14 (2).
-        assert_eq!(n.editable().way_node_ids(108), Some(vec![14, 15, 16]));
-        let new = n.editable().ways_using_node(14);
-        assert_eq!(new.len(), 2);
-        assert_eq!(n.editable().way_node_ids(new[0]), Some(vec![16, 14]));
         assert_eq!(
-            n.tags_of(FeatureKind::Way, new[0]),
+            n.editable().way_node_ids(WayId(108)),
+            Some(vec![NodeId(14), NodeId(15), NodeId(16)])
+        );
+        let new = n.editable().ways_using_node(NodeId(14));
+        assert_eq!(new.len(), 2);
+        assert_eq!(
+            n.editable().way_node_ids(new[0]),
+            Some(vec![NodeId(16), NodeId(14)])
+        );
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, new[0].get()),
             pairs(&[("building", "yes")])
         );
         assert_eq!(n.layer().diff_for_upload().counts(), (1, 1, 0));
@@ -4798,7 +4952,7 @@ mod tests {
     /// A relation with id 900 and the given `type`, over the test network.
     fn relation_900(kind: &str, members: &[(MemberType, i64, &str)]) -> OsmRelation {
         OsmRelation {
-            id: 900,
+            id: RelationId(900),
             version: 1,
             tags: HashMap::from([("type".to_string(), kind.to_string())]),
             members: members
@@ -4835,7 +4989,7 @@ mod tests {
         /// Relation 900's members as `(ref, role)`.
         fn members(&self) -> Vec<(i64, String)> {
             self.editable()
-                .relation(900)
+                .relation(RelationId(900))
                 .unwrap()
                 .members
                 .iter()
@@ -4865,7 +5019,7 @@ mod tests {
             .diff_for_upload()
             .created_ways
             .iter()
-            .map(|w| w.id)
+            .map(|w| w.id.get())
             .collect();
         assert_eq!(ids.len(), 1, "{ids:?}");
         ids[0]
@@ -4894,7 +5048,7 @@ mod tests {
         assert_eq!(shape(ops), ["put", "way_nodes", "members"]);
         assert!(matches!(
             &ops[2],
-            EditOp::SetRelationMembers { id: 900, before, after }
+            EditOp::SetRelationMembers { id: RelationId(900), before, after }
                 if before.len() == 3 && after.len() == 4
         ));
     }
@@ -5007,7 +5161,10 @@ mod tests {
                 "Can't split: can't tell which part of way 101 belongs in turn restriction 900"
             );
             assert_eq!(n.layer().diff_for_upload().counts(), before);
-            assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+            assert_eq!(
+                n.editable().way_node_ids(WayId(101)),
+                Some(vec![NodeId(3), NodeId(4), NodeId(5)])
+            );
             assert!(!n.layer().is_modified());
         }
     }
@@ -5060,16 +5217,22 @@ mod tests {
         assert_eq!(out.status, "Merged 2 nodes");
         assert_eq!(out.select, Some(n.nodes(&[8])));
         // 101 now passes through 8; 103 would have had 8 twice in a row.
-        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 8, 5]));
-        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 9]));
-        assert_eq!(n.editable().node_lat_lon(4), None);
+        assert_eq!(
+            n.editable().way_node_ids(WayId(101)),
+            Some(vec![NodeId(3), NodeId(8), NodeId(5)])
+        );
+        assert_eq!(
+            n.editable().way_node_ids(WayId(103)),
+            Some(vec![NodeId(8), NodeId(9)])
+        );
+        assert_eq!(n.editable().node_lat_lon(NodeId(4)), None);
         // The survivor keeps its place and picks up the crossing tag.
         assert_eq!(
             n.tags_of(FeatureKind::Node, 8),
             pairs(&[("highway", "crossing")])
         );
         assert_eq!(
-            n.editable().node_lat_lon(8),
+            n.editable().node_lat_lon(NodeId(8)),
             Some((40.0 + 0.0 * 0.001, -74.0 + 8.0 * 0.001))
         );
 
@@ -5091,9 +5254,9 @@ mod tests {
             .unwrap()
             .create_node(40.5, -74.5, None)
             .unwrap();
-        assert!(fresh < 0);
+        assert!(fresh < NodeId(0));
         // The new node is selected first but node 6 is on the server.
-        let out = n.run("merge", &n.nodes(&[fresh, 6])).unwrap();
+        let out = n.run("merge", &n.nodes(&[fresh.get(), 6])).unwrap();
         assert_eq!(out.select, Some(n.nodes(&[6])));
         assert_eq!(n.editable().node_lat_lon(fresh), None);
         // Merging into an existing node leaves no trace of the new one.
@@ -5105,8 +5268,14 @@ mod tests {
         let mut n = net();
         // Ways 102 [5,6] and 105 [5,10]: merge their far ends, 6 and 10.
         n.run("merge", &n.nodes(&[6, 10])).unwrap();
-        assert_eq!(n.editable().way_node_ids(105), Some(vec![5, 6]));
-        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(105)),
+            Some(vec![NodeId(5), NodeId(6)])
+        );
+        assert_eq!(
+            n.editable().way_node_ids(WayId(102)),
+            Some(vec![NodeId(5), NodeId(6)])
+        );
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
     }
 
@@ -5121,7 +5290,10 @@ mod tests {
             message,
             "Can't merge: the nodes have different values for 'highway'"
         );
-        assert_eq!(n.editable().way_node_ids(103), Some(vec![8, 4, 9]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(103)),
+            Some(vec![NodeId(8), NodeId(4), NodeId(9)])
+        );
     }
 
     #[test]
@@ -5144,21 +5316,24 @@ mod tests {
         // first, 7 is the one removed.
         let out = n.run("merge", &n.nodes(&[6, 7])).unwrap();
         assert_eq!(n.members(), members_of(&[(102, ""), (6, "stop")]));
-        assert_eq!(n.editable().node_lat_lon(7), None);
+        assert_eq!(n.editable().node_lat_lon(NodeId(7)), None);
         // Relation 900, the way untouched, the node gone.
         assert_eq!(n.layer().diff_for_upload().counts(), (0, 1, 1));
         let (_, ops) = edit_of(&out);
         assert_eq!(shape(ops), ["members", "remove"]);
         assert!(matches!(
             &ops[0],
-            EditOp::SetRelationMembers { id: 900, before, after }
+            EditOp::SetRelationMembers { id: RelationId(900), before, after }
                 if before.len() == 2 && after.len() == 2
         ));
         // Selected the other way round, the member survives unchanged.
         let mut n = net();
         n.run("merge", &n.nodes(&[7, 6])).unwrap();
         assert_eq!(n.members(), members_of(&[(102, ""), (7, "stop")]));
-        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 7]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(102)),
+            Some(vec![NodeId(5), NodeId(7)])
+        );
     }
 
     #[test]
@@ -5208,7 +5383,7 @@ mod tests {
     fn straighten_puts_the_wobbly_node_back_on_the_line_in_one_move_step() {
         let mut n = net();
         // Way 100 is a straight line; push its middle node ~5 m off it.
-        let straight = n.editable().node_lat_lon(2).unwrap();
+        let straight = n.editable().node_lat_lon(NodeId(2)).unwrap();
         n.nudge(2, straight.0 + 0.00005, straight.1);
         let out = n.run("straighten", &n.ways(&[100])).unwrap();
         assert_eq!(out.status, "Straightened 1 way");
@@ -5218,21 +5393,24 @@ mod tests {
         // Only the interior node moved: from the nudge back onto the line.
         assert_eq!(moves.len(), 1);
         let (id, before, after) = moves[0];
-        assert_eq!(id, 2);
+        assert_eq!(id, NodeId(2));
         assert_eq!(before, (straight.0 + 0.00005, straight.1));
         // Projected onto the line through nodes 1 and 3 (the nudge was
         // sideways to a diagonal line, so it also slides along it a little).
         let (a, c) = (
-            n.editable().node_lat_lon(1).unwrap(),
-            n.editable().node_lat_lon(3).unwrap(),
+            n.editable().node_lat_lon(NodeId(1)).unwrap(),
+            n.editable().node_lat_lon(NodeId(3)).unwrap(),
         );
         let k = ((a.0 + c.0) / 2.0).to_radians().cos();
         let cross = (after.1 - a.1) * k * (c.0 - a.0) - (after.0 - a.0) * (c.1 - a.1) * k;
         assert!(cross.abs() < 1e-11, "not on the line: {cross}");
         assert!((after.0 - straight.0).abs() < 1e-4);
-        assert_eq!(n.editable().node_lat_lon(2), Some(after));
+        assert_eq!(n.editable().node_lat_lon(NodeId(2)), Some(after));
         // The way itself is untouched.
-        assert_eq!(n.editable().way_node_ids(100), Some(vec![1, 2, 3]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(100)),
+            Some(vec![NodeId(1), NodeId(2), NodeId(3)])
+        );
         // Straight now: running again has nothing to do.
         assert_eq!(
             n.run("straighten", &n.ways(&[100])).err().as_deref(),
@@ -5352,7 +5530,13 @@ mod tests {
         let mut nodes = vec![1];
         nodes.extend(std::iter::repeat_n(2, len - 2));
         nodes.push(3);
-        assert!(n.editable_mut().set_way_nodes(100, nodes).is_ok());
+        assert!(n
+            .editable_mut()
+            .set_way_nodes(
+                WayId(100),
+                nodes.into_iter().map(NodeId).collect::<Vec<_>>()
+            )
+            .is_ok());
     }
 
     #[test]
@@ -5368,14 +5552,14 @@ mod tests {
             "Can't join: the combined way would have 2,001 nodes; the server allows 2,000"
         );
         // Nothing changed: both ways are still there.
-        assert_eq!(n.editable().way_node_ids(100).unwrap().len(), 1999);
-        assert!(n.editable().way_node_ids(101).is_some());
+        assert_eq!(n.editable().way_node_ids(WayId(100)).unwrap().len(), 1999);
+        assert!(n.editable().way_node_ids(WayId(101)).is_some());
 
         // Exactly at the limit is fine.
         let mut n = net();
         long_way_100(&mut n, 1998);
         n.run("join", &n.ways(&[100, 101])).unwrap();
-        assert_eq!(n.editable().way_node_ids(100).unwrap().len(), 2000);
+        assert_eq!(n.editable().way_node_ids(WayId(100)).unwrap().len(), 2000);
     }
 
     #[test]
@@ -5383,7 +5567,7 @@ mod tests {
         let mut n = net();
         long_way_100(&mut n, 2001);
         n.run("reverse", &n.ways(&[100])).unwrap();
-        assert_eq!(n.editable().way_node_ids(100).unwrap()[0], 3);
+        assert_eq!(n.editable().way_node_ids(WayId(100)).unwrap()[0], NodeId(3));
     }
 
     fn members_of_kind(count: usize) -> Vec<osm_gpui::osm::OsmMember> {
@@ -5401,22 +5585,41 @@ mod tests {
         // Relation 900 with 31,999 members: one more is the limit, two is over.
         let mut n = net_with(relation_900("route", &[]));
         n.editable_mut()
-            .set_relation_members(900, members_of_kind(31_999))
+            .set_relation_members(RelationId(900), members_of_kind(31_999))
             .unwrap();
         let node1 = n.feature(FeatureKind::Node, 1);
         let node2 = n.feature(FeatureKind::Node, 2);
 
-        let result = add_to_relation(&mut n.layers, &[node1, node2], Some(n.layer_id), 900);
+        let result = add_to_relation(
+            &mut n.layers,
+            &[node1, node2],
+            Some(n.layer_id),
+            RelationId(900),
+        );
         assert_eq!(
             result.err().as_deref(),
             Some(
                 "Can't add to the relation: it would have 32,001 members; the server allows 32,000"
             )
         );
-        assert_eq!(n.editable().relation(900).unwrap().members.len(), 31_999);
+        assert_eq!(
+            n.editable()
+                .relation(RelationId(900))
+                .unwrap()
+                .members
+                .len(),
+            31_999
+        );
 
-        add_to_relation(&mut n.layers, &[node1], Some(n.layer_id), 900).unwrap();
-        assert_eq!(n.editable().relation(900).unwrap().members.len(), 32_000);
+        add_to_relation(&mut n.layers, &[node1], Some(n.layer_id), RelationId(900)).unwrap();
+        assert_eq!(
+            n.editable()
+                .relation(RelationId(900))
+                .unwrap()
+                .members
+                .len(),
+            32_000
+        );
     }
 
     #[test]
@@ -5426,7 +5629,7 @@ mod tests {
         let mut selection = Vec::new();
         for i in 0..32_001 {
             let id = n.editable_mut().add_node(1.0 + i as f64 * 1e-6, 2.0);
-            selection.push(n.feature(FeatureKind::Node, id));
+            selection.push(n.feature(FeatureKind::Node, id.get()));
         }
         let Err(message) = n.run("new_relation", &selection) else {
             panic!("expected a refusal");
@@ -5456,7 +5659,10 @@ mod tests {
             "{message}"
         );
         // Changed nothing: no new way, way 101 intact.
-        assert_eq!(n.editable().way_node_ids(101), Some(vec![3, 4, 5]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(101)),
+            Some(vec![NodeId(3), NodeId(4), NodeId(5)])
+        );
         assert!(!n.layer().is_modified());
     }
 
@@ -5478,11 +5684,14 @@ mod tests {
         assert_eq!(select.len(), 1);
         let new_id = select[0].id;
         assert!(new_id < 0);
-        let nodes = n.editable().way_node_ids(new_id).unwrap();
+        let nodes = n.editable().way_node_ids(WayId(new_id)).unwrap();
         assert_eq!(nodes.len(), 3);
-        assert!(nodes.iter().all(|&id| id < 0));
+        assert!(nodes.iter().all(|&id| id < NodeId(0)));
         // The original is untouched, and the copy shares no node with it.
-        assert_eq!(n.editable().way_node_ids(100), Some(vec![1, 2, 3]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(100)),
+            Some(vec![NodeId(1), NodeId(2), NodeId(3)])
+        );
         let tags = n.editable().feature_tags(&select[0]).unwrap();
         assert!(tags.contains(&("highway".to_string(), "residential".to_string())));
         // One undo step: nodes first, then the way.
@@ -5494,8 +5703,8 @@ mod tests {
         ));
         // 5 m to the right of the first segment, in metres on the ground.
         let (a, b) = (
-            n.editable().node_lat_lon(1).unwrap(),
-            n.editable().node_lat_lon(2).unwrap(),
+            n.editable().node_lat_lon(NodeId(1)).unwrap(),
+            n.editable().node_lat_lon(NodeId(2)).unwrap(),
         );
         let (c, d) = (
             n.editable().node_lat_lon(nodes[0]).unwrap(),
@@ -5523,11 +5732,11 @@ mod tests {
         let out = parallel(&mut n, &[101], params).unwrap();
         let new_way = out.select.unwrap()[0];
         assert!(n.editable().feature_tags(&new_way).unwrap().is_empty());
-        let nodes = n.editable().way_node_ids(new_way.id).unwrap();
+        let nodes = n.editable().way_node_ids(WayId(new_way.id)).unwrap();
         // Reversed: the copy starts beside original node 5, not node 3.
         let first = n.editable().node_lat_lon(nodes[0]).unwrap();
         let near = |id: i64| {
-            let o = n.editable().node_lat_lon(id).unwrap();
+            let o = n.editable().node_lat_lon(NodeId(id)).unwrap();
             ((first.0 - o.0) * 111_000.0).hypot((first.1 - o.1) * 85_000.0)
         };
         assert!(near(5) < near(3));
@@ -5536,17 +5745,17 @@ mod tests {
     #[test]
     fn parallel_of_a_ring_is_a_ring_and_leaves_relations_alone() {
         let mut n = net();
-        let before = n.editable().relation(900).unwrap();
+        let before = n.editable().relation(RelationId(900)).unwrap();
         let out = parallel(&mut n, &[108, 102], Default::default()).unwrap();
         assert_eq!(out.status, "Created 2 parallel ways");
         let new_ways = out.select.unwrap();
-        let ring = n.editable().way_node_ids(new_ways[0].id).unwrap();
+        let ring = n.editable().way_node_ids(WayId(new_ways[0].id)).unwrap();
         assert_eq!(ring.first(), ring.last());
         assert_eq!(ring.len(), 4);
-        assert_eq!(n.editable().relation(900).unwrap(), before);
+        assert_eq!(n.editable().relation(RelationId(900)).unwrap(), before);
         assert!(n
             .editable()
-            .relations_containing_way(new_ways[1].id)
+            .relations_containing_way(WayId(new_ways[1].id))
             .is_empty());
     }
 
@@ -5559,17 +5768,20 @@ mod tests {
         assert!(n.applicable(&n.ways(&[100])).contains(&"parallel"));
         let mut n = net();
         // Collapse way 102's two nodes onto one point: nothing to offset.
-        let (lat, lon) = n.editable().node_lat_lon(5).unwrap();
+        let (lat, lon) = n.editable().node_lat_lon(NodeId(5)).unwrap();
         n.layers
             .find_layer_mut(n.layer_id)
             .unwrap()
             .as_editable_mut()
             .unwrap()
-            .commit_node_moves(&[(6, lat, lon)])
+            .commit_node_moves(&[(NodeId(6), lat, lon)])
             .unwrap();
         let result = parallel(&mut n, &[102], Default::default());
         assert!(result.is_err());
-        assert_eq!(n.editable().way_node_ids(102), Some(vec![5, 6]));
+        assert_eq!(
+            n.editable().way_node_ids(WayId(102)),
+            Some(vec![NodeId(5), NodeId(6)])
+        );
     }
 
     fn nodes(n: &Net, ids: &[i64]) -> Vec<FeatureRef> {
@@ -5580,7 +5792,7 @@ mod tests {
 
     fn positions(n: &Net, ids: &[i64]) -> Vec<LatLon> {
         ids.iter()
-            .map(|&id| n.editable().node_lat_lon(id).unwrap())
+            .map(|&id| n.editable().node_lat_lon(NodeId(id)).unwrap())
             .collect()
     }
 
@@ -5599,7 +5811,7 @@ mod tests {
     fn align_keeps_the_anchors_moves_the_rest_and_leaves_relations_alone() {
         let mut n = net();
         let ids = [7, 2, 6, 11, 5];
-        let relation = n.editable().relation(900).unwrap();
+        let relation = n.editable().relation(RelationId(900)).unwrap();
         let before = positions(&n, &ids);
         let out = n.run("align", &nodes(&n, &ids)).unwrap();
         assert_eq!(shape(edit_of(&out).1), ["move"]);
@@ -5624,7 +5836,7 @@ mod tests {
         // Exactly two nodes (the anchors) did not move.
         let unmoved = before.iter().zip(&after).filter(|(b, a)| b == a).count();
         assert_eq!(unmoved, 2);
-        assert_eq!(n.editable().relation(900).unwrap(), relation);
+        assert_eq!(n.editable().relation(RelationId(900)).unwrap(), relation);
         assert!(n.layer().is_modified());
     }
 
@@ -5638,13 +5850,13 @@ mod tests {
         assert_eq!(message, "The selected nodes are already in place");
         assert!(!n.layer().is_modified());
         // Collapse three nodes onto one point.
-        let p = n.editable().node_lat_lon(1).unwrap();
+        let p = n.editable().node_lat_lon(NodeId(1)).unwrap();
         n.layers
             .find_layer_mut(n.layer_id)
             .unwrap()
             .as_editable_mut()
             .unwrap()
-            .commit_node_moves(&[(2, p.0, p.1), (3, p.0, p.1)])
+            .commit_node_moves(&[(NodeId(2), p.0, p.1), (NodeId(3), p.0, p.1)])
             .unwrap();
         let Err(message) = n.run("align", &nodes(&n, &[1, 2, 3])) else {
             panic!("expected a refusal");

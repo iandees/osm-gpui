@@ -7,6 +7,7 @@ use super::{
 use crate::{ExtrudeDrag, ExtrudeStyle, MapViewer};
 use gpui::{point, px, TestAppContext};
 use osm_gpui::coordinates::LatLon;
+use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::layers::LayerId;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
 
@@ -267,7 +268,7 @@ fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
                 .unwrap()
                 .as_editable_mut()
                 .unwrap()
-                .commit_node_moves(&[(2, off_line.0, off_line.1)])
+                .commit_node_moves(&[(NodeId(2), off_line.0, off_line.1)])
                 .unwrap();
             select(view, Way, &[100]);
             view.run_selection_action("straighten", cx);
@@ -410,7 +411,7 @@ fn deleting_several_features_is_one_undo_step(cx: &mut TestAppContext) {
                 .unwrap()
                 .as_editable()
                 .unwrap()
-                .node_lat_lon(1);
+                .node_lat_lon(NodeId(1));
             assert!(node.is_some());
         })
         .unwrap();
@@ -429,7 +430,7 @@ fn extrude_triangle_drag(
             .layer_manager
             .find_layer(layer_id)
             .and_then(|l| l.as_editable())
-            .and_then(|e| e.node_lat_lon(id))
+            .and_then(|e| e.node_lat_lon(NodeId(id)))
             .unwrap();
         view.viewport.geo_to_screen(LatLon::new(lat, lon))
     };
@@ -440,9 +441,9 @@ fn extrude_triangle_drag(
     let up = point(mid.x + px(-dy / len * dist), mid.y + px(dx / len * dist));
     let drag = ExtrudeDrag {
         layer: layer_id,
-        way_id: 108,
-        node_a: 14,
-        node_b: 15,
+        way_id: WayId(108),
+        node_a: NodeId(14),
+        node_b: NodeId(15),
         segment: 0,
         style,
         down: mid,
@@ -491,14 +492,14 @@ fn extrude_move_translates_without_new_nodes_and_undoes(cx: &mut TestAppContext)
                     .and_then(|e| e.node_lat_lon(id))
                     .unwrap()
             };
-            let (a0, b0) = (old(view, 14), old(view, 15));
+            let (a0, b0) = (old(view, NodeId(14)), old(view, NodeId(15)));
             let (drag, up) = extrude_triangle_drag(view, layer_id, ExtrudeStyle::Move, 60.0);
             view.commit_extrude_reshape(&drag, up);
             assert_eq!(way_nodes(view, layer_id, 108), vec![14, 15, 16, 14]);
-            assert_ne!(old(view, 14), a0);
-            assert_ne!(old(view, 15), b0);
+            assert_ne!(old(view, NodeId(14)), a0);
+            assert_ne!(old(view, NodeId(15)), b0);
             undo_step(view);
-            assert_eq!((old(view, 14), old(view, 15)), (a0, b0));
+            assert_eq!((old(view, NodeId(14)), old(view, NodeId(15))), (a0, b0));
             assert_eq!(pending(view), before_pending);
         })
         .unwrap();
@@ -517,7 +518,10 @@ fn extrude_refuses_to_grow_a_full_way(cx: &mut TestAppContext) {
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .set_way_nodes(108, nodes)
+                .set_way_nodes(
+                    WayId(108),
+                    nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
+                )
                 .unwrap();
             let (drag, up) = extrude_triangle_drag(view, layer_id, ExtrudeStyle::Reshape, 60.0);
             view.commit_extrude_reshape(&drag, up);
@@ -618,7 +622,7 @@ fn separate_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
                 .unwrap()
                 .as_editable()
                 .unwrap();
-            assert_eq!(editable.node_lat_lon(new_id), None);
+            assert_eq!(editable.node_lat_lon(NodeId(new_id)), None);
             assert_eq!(pending(view), (0, 0, 0));
 
             redo_step(view);

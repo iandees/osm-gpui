@@ -4,6 +4,7 @@
 use gpui::{CursorStyle, Pixels, Point, Window};
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
+use osm_gpui::ids::WayId;
 use osm_gpui::interaction::{self, Interaction};
 use osm_gpui::layers::LayerId;
 
@@ -26,7 +27,7 @@ pub(crate) struct BuildingProgress {
 #[derive(Clone, Copy)]
 pub(crate) struct BuildingReference {
     pub(crate) layer_id: LayerId,
-    pub(crate) way_id: i64,
+    pub(crate) way_id: WayId,
     /// Bearing of the way's longest edge in a local metric projection, in
     /// radians in `[0, pi)` (see `osm_gpui::building`).
     pub(crate) orientation: f64,
@@ -186,7 +187,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
             &osm_gpui::selection::FeatureRef {
                 layer_id: reference.layer_id,
                 kind: osm_gpui::selection::FeatureKind::Way,
-                id: reference.way_id,
+                id: reference.way_id.get(),
             },
             osm_gpui::layers::HighlightKind::Hovered,
             frame.viewport,
@@ -296,7 +297,7 @@ impl MapViewer {
         let way = osm_gpui::selection::FeatureRef {
             layer_id,
             kind: osm_gpui::selection::FeatureKind::Way,
-            id: way_id,
+            id: way_id.get(),
         };
         self.undo_stack.push(
             UndoableAction::edit(layer_id, EditLabel::CreatedBuilding, rec.into_ops())
@@ -323,7 +324,7 @@ impl MapViewer {
             .layer_manager
             .find_layer(feature.layer_id)?
             .as_editable()?;
-        let node_ids = editable.way_node_ids(feature.id)?;
+        let node_ids = editable.way_node_ids(WayId(feature.id))?;
         if node_ids.len() < 4 || node_ids.first() != node_ids.last() {
             return None;
         }
@@ -336,7 +337,7 @@ impl MapViewer {
         }
         Some(BuildingReference {
             layer_id: feature.layer_id,
-            way_id: feature.id,
+            way_id: WayId(feature.id),
             orientation: osm_gpui::building::dominant_orientation(&ring)?,
         })
     }
