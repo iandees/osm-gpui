@@ -2010,12 +2010,12 @@ impl MapViewer {
         let Ok(before) = editable.set_relation_members(relation_id, after.clone()) else {
             return;
         };
-        self.undo_stack.push(UndoableAction::SetRelationMembers {
-            layer: layer_id,
+        self.undo_stack.push(UndoableAction::set_relation_members(
+            layer_id,
             relation_id,
             before,
             after,
-        });
+        ));
     }
 
     /// Move member `member.index` of a relation by `delta` places.

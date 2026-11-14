@@ -86,10 +86,10 @@ fn use_theirs_replaces_the_object_and_keeps_unrelated_undo_history(cx: &mut Test
         .update(cx, |view, _window, _cx| {
             tag_node_one(view);
             // An unrelated earlier edit is on the stack too: it stays.
-            view.undo_stack.push(UndoableAction::ReverseWays {
-                layer: view.active_layer.unwrap(),
-                way_ids: vec![99],
-            });
+            view.undo_stack.push(UndoableAction::reverse_ways(
+                view.active_layer.unwrap(),
+                vec![99],
+            ));
             let note = view
                 .apply_resolution(ConflictAction::UseTheirs, Node, 1, server_node(5, 40.0))
                 .unwrap();
@@ -99,7 +99,10 @@ fn use_theirs_replaces_the_object_and_keeps_unrelated_undo_history(cx: &mut Test
             assert_eq!(view.undo_stack.cursor, 1);
             assert!(matches!(
                 view.undo_stack.actions[0],
-                UndoableAction::ReverseWays { .. }
+                UndoableAction::Edit {
+                    label: crate::undo::EditLabel::Reversed(_),
+                    ..
+                }
             ));
             assert_eq!(pending(view), (0, 0, 0), "the change to it is gone");
             let layer_id = view.active_layer.unwrap();
@@ -162,10 +165,8 @@ fn drop_my_change_forgets_the_local_delete(cx: &mut TestAppContext) {
         .update(cx, |view, _window, _cx| {
             let layer_id = view.active_layer.unwrap();
             let snapshot = editable(view).delete_feature(Way, 10).unwrap();
-            view.undo_stack.push(UndoableAction::DeleteFeature {
-                layer: layer_id,
-                snapshot,
-            });
+            view.undo_stack
+                .push(UndoableAction::delete_feature(layer_id, snapshot));
             assert_eq!(pending(view), (0, 0, 1));
             let note = view
                 .apply_resolution(
