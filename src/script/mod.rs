@@ -1,5 +1,6 @@
 //! Scriptable screenshot harness.
 
+pub mod action;
 pub mod note_ops;
 pub mod op;
 pub mod parser;

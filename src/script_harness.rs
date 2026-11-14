@@ -51,23 +51,31 @@ pub(crate) fn script_mode() -> bool {
 #[derive(Debug)]
 pub(crate) enum ScriptCommand {
     /// pan_to + set_zoom + ensure tile layer
-    SetViewport { lat: f64, lon: f64, zoom: f64 },
-    /// Resize the window
-    SetWindowSize { w: u32, h: u32 },
-    /// Synthesize a pan-drag of the map (from → to)
+    SetViewport {
+        lat: f64,
+        lon: f64,
+        zoom: f64,
+    },
+    SetWindowSize {
+        w: u32,
+        h: u32,
+    },
     PanDrag {
         from: script::Where,
         to: script::Where,
     },
-    /// Synthesize a mouse click
     Click {
         at: script::Where,
         right: bool,
         count: u8,
         mods: script::Mods,
     },
-    /// Synthesize a scroll event
-    Scroll { x: f32, y: f32, dx: f32, dy: f32 },
+    Scroll {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+    },
     /// One left-button mouse event: a hover, the press, a move with the button
     /// held, or the release (`at` of `None`: where the pointer is now)
     Pointer {
@@ -76,9 +84,14 @@ pub(crate) enum ScriptCommand {
         mods: script::Mods,
     },
     /// Press or release modifier keys by themselves
-    Modifiers { mods: script::Mods, down: bool },
+    Modifiers {
+        mods: script::Mods,
+        down: bool,
+    },
     /// Render the current frame in-process and save it as a PNG at `path`
-    Capture { path: std::path::PathBuf },
+    Capture {
+        path: std::path::PathBuf,
+    },
     /// Add a parsed OSM dataset as a new layer (parsing itself happens on
     /// the runner thread, before this is submitted — see `load_osm` below).
     /// The data and the file's recorded pending edits are boxed to keep
@@ -92,17 +105,24 @@ pub(crate) enum ScriptCommand {
         name: String,
         data: Box<osm_gpui::reference::ReferenceData>,
     },
-    /// Dispatch the named action (bare name in the `osm_gpui` namespace,
-    /// e.g. `UploadToOsm`) the way a native menu item does.
-    Action { name: String },
+    /// Dispatch the named action the way a native menu item does (see
+    /// `script::action::resolve_action` for the accepted names).
+    Action {
+        name: String,
+    },
     /// Compare `MapViewer.mode` against `want`.
     AssertMode(crate::EditMode),
     /// Compare `MapViewer.selected` against `want`.
     AssertSelected(Option<(osm_gpui::script::FeatureKind, i64)>),
     /// Set a tag on the selection (the side panel's Add tag path).
-    SetTag { key: String, value: String },
+    SetTag {
+        key: String,
+        value: String,
+    },
     /// Remove a tag from the selection.
-    RemoveTag { key: String },
+    RemoveTag {
+        key: String,
+    },
     /// Press the upload dialog's Upload / Try again button.
     UploadConfirm,
     /// Replace the upload dialog's changeset comment.
@@ -112,11 +132,15 @@ pub(crate) enum ScriptCommand {
     /// A changeset-extras op on the upload dialog (never uploads).
     UploadDialog(script::UploadDialogCmd),
     /// Press the delete-layer confirmation's Delete Layer (`true`) or Cancel.
-    DeleteLayerDialog { confirm: bool },
+    DeleteLayerDialog {
+        confirm: bool,
+    },
     /// Press one of the conflict dialog's buttons.
     Resolve(script::ConflictChoice),
     /// Write the active layer to this `.osm` path.
-    Export { path: std::path::PathBuf },
+    Export {
+        path: std::path::PathBuf,
+    },
     /// An autosave op (write now, press Restore or Discard).
     Autosave(script::AutosaveCmd),
     /// An object history op (open the view, feed it a canned response).
@@ -145,9 +169,9 @@ pub(crate) struct ScriptBus {
     frame_cv: Condvar,
     /// Result of the most recently processed `Capture` command.
     capture_result: Mutex<Option<Result<(), String>>>,
-    /// Result of the most recently processed `AssertMode`/`AssertSelected`
-    /// command. Safe to share a single slot: `submit` blocks until the
-    /// pending command is consumed, so only one assertion is ever in flight.
+    /// Result of the most recently processed command that can fail (every
+    /// one but `Capture`, which has its own slot). One slot is enough: `submit` blocks until the
+    /// pending command is consumed, so only one command is ever in flight.
     assert_result: Mutex<Option<Result<(), String>>>,
 }
 
@@ -169,7 +193,6 @@ impl ScriptBus {
             let mut lock = self.pending.lock().unwrap();
             *lock = Some(cmd);
         }
-        // Wait until the command is consumed.
         let _guard = self
             .done_cv
             .wait_while(self.pending.lock().unwrap(), |opt| opt.is_some())
@@ -214,15 +237,14 @@ impl ScriptBus {
             .unwrap_or_else(|| Err("capture: no result recorded".to_string()))
     }
 
-    /// Called by MapViewer::render when handling an `AssertMode`/
-    /// `AssertSelected` command, before `signal_done_and_frame` wakes the
-    /// waiting runner thread.
+    /// Called by MapViewer::render when handling any command but `Capture`,
+    /// before `signal_done_and_frame` wakes the waiting runner thread.
     fn set_assert_result(&self, result: Result<(), String>) {
         *self.assert_result.lock().unwrap() = Some(result);
     }
 
-    /// Called by the runner thread after `submit(AssertMode(..))` or
-    /// `submit(AssertSelected(..))` returns.
+    /// Called by the runner thread after `submit` returns for a command that
+    /// reports a result.
     fn take_assert_result(&self) -> Result<(), String> {
         self.assert_result
             .lock()
@@ -258,9 +280,7 @@ fn script_modifiers(inline: script::Mods) -> gpui::Modifiers {
 
 pub(crate) static SCRIPT_BUS: std::sync::OnceLock<Arc<ScriptBus>> = std::sync::OnceLock::new();
 
-// Keystroke commands need a separate queue since gpui `Keystroke` is not Send-safe
-// (it only contains Strings, Modifiers — actually it IS Send). Let's use a simple
-// OnceLock queue for keystrokes.
+/// Keystrokes queued by the runner thread, drained each frame by the main thread.
 pub(crate) static KEYSTROKE_QUEUE: std::sync::OnceLock<Arc<Mutex<Vec<Keystroke>>>> =
     std::sync::OnceLock::new();
 
@@ -542,74 +562,84 @@ impl MapViewer {
                 ScriptCommand::LoadReference { name, data } => {
                     self.add_reference_dataset(name, *data, cx);
                 }
-                // Benchmark knob for the street-name labels, e.g.
-                // `action LabelBench:on,halo=none,repeat=4` (see
-                // `line_labels::parse_bench`).
-                ScriptCommand::Action { name } if name.starts_with("LabelBench") => {
-                    // The script parser wants one token: `LabelBench:on,halo=none`.
-                    let spec = name
-                        .trim_start_matches("LabelBench")
-                        .replace([':', ','], " ");
-                    let result = osm_gpui::layers::line_labels::set_bench(&spec);
-                    cx.notify();
-                    bus.set_assert_result(result);
-                }
-                // Switch the MapCSS style, e.g. `action MapStyle:wireframe`
-                // (`default`, `wireframe` or `id`), in memory only.
-                ScriptCommand::Action { name } if name.starts_with("MapStyle:") => {
-                    let id = name.trim_start_matches("MapStyle:");
-                    let sheet = osm_gpui::style::custom::BUILT_IN_STYLES
-                        .iter()
-                        .find(|s| s.id == id)
-                        .and_then(|s| osm_gpui::style::Stylesheet::parse(s.source).ok());
-                    let result = match sheet {
-                        Some(sheet) => {
-                            osm_gpui::style::custom::set_active(Some(std::sync::Arc::new(sheet)));
-                            self.apply_map_style(cx);
-                            Ok(())
-                        }
-                        None => Err(format!("unknown built-in map style '{id}'")),
-                    };
-                    bus.set_assert_result(result);
-                }
                 ScriptCommand::Action { name } => {
-                    // `Name` or `Name {json}`; the JSON fills the action's fields.
-                    let (action_name, data) = match name.split_once(char::is_whitespace) {
-                        Some((n, json)) => (n, serde_json::from_str(json).ok()),
-                        None => (name.as_str(), None),
-                    };
-                    let qualified = if action_name.contains("::") {
-                        action_name.to_string()
-                    } else {
-                        format!("osm_gpui::{action_name}")
-                    };
-                    let result = match cx.build_action(&qualified, data) {
-                        Ok(action) => {
-                            // `App::dispatch_action`, deferred until this
-                            // render's window lease is released, is the call
-                            // the macOS menu bar makes: it dispatches to the
-                            // active window's focused element (and on to the
-                            // global handlers).
-                            //
-                            // That needs an active window. A scripted run
-                            // can lose it (a Keychain prompt or another
-                            // app comes to the front), and then
-                            // window-scoped handlers such as Select All
-                            // would never see the action, so in that case
-                            // it is sent to this window directly.
-                            let handle = window.window_handle();
-                            cx.defer(move |cx| {
-                                if cx.active_window() == Some(handle) {
-                                    cx.dispatch_action(action.as_ref());
-                                } else {
-                                    let _ = handle.update(cx, |_, window, cx| {
-                                        window.dispatch_action(action, cx);
-                                    });
-                                }
-                            });
-                            Ok(())
+                    use script::action::{resolve_action, unhandled_message, ActionTarget};
+                    let result = match resolve_action(&name, cx.all_action_names()) {
+                        // Benchmark knob for the street-name labels, e.g.
+                        // `action LabelBench:on,halo=none,repeat=4` (see
+                        // `line_labels::parse_bench`).
+                        Ok(ActionTarget::LabelBench) => {
+                            // The script parser wants one token: `LabelBench:on,halo=none`.
+                            let spec = name
+                                .trim_start_matches("LabelBench")
+                                .replace([':', ','], " ");
+                            let result = osm_gpui::layers::line_labels::set_bench(&spec);
+                            cx.notify();
+                            result
                         }
-                        Err(e) => Err(format!("unknown action '{name}': {e}")),
+                        // Switch the MapCSS style, e.g. `action MapStyle:wireframe`
+                        // (`default`, `wireframe` or `id`), in memory only.
+                        Ok(ActionTarget::MapStyle(id)) => {
+                            let sheet = osm_gpui::style::custom::BUILT_IN_STYLES
+                                .iter()
+                                .find(|s| s.id == id)
+                                .and_then(|s| osm_gpui::style::Stylesheet::parse(s.source).ok());
+                            match sheet {
+                                Some(sheet) => {
+                                    osm_gpui::style::custom::set_active(Some(std::sync::Arc::new(
+                                        sheet,
+                                    )));
+                                    self.apply_map_style(cx);
+                                    Ok(())
+                                }
+                                None => Err(format!("unknown built-in map style '{id}'")),
+                            }
+                        }
+                        Ok(ActionTarget::Registered { qualified, json }) => {
+                            let data = json.and_then(|j| serde_json::from_str(&j).ok());
+                            match cx.build_action(&qualified, data) {
+                                Ok(action) => {
+                                    // Asked now, in the frame the runner is
+                                    // waiting on, so a missing handler can
+                                    // fail the op; the dispatch itself must
+                                    // wait. Window handlers are looked up on
+                                    // the last rendered frame; the app-level
+                                    // check adds global handlers (it cannot
+                                    // see this window while it is leased).
+                                    if !window.is_action_available(action.as_ref(), cx)
+                                        && !cx.is_action_available(action.as_ref())
+                                    {
+                                        Err(unhandled_message(&qualified))
+                                    } else {
+                                        // `App::dispatch_action`, deferred until this
+                                        // render's window lease is released, is the call
+                                        // the macOS menu bar makes: it dispatches to the
+                                        // active window's focused element (and on to the
+                                        // global handlers).
+                                        //
+                                        // That needs an active window. A scripted run
+                                        // can lose it (a Keychain prompt or another
+                                        // app comes to the front), and then
+                                        // window-scoped handlers such as Select All
+                                        // would never see the action, so in that case
+                                        // it is sent to this window directly.
+                                        let handle = window.window_handle();
+                                        cx.defer(move |cx| {
+                                            if cx.active_window() == Some(handle) {
+                                                cx.dispatch_action(action.as_ref());
+                                            } else {
+                                                let _ = handle.update(cx, |_, window, cx| {
+                                                    window.dispatch_action(action, cx);
+                                                });
+                                            }
+                                        });
+                                        Ok(())
+                                    }
+                                }
+                                Err(e) => Err(format!("unknown action '{name}': {e}")),
+                            }
+                        }
+                        Err(e) => Err(e),
                     };
                     bus.set_assert_result(result);
                 }
