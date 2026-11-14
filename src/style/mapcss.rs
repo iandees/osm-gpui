@@ -1,6 +1,6 @@
 //! Minimal hand-rolled MapCSS (JOSM variant) parser.
 //!
-//! Scope is intentionally small — see `docs/superpowers/plans/issue-18-mapcss.md`:
+//! Scope is intentionally small:
 //!
 //! - Selectors: `node` / `way` / `area` (closed ways only; `way:closed`
 //!   is an alias for `area`), each with zero or more tag tests
@@ -60,8 +60,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// Baseline node style — applied before any rule, so that an empty
-/// stylesheet still renders features. Mirrors the old hardcoded
-/// defaults in `OsmLayer`.
+/// stylesheet still renders features.
 pub const DEFAULT_NODE_COLOR: u32 = 0xFFD700;
 pub const DEFAULT_NODE_SIZE: f32 = 10.0;
 pub const DEFAULT_WAY_COLOR: u32 = 0x4169E1;
@@ -1621,7 +1620,8 @@ fn parse_dashes(s: &str) -> Option<Option<(f32, f32)>> {
 /// turns into millions of dashes.
 const MIN_DASH_PX: f32 = 1.0;
 
-/// Like [`parse_color`], also returning the alpha (0..=1) of `rgba(..)`.
+/// A colour value (`#rgb`, `#rrggbb`, a name, or `rgb(..)`/`rgba(..)`), also
+/// returning the alpha (0..=1) of `rgba(..)`.
 fn parse_color_alpha(s: &str) -> Option<(u32, Option<f32>)> {
     let t = s.trim();
     let lower = t.to_ascii_lowercase();
