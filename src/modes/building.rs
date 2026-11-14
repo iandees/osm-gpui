@@ -8,7 +8,9 @@ use osm_gpui::interaction::{self, Interaction};
 use osm_gpui::layers::LayerId;
 
 use super::preview::{blue, fill_square, line_width, stroke_polyline, PreviewFrame};
+use crate::undo::{EditLabel, UndoableAction};
 use crate::MapViewer;
+use osm_gpui::edit_ops::Recording;
 
 /// The rectangle being drawn: corner A is fixed after click 1; corner B after
 /// click 2. Both are geo (lat, lon) coordinates.
@@ -161,6 +163,18 @@ pub(super) fn escape(view: &mut MapViewer) {
     }
 }
 
+/// Entering Building mode with one squared way selected borrows its
+/// orientation; staying in Building mode keeps the existing one.
+pub(super) fn switch_to(view: &mut MapViewer) {
+    let reference = if view.mode() == EditMode::Building {
+        view.building_reference().copied()
+    } else {
+        view.squared_selection_reference()
+    };
+    view.enter_mode(EditMode::Building);
+    view.set_building_reference(reference);
+}
+
 pub(super) fn cursor() -> CursorStyle {
     CursorStyle::Crosshair
 }
@@ -241,5 +255,88 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
                 blue(),
             );
         }
+    }
+}
+
+impl MapViewer {
+    /// Compute the final rectangle (corner_a, corner_b as one edge, offset
+    /// by `cursor`'s perpendicular distance) and commit 4 new nodes + a
+    /// closed `building=yes` way as one undo action.
+    pub(crate) fn commit_building(
+        &mut self,
+        layer_id: LayerId,
+        corner_a: (f64, f64),
+        corner_b: (f64, f64),
+        cursor: (f64, f64),
+    ) {
+        let (far_a, far_b) = self.rectangle_from_geo_edge(corner_a, corner_b, cursor);
+        self.commit_building_corners(layer_id, [corner_a, corner_b, far_b, far_a]);
+    }
+
+    /// Create 4 nodes and a closed `building=yes` way through them (corners
+    /// in ring order) as one undo action, and select the new way.
+    pub(crate) fn commit_building_corners(&mut self, layer_id: LayerId, corners: [(f64, f64); 4]) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(layer_id)
+            .and_then(|layer| layer.as_editable_mut())
+        else {
+            return;
+        };
+        let mut rec = Recording::new(layer_id, editable);
+
+        let [n0, n1, n2, n3] = corners.map(|(lat, lon)| rec.add_node(lat, lon));
+        let tags = vec![("building".to_string(), "yes".to_string())];
+        let way_id = rec.add_way(vec![n0, n1, n2, n3, n0], tags);
+
+        let way = osm_gpui::selection::FeatureRef {
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Way,
+            id: way_id,
+        };
+        self.undo_stack.push(
+            UndoableAction::edit(layer_id, EditLabel::CreatedBuilding, rec.into_ops())
+                .selecting(vec![way]),
+        );
+        self.selected = vec![way];
+        self.fields_text_inputs.clear();
+        self.fields_text_subscribed.clear();
+        self.fields_open_combo = None;
+        self.fields_promoted_more_fields.clear();
+    }
+
+    /// If the selection is exactly one closed, squared way, the reference a
+    /// Building-mode session should align to.
+    pub(crate) fn squared_selection_reference(&self) -> Option<BuildingReference> {
+        use osm_gpui::selection::FeatureKind;
+        let [feature] = self.selected.as_slice() else {
+            return None;
+        };
+        if feature.kind != FeatureKind::Way {
+            return None;
+        }
+        let editable = self
+            .layer_manager
+            .find_layer(feature.layer_id)?
+            .as_editable()?;
+        let node_ids = editable.way_node_ids(feature.id)?;
+        if node_ids.len() < 4 || node_ids.first() != node_ids.last() {
+            return None;
+        }
+        let ring: Vec<(f64, f64)> = node_ids
+            .iter()
+            .map(|&id| editable.node_lat_lon(id))
+            .collect::<Option<_>>()?;
+        if !osm_gpui::building::is_squared(&ring, osm_gpui::building::SQUARED_TOLERANCE_DEG) {
+            return None;
+        }
+        Some(BuildingReference {
+            layer_id: feature.layer_id,
+            way_id: feature.id,
+            orientation: osm_gpui::building::dominant_orientation(&ring)?,
+        })
     }
 }

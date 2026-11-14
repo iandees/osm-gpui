@@ -118,8 +118,7 @@ fn the_collapsed_header_counts_follow_edits(cx: &mut TestAppContext) {
 /// Stand-in for the bookkeeping every real edit does: the history step
 /// bumps `undo_stack.revision`, which is what the watcher looks at.
 fn record_edit(view: &mut MapViewer) {
-    view.undo_stack
-        .push(UndoableAction::SetTags { entries: vec![] });
+    view.undo_stack.push(UndoableAction::set_tags(vec![]));
 }
 
 #[gpui::test]

@@ -21,13 +21,18 @@ pub(crate) mod select;
 #[cfg(test)]
 pub(crate) mod state_tests;
 
-use gpui::{CursorStyle, Pixels, Point, Window};
+use gpui::{px, CursorStyle, Pixels, Point, Window};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
 
 pub(crate) use add::{AddProgress, AddState};
-pub(crate) use arc::{ArcPoint, ArcProgress, ArcSnap, ArcState};
+#[cfg(test)]
+pub(crate) use arc::ArcPoint;
+pub(crate) use arc::{ArcProgress, ArcState};
 pub(crate) use building::{BuildingPress, BuildingProgress, BuildingReference, BuildingState};
-pub(crate) use extrude::{ExtrudeDrag, ExtrudeResult, ExtrudeState, ExtrudeStyle};
+#[cfg(test)]
+pub(crate) use extrude::ExtrudeStyle;
+pub(crate) use extrude::{ExtrudeDrag, ExtrudeState};
 pub(crate) use improve::ImproveState;
 pub(crate) use preview::PreviewFrame;
 pub(crate) use select::SelectState;
@@ -94,34 +99,80 @@ impl ModeState {
     }
 }
 
+/// `ModeState` accessors for one variant's state, `None` for every other. The
+/// other variants are listed so a new mode does not compile until each
+/// accessor says what it is for it.
+macro_rules! state_accessors {
+    ($variant:ident, $ty:ty, $get:ident, $get_mut:ident, [$($other:ident),*]) => {
+        impl ModeState {
+            fn $get(&self) -> Option<&$ty> {
+                match self {
+                    ModeState::$variant(s) => Some(s),
+                    $(ModeState::$other(_))|* => None,
+                }
+            }
+
+            fn $get_mut(&mut self) -> Option<&mut $ty> {
+                match self {
+                    ModeState::$variant(s) => Some(s),
+                    $(ModeState::$other(_))|* => None,
+                }
+            }
+        }
+    };
+}
+
+state_accessors!(
+    Add,
+    AddState,
+    add,
+    add_mut,
+    [Select, Building, Extrude, Arc, Improve]
+);
+state_accessors!(
+    Building,
+    BuildingState,
+    building,
+    building_mut,
+    [Select, Add, Extrude, Arc, Improve]
+);
+state_accessors!(
+    Arc,
+    ArcState,
+    arc,
+    arc_mut,
+    [Select, Add, Building, Extrude, Improve]
+);
+state_accessors!(
+    Extrude,
+    ExtrudeState,
+    extrude,
+    extrude_mut,
+    [Select, Add, Building, Arc, Improve]
+);
+
 /// Accessors for one mode's slot on `MapViewer`: `get` reads it, `take`
 /// empties it and `set` fills it. Each is `None` or a no-op outside the
 /// slot's mode, where the slot does not exist.
 macro_rules! mode_slot {
-    ($variant:ident, $field:ident, $ty:ty, get $get:ident) => {
+    ($state:ident, $state_mut:ident, $field:ident, $ty:ty, get $get:ident) => {
         impl crate::MapViewer {
             pub(crate) fn $get(&self) -> Option<&$ty> {
-                match &self.mode_state {
-                    ModeState::$variant(s) => s.$field.as_ref(),
-                    _ => None,
-                }
+                self.mode_state.$state()?.$field.as_ref()
             }
         }
     };
-    ($variant:ident, $field:ident, $ty:ty, take $take:ident) => {
+    ($state:ident, $state_mut:ident, $field:ident, $ty:ty, take $take:ident) => {
         impl crate::MapViewer {
             pub(crate) fn $take(&mut self) -> Option<$ty> {
-                match &mut self.mode_state {
-                    ModeState::$variant(s) => s.$field.take(),
-                    _ => None,
-                }
+                self.mode_state.$state_mut()?.$field.take()
             }
         }
     };
-    ($variant:ident, $field:ident, $ty:ty, set $set:ident) => {
+    ($state:ident, $state_mut:ident, $field:ident, $ty:ty, set $set:ident) => {
         impl crate::MapViewer {
             pub(crate) fn $set(&mut self, value: Option<$ty>) {
-                if let ModeState::$variant(s) = &mut self.mode_state {
+                if let Some(s) = self.mode_state.$state_mut() {
                     s.$field = value;
                 }
             }
@@ -129,22 +180,22 @@ macro_rules! mode_slot {
     };
 }
 
-mode_slot!(Add, progress, AddProgress, get add_progress);
-mode_slot!(Add, progress, AddProgress, take take_add_progress);
-mode_slot!(Add, progress, AddProgress, set set_add_progress);
-mode_slot!(Building, progress, BuildingProgress, get building_progress);
-mode_slot!(Building, progress, BuildingProgress, take take_building_progress);
-mode_slot!(Building, progress, BuildingProgress, set set_building_progress);
-mode_slot!(Building, reference, BuildingReference, get building_reference);
-mode_slot!(Building, reference, BuildingReference, set set_building_reference);
-mode_slot!(Building, press, BuildingPress, take take_building_press);
-mode_slot!(Building, press, BuildingPress, set set_building_press);
-mode_slot!(Arc, progress, ArcProgress, get arc_progress);
-mode_slot!(Arc, progress, ArcProgress, take take_arc_progress);
-mode_slot!(Arc, progress, ArcProgress, set set_arc_progress);
-mode_slot!(Extrude, drag, ExtrudeDrag, get extrude_drag);
-mode_slot!(Extrude, drag, ExtrudeDrag, take take_extrude_drag);
-mode_slot!(Extrude, drag, ExtrudeDrag, set set_extrude_drag);
+mode_slot!(add, add_mut, progress, AddProgress, get add_progress);
+mode_slot!(add, add_mut, progress, AddProgress, take take_add_progress);
+mode_slot!(add, add_mut, progress, AddProgress, set set_add_progress);
+mode_slot!(building, building_mut, progress, BuildingProgress, get building_progress);
+mode_slot!(building, building_mut, progress, BuildingProgress, take take_building_progress);
+mode_slot!(building, building_mut, progress, BuildingProgress, set set_building_progress);
+mode_slot!(building, building_mut, reference, BuildingReference, get building_reference);
+mode_slot!(building, building_mut, reference, BuildingReference, set set_building_reference);
+mode_slot!(building, building_mut, press, BuildingPress, take take_building_press);
+mode_slot!(building, building_mut, press, BuildingPress, set set_building_press);
+mode_slot!(arc, arc_mut, progress, ArcProgress, get arc_progress);
+mode_slot!(arc, arc_mut, progress, ArcProgress, take take_arc_progress);
+mode_slot!(arc, arc_mut, progress, ArcProgress, set set_arc_progress);
+mode_slot!(extrude, extrude_mut, drag, ExtrudeDrag, get extrude_drag);
+mode_slot!(extrude, extrude_mut, drag, ExtrudeDrag, take take_extrude_drag);
+mode_slot!(extrude, extrude_mut, drag, ExtrudeDrag, set set_extrude_drag);
 
 /// The mouse cursor over the map in `mode`.
 pub(crate) fn cursor(mode: EditMode, hovering: bool) -> CursorStyle {
@@ -212,6 +263,73 @@ impl crate::MapViewer {
             | ModeState::Extrude(_)
             | ModeState::Arc(_)
             | ModeState::Improve(_) => false,
+        }
+    }
+
+    /// A user's switch to `mode`: a fresh gesture state, plus whatever the
+    /// mode carries over from the current state or the selection.
+    pub(crate) fn switch_to_mode(&mut self, mode: EditMode) {
+        match mode {
+            EditMode::Building => building::switch_to(self),
+            EditMode::Select
+            | EditMode::Add
+            | EditMode::Extrude
+            | EditMode::Arc
+            | EditMode::Improve => self.enter_mode(mode),
+        }
+    }
+
+    /// Whether a click redraws the map even if the selection did not change.
+    /// Add mode re-selects the same way on every extend click, so the
+    /// selection diff misses that the way grew a node.
+    pub(crate) fn click_always_redraws(&self) -> bool {
+        match self.mode_state {
+            ModeState::Add(_) => true,
+            ModeState::Select(_)
+            | ModeState::Building(_)
+            | ModeState::Extrude(_)
+            | ModeState::Arc(_)
+            | ModeState::Improve(_) => false,
+        }
+    }
+
+    /// Whether the snap highlight follows a pointer that has no button down.
+    pub(crate) fn snaps_on_hover(&self) -> bool {
+        match self.mode_state {
+            ModeState::Add(_) => true,
+            ModeState::Select(_)
+            | ModeState::Building(_)
+            | ModeState::Extrude(_)
+            | ModeState::Arc(_)
+            | ModeState::Improve(_) => false,
+        }
+    }
+
+    /// What a pointer hovering at `pos` would snap onto, in the current mode.
+    pub(crate) fn hover_snap_target(
+        &self,
+        pos: Point<Pixels>,
+        modifiers: gpui::Modifiers,
+    ) -> Option<crate::SnapTarget> {
+        match self.mode_state {
+            ModeState::Add(_) => add::hover_snap_target(self, pos, modifiers),
+            ModeState::Select(_)
+            | ModeState::Building(_)
+            | ModeState::Extrude(_)
+            | ModeState::Arc(_)
+            | ModeState::Improve(_) => None,
+        }
+    }
+
+    /// Whether the mode's preview changes with the held modifier keys.
+    pub(crate) fn preview_depends_on_modifiers(&self) -> bool {
+        match self.mode_state {
+            ModeState::Improve(_) => true,
+            ModeState::Select(_)
+            | ModeState::Add(_)
+            | ModeState::Building(_)
+            | ModeState::Extrude(_)
+            | ModeState::Arc(_) => false,
         }
     }
 
@@ -284,5 +402,48 @@ impl crate::MapViewer {
                 paint_snap(window);
             }
         }
+    }
+}
+
+impl crate::MapViewer {
+    /// Compute the far 2 corners of a rectangle whose near edge is
+    /// `a`..`b` (geo coordinates), offset by `cursor`'s perpendicular
+    /// distance from that edge. The offset math is done in screen-pixel
+    /// space rather than raw lat/lon: longitude degrees are foreshortened
+    /// relative to latitude degrees (Web Mercator), so a "perpendicular"
+    /// vector computed from raw lat/lon deltas is only actually
+    /// perpendicular on screen for edges running exactly north-south or
+    /// east-west — for any other edge it renders as a trapezoid. Screen
+    /// pixels (and Mercator meters) are isotropic here, so doing the offset
+    /// there and converting back yields a true rectangle on screen.
+    pub(crate) fn rectangle_from_geo_edge(
+        &self,
+        a: (f64, f64),
+        b: (f64, f64),
+        cursor: (f64, f64),
+    ) -> ((f64, f64), (f64, f64)) {
+        let a_screen = self.viewport.geo_to_screen(LatLon::new(a.0, a.1));
+        let b_screen = self.viewport.geo_to_screen(LatLon::new(b.0, b.1));
+        let cursor_screen = self.viewport.geo_to_screen(LatLon::new(cursor.0, cursor.1));
+        let (far_a_screen, far_b_screen) = osm_gpui::selection::rectangle_from_edge(
+            (a_screen.x.to_f64(), a_screen.y.to_f64()),
+            (b_screen.x.to_f64(), b_screen.y.to_f64()),
+            (cursor_screen.x.to_f64(), cursor_screen.y.to_f64()),
+        );
+        let far_a = self
+            .viewport
+            .screen_to_geo(gpui::point(
+                px(far_a_screen.0 as f32),
+                px(far_a_screen.1 as f32),
+            ))
+            .to_pair();
+        let far_b = self
+            .viewport
+            .screen_to_geo(gpui::point(
+                px(far_b_screen.0 as f32),
+                px(far_b_screen.1 as f32),
+            ))
+            .to_pair();
+        (far_a, far_b)
     }
 }

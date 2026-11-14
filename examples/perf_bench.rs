@@ -684,7 +684,7 @@ fn line_labels_section() {
                 text: n.clone(),
                 verts: v,
                 style: LabelStyle::default(),
-                priority: 50,
+                priority: 50.into(),
             })
             .collect();
         let mut out = FrameOut::default();
@@ -1166,7 +1166,6 @@ fn labels_section() {
                     .as_ref()
                     .map(|t| (t.chars().count() as f32 * 6.2, 14.0, Anchor::Right)),
                 priority: l.priority,
-                forced: false,
             })
         })
         .collect();

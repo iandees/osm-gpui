@@ -2,7 +2,7 @@
 
 use super::super::{MpState, OsmLayer};
 use crate::coordinates::LatLon;
-use crate::layers::{EditableLayer, LayerId};
+use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::multipolygon::Problem;
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::{resolve_hits, FeatureKind};
@@ -249,14 +249,24 @@ fn reshaping_splitting_and_removing_member_ways_updates_the_relation() {
     assert!(layer.set_way_nodes(10, ring).is_ok());
     assert_eq!(layer.multipolygon_state(500), valid(1, 1));
 
-    // Deleting the island way (a member) leaves a relation with a missing
+    // A member way cannot be deleted while the relation lists it.
+    assert_eq!(
+        layer.delete_feature(FeatureKind::Way, 11).unwrap_err(),
+        EditError::InRelation {
+            kind: FeatureKind::Way,
+            id: 11,
+            relation: 500
+        }
+    );
+    assert_eq!(layer.multipolygon_state(500), valid(1, 1));
+    // Purging the island way (a member) leaves a relation with a missing
     // member; restoring it brings the hole back.
-    let snapshot = layer.delete_feature(FeatureKind::Way, 11).unwrap();
+    let purged = layer.purge_features(&[], &[11], &[]);
     assert_eq!(
         layer.multipolygon_state(500),
         MpState::Invalid(Problem::MissingWay(11))
     );
-    layer.restore_feature(snapshot).unwrap();
+    layer.restore_purged(purged);
     assert_eq!(layer.multipolygon_state(500), valid(1, 1));
 
     // Adding a vertex to the outer way keeps it valid and re-triangulates.

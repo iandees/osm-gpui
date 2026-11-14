@@ -7,7 +7,9 @@
 
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::OsmMember;
-use crate::selection::{DeletedFeatureSnapshot, DeletedRelationSnapshot, FeatureKind, FeatureRef};
+use crate::selection::{
+    DeletedFeatureSnapshot, DeletedRelationSnapshot, FeatureKind, FeatureRef, PurgedFeatures,
+};
 
 /// One node's move: id, (lat, lon) before and (lat, lon) after.
 pub type NodeMove = (i64, (f64, f64), (f64, f64));
@@ -60,6 +62,15 @@ pub enum EditOp {
     ReverseWay {
         id: i64,
     },
+    /// Objects drop out of the layer's downloaded data without being deleted;
+    /// `purged` is exactly what the layer held, positions included.
+    Purge {
+        purged: PurgedFeatures,
+    },
+    /// The inverse of `Purge`: the objects return as they were downloaded.
+    Unpurge {
+        purged: PurgedFeatures,
+    },
 }
 
 impl EditOp {
@@ -108,6 +119,12 @@ impl EditOp {
                 after: before.clone(),
             },
             EditOp::ReverseWay { id } => EditOp::ReverseWay { id: *id },
+            EditOp::Purge { purged } => EditOp::Unpurge {
+                purged: purged.clone(),
+            },
+            EditOp::Unpurge { purged } => EditOp::Purge {
+                purged: purged.clone(),
+            },
         }
     }
 
@@ -144,6 +161,17 @@ impl EditOp {
                 layer.set_relation_members(*id, after.clone()).map(drop)
             }
             EditOp::ReverseWay { id } => layer.reverse_way(*id),
+            EditOp::Purge { purged } => {
+                let nodes: Vec<i64> = purged.nodes.iter().map(|n| n.id).collect();
+                let ways: Vec<i64> = purged.ways.iter().map(|w| w.id).collect();
+                let relations: Vec<i64> = purged.relations.iter().map(|(r, ..)| r.id).collect();
+                layer.purge_features(&nodes, &ways, &relations);
+                Ok(())
+            }
+            EditOp::Unpurge { purged } => {
+                layer.restore_purged(purged.clone());
+                Ok(())
+            }
         }
     }
 
@@ -166,6 +194,7 @@ impl EditOp {
                 vec![at(FeatureKind::Way, *id)]
             }
             EditOp::SetRelationMembers { id, .. } => vec![at(FeatureKind::Relation, *id)],
+            EditOp::Purge { purged } | EditOp::Unpurge { purged } => purged.features(layer_id),
         }
     }
 }
@@ -241,6 +270,20 @@ impl<'a> Recording<'a> {
     pub fn roll_back(self) -> Vec<EditError> {
         let mut failures = Vec::new();
         replay(&self.ops, false, self.layer, &mut failures);
+        failures
+    }
+
+    /// A position in the recording, for `roll_back_to`.
+    pub fn mark(&self) -> usize {
+        self.ops.len()
+    }
+
+    /// Undo and forget everything recorded after `mark`, newest first, and
+    /// return what the layer refused.
+    pub fn roll_back_to(&mut self, mark: usize) -> Vec<EditError> {
+        let tail = self.ops.split_off(mark.min(self.ops.len()));
+        let mut failures = Vec::new();
+        replay(&tail, false, self.layer, &mut failures);
         failures
     }
 
@@ -421,6 +464,23 @@ impl<'a> Recording<'a> {
             after,
         });
         Ok(())
+    }
+
+    /// Drop the named objects from the layer's downloaded data. Nothing is
+    /// recorded when none of them was there.
+    pub fn purge_features(
+        &mut self,
+        nodes: &[i64],
+        ways: &[i64],
+        relations: &[i64],
+    ) -> PurgedFeatures {
+        let purged = self.layer.purge_features(nodes, ways, relations);
+        if !purged.is_empty() {
+            self.ops.push(EditOp::Purge {
+                purged: purged.clone(),
+            });
+        }
+        purged
     }
 
     pub fn reverse_way(&mut self, way_id: i64) -> Result<(), EditError> {

@@ -126,10 +126,10 @@ fn undo_selects_tagged_and_moved_features_and_prunes_stale_ids(cx: &mut TestAppC
             editable(view)
                 .commit_node_moves(&[(1, lat + 0.001, lon)])
                 .unwrap();
-            view.undo_stack.push(UndoableAction::MoveNodes {
-                select: None,
-                per_layer: vec![(layer_id, vec![(1, (lat, lon), (lat + 0.001, lon))])],
-            });
+            view.undo_stack.push(UndoableAction::move_nodes(
+                vec![(layer_id, vec![(1, (lat, lon), (lat + 0.001, lon))])],
+                None,
+            ));
             // A selection holding a feature that doesn't exist is pruned
             // even though the step didn't name it.
             view.set_selection(vec![osm_gpui::selection::FeatureRef {
@@ -159,10 +159,10 @@ fn undo_of_a_dragged_way_keeps_the_way_selected(cx: &mut TestAppContext) {
             editable(view)
                 .commit_node_moves(&[(nodes[0], lat + 0.001, lon)])
                 .unwrap();
-            view.undo_stack.push(UndoableAction::MoveNodes {
-                select: Some(view.selected.clone()),
-                per_layer: vec![(layer_id, vec![(nodes[0], (lat, lon), (lat + 0.001, lon))])],
-            });
+            view.undo_stack.push(UndoableAction::move_nodes(
+                vec![(layer_id, vec![(nodes[0], (lat, lon), (lat + 0.001, lon))])],
+                Some(view.selected.clone()),
+            ));
             view.on_undo(&Undo, window, cx);
             assert_eq!(selected_ids(view, Way), vec![101]);
             assert!(selected_ids(view, Node).is_empty());

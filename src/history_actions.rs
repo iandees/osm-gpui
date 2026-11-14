@@ -315,7 +315,7 @@ impl MapViewer {
         if entries.is_empty() {
             return;
         }
-        self.undo_stack.push(UndoableAction::SetTags { entries });
+        self.undo_stack.push(UndoableAction::set_tags(entries));
         self.set_status(tr!("object_history.reverted", version = version));
         self.sync_history_local(cx);
         cx.notify();

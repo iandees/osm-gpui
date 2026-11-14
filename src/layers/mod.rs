@@ -242,6 +242,17 @@ pub enum EditError {
     NodeInWay(i64),
     /// A relation cannot be deleted while another has it as a member.
     RelationInUse(i64),
+    /// A node or way cannot be deleted while a relation still lists it.
+    InRelation {
+        kind: crate::selection::FeatureKind,
+        id: i64,
+        relation: i64,
+    },
+    /// A way cannot lose nodes down to fewer than two.
+    WayTooShort {
+        way_id: i64,
+        len: usize,
+    },
     /// An object with this id exists already.
     IdInUse(crate::selection::FeatureKind, i64),
     /// A position past the end of a way's node list.
@@ -278,6 +289,15 @@ impl std::fmt::Display for EditError {
             EditError::NodeInWay(id) => write!(f, "node {id} is still part of a way"),
             EditError::RelationInUse(id) => {
                 write!(f, "relation {id} is still a member of another relation")
+            }
+            EditError::InRelation { kind, id, relation } => {
+                write!(f, "{kind:?} {id} is still a member of relation {relation}")
+            }
+            EditError::WayTooShort { way_id, len } => {
+                write!(
+                    f,
+                    "way {way_id} would be left with {len} nodes; it needs at least 2"
+                )
             }
             EditError::IdInUse(kind, id) => write!(f, "{kind:?} {id} already exists"),
             EditError::IndexOutOfRange { way_id, index, len } => {
@@ -488,8 +508,9 @@ pub trait EditableLayer {
     fn add_node(&mut self, lat: f64, lon: f64) -> i64;
 
     /// Delete a node or way, returning what `restore_feature` needs. A node
-    /// still in a way is refused (delete or edit the way first); a way's
-    /// nodes stay. Relations have their own `delete_relation`.
+    /// still in a way, and a node or way still listed by a relation, is
+    /// refused (edit the way or relation first); a way's nodes stay.
+    /// Relations have their own `delete_relation`.
     fn delete_feature(
         &mut self,
         kind: crate::selection::FeatureKind,
@@ -519,19 +540,21 @@ pub trait EditableLayer {
         lon: f64,
     ) -> Result<i64, EditError>;
 
-    /// Remove a node that no way uses (undo of a create).
+    /// Remove a node that no way or relation uses (undo of a create).
     fn remove_node(&mut self, node_id: i64) -> Result<(), EditError>;
 
-    /// Remove a way; its nodes stay.
+    /// Remove a way no relation lists; its nodes stay.
     fn remove_way(&mut self, way_id: i64) -> Result<(), EditError>;
 
     /// Take the node at `index` out of a way's node list; the node stays.
+    /// Refused if the way would be left with fewer than two nodes.
     fn remove_node_from_way(&mut self, way_id: i64, index: usize) -> Result<(), EditError>;
 
     /// Reverse a way's node order (its own inverse).
     fn reverse_way(&mut self, way_id: i64) -> Result<(), EditError>;
 
-    /// Replace a way's node list. The nodes should already exist.
+    /// Replace a way's node list. The nodes should already exist. A list
+    /// shorter than two nodes is refused when it shortens the way.
     fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> Result<(), EditError>;
     /// The ids of the ways whose node list includes `node_id`.
     fn ways_using_node(&self, node_id: i64) -> Vec<i64>;

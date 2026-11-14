@@ -194,3 +194,102 @@ fn every_editing_action_undoes_and_redoes_exactly(cx: &mut TestAppContext) {
         }
     });
 }
+
+fn data_of(view: &crate::MapViewer, layer: LayerId) -> OsmData {
+    let layer = view.layer_manager.find_layer(layer).unwrap();
+    (*layer.as_osm().unwrap().get_osm_data().unwrap()).clone()
+}
+
+/// The two actions that need an answer first, run through the code that
+/// applies the answer.
+#[gpui::test]
+fn the_dialog_actions_undo_and_redo_exactly(cx: &mut TestAppContext) {
+    with_session(cx, data(), |s| {
+        s.select(&[(FeatureKind::Way, 13), (FeatureKind::Node, 40)]);
+        let (before_data, before) = (layer_data(s), s.snap());
+        s.view.add_selection_to_relation(101);
+        assert_eq!(s.steps(), 1);
+        let (after_data, after) = (layer_data(s), s.snap());
+        assert_ne!(after_data, before_data);
+        s.undo();
+        assert_eq!((s.snap(), layer_data(s)), (before, before_data.clone()));
+        s.redo();
+        assert_eq!((s.snap(), layer_data(s)), (after, after_data));
+        s.undo();
+
+        s.select(&[(FeatureKind::Way, 10), (FeatureKind::Way, 12)]);
+        s.view
+            .create_parallel_ways(osm_gpui::parallel::ParallelParams::default());
+        // The undone relation step was dropped when this one was recorded.
+        assert_eq!(s.steps(), 1);
+        let (after_data, after) = (layer_data(s), s.snap());
+        assert_ne!(after_data, before_data);
+        s.undo();
+        assert_eq!(layer_data(s), before_data);
+        s.redo();
+        assert_eq!((s.snap(), layer_data(s)), (after, after_data));
+    });
+}
+
+/// Moves and tag edits are ordinary edit steps; a step that spans two
+/// layers undoes and redoes both.
+#[gpui::test]
+fn moves_and_tag_edits_spanning_two_layers_undo_and_redo_exactly(cx: &mut TestAppContext) {
+    use crate::undo::UndoableAction;
+    with_session(cx, data(), |s| {
+        let first = s.layer;
+        let second = add_osm_layer(s.view, "Other", data());
+        let both = |s: &Session<'_, '_>| (data_of(s.view, first), data_of(s.view, second));
+        let before = both(s);
+
+        let mut per_layer = Vec::new();
+        for layer in [first, second] {
+            let editable = s
+                .view
+                .layer_manager
+                .find_layer_mut(layer)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap();
+            let (lat, lon) = editable.node_lat_lon(40).unwrap();
+            editable
+                .commit_node_moves(&[(40, lat + 0.001, lon)])
+                .unwrap();
+            per_layer.push((layer, vec![(40, (lat, lon), (lat + 0.001, lon))]));
+        }
+        s.view
+            .undo_stack
+            .push(UndoableAction::move_nodes(per_layer, None));
+        let moved = both(s);
+        assert_ne!(moved, before);
+        s.undo();
+        assert_eq!(both(s), before);
+        s.redo();
+        assert_eq!(both(s), moved);
+
+        let entries = [first, second]
+            .into_iter()
+            .map(|layer| {
+                (
+                    osm_gpui::selection::FeatureRef {
+                        layer_id: layer,
+                        kind: FeatureKind::Way,
+                        id: 10,
+                    },
+                    "highway".to_string(),
+                    Some("residential".to_string()),
+                    Some("tertiary".to_string()),
+                )
+            })
+            .collect();
+        let entries = crate::undo::write_tag_entries(&mut s.view.layer_manager, entries);
+        assert_eq!(entries.len(), 2);
+        s.view.undo_stack.push(UndoableAction::set_tags(entries));
+        let tagged = both(s);
+        assert_ne!(tagged, moved);
+        s.undo();
+        assert_eq!(both(s), moved);
+        s.redo();
+        assert_eq!(both(s), tagged);
+    });
+}

@@ -230,16 +230,14 @@ fn tag_node_one(view: &mut MapViewer) {
     editable(view)
         .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "amenity", "cafe")
         .unwrap();
-    view.undo_stack.push(UndoableAction::SetTags {
-        entries: vec![(
-            osm_gpui::selection::FeatureRef {
-                layer_id,
-                kind: osm_gpui::selection::FeatureKind::Node,
-                id: 1,
-            },
-            "amenity".to_string(),
-            None,
-            Some("cafe".to_string()),
-        )],
-    });
+    view.undo_stack.push(UndoableAction::set_tags(vec![(
+        osm_gpui::selection::FeatureRef {
+            layer_id,
+            kind: osm_gpui::selection::FeatureKind::Node,
+            id: 1,
+        },
+        "amenity".to_string(),
+        None,
+        Some("cafe".to_string()),
+    )]));
 }

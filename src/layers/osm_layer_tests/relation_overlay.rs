@@ -3,7 +3,7 @@
 use super::super::{lat_lon_to_mercator, OsmLayer, RESTRICTION_OFFSET_PX};
 use crate::coordinates::LatLon;
 use crate::coordinates::Mercator;
-use crate::layers::{EditableLayer, LayerId};
+use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
 use crate::viewport::Viewport;
@@ -156,10 +156,19 @@ fn moving_or_deleting_the_via_node_updates_the_marker() {
     let Mercator { x: ex, y: ey } = lat_lon_to_mercator(LatLon::new(40.0005, -73.998));
     assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
 
-    // Node 4 is a standalone via, so it can be deleted.
-    let snapshot = layer.delete_feature(FeatureKind::Node, 4).unwrap();
+    // Node 4 is a standalone via: the restriction keeps it from being
+    // deleted, but it can be purged (the restriction then has no marker).
+    assert!(matches!(
+        layer.delete_feature(FeatureKind::Node, 4),
+        Err(EditError::InRelation {
+            id: 4,
+            relation: 22,
+            ..
+        })
+    ));
+    let purged = layer.purge_features(&[4], &[], &[]);
     assert_eq!(layer.restriction_markers().len(), 1);
-    layer.restore_feature(snapshot).unwrap();
+    layer.restore_purged(purged);
     assert_eq!(layer.restriction_markers().len(), 2);
 }
 

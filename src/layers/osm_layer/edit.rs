@@ -1,9 +1,11 @@
 use super::*;
+use crate::osm::MemberType;
 
 impl OsmLayer {
     /// Apply `edit` to the node list of way `way_id`, then bring the way's
     /// caches and the multipolygons up to date and mark the layer modified.
-    /// `edit` returns `Err`, having changed nothing, to refuse.
+    /// `edit` returns `Err`, having changed nothing, to refuse. A way may not
+    /// be edited down to fewer than two nodes.
     pub(super) fn edit_way_nodes<R>(
         &mut self,
         way_id: i64,
@@ -17,8 +19,15 @@ impl OsmLayer {
             .ways
             .get_mut(&way_id)
             .ok_or(EditError::UnknownWay(way_id))?;
-        let old = way.nodes.clone();
-        let result = edit(&mut way.nodes)?;
+        let mut nodes = way.nodes.clone();
+        let result = edit(&mut nodes)?;
+        if nodes.len() < 2 && nodes.len() < way.nodes.len() {
+            return Err(EditError::WayTooShort {
+                way_id,
+                len: nodes.len(),
+            });
+        }
+        let old = std::mem::replace(&mut way.nodes, nodes);
         self.apply_change(&Change {
             way_nodes: vec![(way_id, old)],
             ..Change::default()
@@ -26,7 +35,8 @@ impl OsmLayer {
         Ok(result)
     }
 
-    /// Why `take_node` refused: the node is in a way, or does not exist.
+    /// Why `take_node` refused: the node is in a way or a relation, or does
+    /// not exist.
     pub(super) fn why_node_stays(&self, id: i64) -> EditError {
         if self
             .derived
@@ -35,8 +45,26 @@ impl OsmLayer {
             .is_some_and(|w| !w.is_empty())
         {
             EditError::NodeInWay(id)
+        } else if let Some(&relation) = self.relations_containing(MemberType::Node, id).first() {
+            EditError::InRelation {
+                kind: FeatureKind::Node,
+                id,
+                relation,
+            }
         } else {
             EditError::UnknownNode(id)
+        }
+    }
+
+    /// Why `take_way` refused: a relation lists the way, or it does not exist.
+    pub(super) fn why_way_stays(&self, id: i64) -> EditError {
+        match self.relations_containing(MemberType::Way, id).first() {
+            Some(&relation) => EditError::InRelation {
+                kind: FeatureKind::Way,
+                id,
+                relation,
+            },
+            None => EditError::UnknownWay(id),
         }
     }
 
@@ -106,14 +134,15 @@ impl OsmLayer {
     }
 
     /// Remove a node from the data and caches. Refuses (`None`, nothing
-    /// changed) if the node is unknown or still in a way: removing it would
-    /// leave the way pointing at nothing, so the way goes first.
+    /// changed) if the node is unknown or still in a way or a relation:
+    /// removing it would leave them pointing at nothing, so they let go first.
     pub(super) fn take_node(&mut self, id: i64) -> Option<OsmNode> {
         if self
             .derived
             .node_to_ways
             .get(&id)
             .is_some_and(|ways| !ways.is_empty())
+            || !self.relations_containing(MemberType::Node, id).is_empty()
         {
             return None;
         }
@@ -128,9 +157,11 @@ impl OsmLayer {
     }
 
     /// Remove a way from the data and caches; its nodes stay. `None`
-    /// (nothing changed) if the way is unknown.
+    /// (nothing changed) if the way is unknown or a relation still lists it.
     pub(super) fn take_way(&mut self, id: i64) -> Option<OsmWay> {
-        if !self.derived.way_id_to_index.contains_key(&id) {
+        if !self.derived.way_id_to_index.contains_key(&id)
+            || !self.relations_containing(MemberType::Way, id).is_empty()
+        {
             return None;
         }
         let way = Arc::make_mut(self.store.osm_data.as_mut()?)
@@ -319,7 +350,7 @@ impl EditableLayer for OsmLayer {
                 })
             }
             FeatureKind::Way => {
-                let way = self.take_way(id).ok_or(EditError::UnknownWay(id))?;
+                let way = self.take_way(id).ok_or_else(|| self.why_way_stays(id))?;
                 Ok(DeletedFeatureSnapshot {
                     kind,
                     id,
@@ -425,7 +456,7 @@ impl EditableLayer for OsmLayer {
     fn remove_way(&mut self, way_id: i64) -> Result<(), EditError> {
         self.take_way(way_id)
             .map(drop)
-            .ok_or(EditError::UnknownWay(way_id))
+            .ok_or_else(|| self.why_way_stays(way_id))
     }
 
     fn remove_node_from_way(&mut self, way_id: i64, index: usize) -> Result<(), EditError> {

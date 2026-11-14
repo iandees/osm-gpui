@@ -491,13 +491,36 @@ fn remove_node_matches_a_fresh_rebuild() {
     assert_fresh(&l, "removing the tagged point");
 }
 
+/// Take node or way `id` out of every relation that lists it, as an editor
+/// must before the layer lets it delete the feature.
+fn leave_relations(l: &mut OsmLayer, kind: FeatureKind, id: i64) {
+    let (member_type, relations) = match kind {
+        FeatureKind::Node => (MemberType::Node, l.relations_containing_node(id)),
+        FeatureKind::Way => (MemberType::Way, l.relations_containing_way(id)),
+        FeatureKind::Relation => return,
+    };
+    for relation_id in relations {
+        let mut members = l.relation(relation_id).unwrap().members;
+        members.retain(|m| !(m.member_type == member_type && m.reference == id));
+        l.set_relation_members(relation_id, members).unwrap();
+    }
+    assert_fresh(l, "leaving the relations");
+}
+
 #[test]
 fn remove_way_matches_a_fresh_rebuild() {
     let mut l = start();
     l.remove_way(105).unwrap();
     assert_fresh(&l, "removing a leaf footway");
+    assert!(matches!(
+        l.remove_way(100),
+        Err(EditError::InRelation { id: 100, .. })
+    ));
+    assert_fresh(&l, "refusing a way that a relation still lists");
+    leave_relations(&mut l, FeatureKind::Way, 100);
     l.remove_way(100).unwrap();
     assert_fresh(&l, "removing the route and restriction member road");
+    leave_relations(&mut l, FeatureKind::Way, 103);
     l.remove_way(103).unwrap();
     assert_fresh(&l, "removing the multipolygon's outer way");
     l.remove_way(102).unwrap();
@@ -559,8 +582,10 @@ fn delete_and_restore_feature_match_a_fresh_rebuild() {
     assert_fresh(&l, "deleting a path");
     let end = l.delete_feature(FeatureKind::Node, 14).unwrap();
     assert_fresh(&l, "deleting the path's now unused end node");
+    leave_relations(&mut l, FeatureKind::Way, 103);
     let outer = l.delete_feature(FeatureKind::Way, 103).unwrap();
     assert_fresh(&l, "deleting a multipolygon's outer way");
+    leave_relations(&mut l, FeatureKind::Way, 100);
     let road = l.delete_feature(FeatureKind::Way, 100).unwrap();
     assert_fresh(&l, "deleting the route and restriction member road");
 

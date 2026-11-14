@@ -32,6 +32,7 @@ use gpui::{
     point, px, quad, size, BorderStyle, Bounds, Hsla, Pixels, Point, Rgba, ShapedLine,
     SharedString, TransformationMatrix, Window,
 };
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -71,6 +72,162 @@ const MAX_TEXT_CHARS: usize = 32;
 /// A previously placed label gets this much extra priority so a pan or a
 /// small zoom does not swap which of two overlapping labels wins.
 pub const HYSTERESIS_BONUS: i32 = 40;
+
+/// Which kind of label a [`LabelPriority`] is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelClass {
+    Node {
+        has_icon: bool,
+        named: bool,
+    },
+    Area,
+    /// A street name along a way.
+    Street,
+}
+
+/// Importance of a label: bigger is placed first, and wins a collision.
+///
+/// Node tiers are 100 apart, so the hysteresis bonus reorders only within a
+/// tier. Area tiers sit below named nodes (400) and above house numbers
+/// (100), 20+ apart, so the 40-point hysteresis bonus may reorder neighbours
+/// but the size bonus (<= 30) keeps classes apart. Street tiers (20..=90) are
+/// on a scale of their own: line labels are placed in a pass after the
+/// points and never compete with them.
+///
+/// Ordering is `forced`, then `tier + size + hysteresis`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LabelPriority {
+    /// Selected or hovered: placed first and never culled by collision.
+    pub forced: bool,
+    /// From the feature's tags (see [`LabelPriority::of`]).
+    pub tier: i32,
+    /// Bonus for a big area, `0..=30`.
+    pub size: i32,
+    /// Placed last time (see [`HYSTERESIS_BONUS`]).
+    pub recent: bool,
+}
+
+impl LabelPriority {
+    pub fn of(class: LabelClass, tags: &HashMap<String, String>) -> Self {
+        let tier = match class {
+            LabelClass::Node { has_icon, named } => node_tier(tags, has_icon, named),
+            LabelClass::Area => area_tier(tags),
+            LabelClass::Street => street_tier(tags),
+        };
+        Self::from(tier)
+    }
+
+    pub fn with_forced(self, forced: bool) -> Self {
+        Self { forced, ..self }
+    }
+
+    pub fn with_recent(self, recent: bool) -> Self {
+        Self { recent, ..self }
+    }
+
+    /// The size bonus for an area whose polygon's screen bounding box has a
+    /// larger side of `bbox_px`.
+    pub fn with_size_px(self, bbox_px: f32) -> Self {
+        Self {
+            size: ((bbox_px / 20.0) as i32).clamp(0, 30),
+            ..self
+        }
+    }
+
+    pub fn score(&self) -> i32 {
+        self.tier + self.size + if self.recent { HYSTERESIS_BONUS } else { 0 }
+    }
+}
+
+impl From<i32> for LabelPriority {
+    fn from(tier: i32) -> Self {
+        Self {
+            tier,
+            ..Self::default()
+        }
+    }
+}
+
+impl Ord for LabelPriority {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.forced
+            .cmp(&other.forced)
+            .then(self.score().cmp(&other.score()))
+    }
+}
+
+impl PartialOrd for LabelPriority {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for LabelPriority {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for LabelPriority {}
+
+fn node_tier(tags: &HashMap<String, String>, has_icon: bool, has_text_key_name: bool) -> i32 {
+    if let Some(p) = tags.get("place") {
+        return match p.as_str() {
+            "city" => 1000,
+            "town" => 950,
+            "village" => 900,
+            "suburb" | "neighbourhood" | "quarter" => 850,
+            "hamlet" => 800,
+            _ => 700,
+        };
+    }
+    if has_icon {
+        500
+    } else if has_text_key_name {
+        400
+    } else {
+        100
+    }
+}
+
+fn area_tier(tags: &HashMap<String, String>) -> i32 {
+    if tags.contains_key("place") {
+        return 340;
+    }
+    let is = |k: &str, vs: &[&str]| tags.get(k).is_some_and(|v| vs.contains(&v.as_str()));
+    if is("natural", &["water", "bay", "strait"])
+        || is("waterway", &["riverbank", "dock"])
+        || is("landuse", &["reservoir", "basin"])
+    {
+        return 320;
+    }
+    if is("leisure", &["park", "nature_reserve", "garden", "common"])
+        || is("natural", &["wood", "scrub", "heath", "wetland"])
+        || is(
+            "landuse",
+            &["forest", "grass", "meadow", "recreation_ground", "cemetery"],
+        )
+    {
+        return 300;
+    }
+    if tags.contains_key("building") {
+        return 250;
+    }
+    280
+}
+
+fn street_tier(tags: &HashMap<String, String>) -> i32 {
+    match tags.get("highway").map(String::as_str) {
+        Some("motorway" | "trunk") => 90,
+        Some("primary") => 80,
+        Some("secondary") => 70,
+        Some("tertiary") => 60,
+        Some("unclassified" | "residential") => 50,
+        Some("service" | "living_street" | "pedestrian") => 40,
+        Some(_) => 30,
+        None => 20,
+    }
+}
 
 /// How a label's text is drawn, whatever kind of label it is: the size, the
 /// fill colour and the halo (`0xRRGGBB` colours).
@@ -308,15 +465,19 @@ pub struct Item {
     pub icon_r: Option<f32>,
     /// `(width, height, preferred anchor)` of the text, if any.
     pub text: Option<(f32, f32, Anchor)>,
-    pub priority: i32,
-    /// Selected or hovered: placed first and never culled by collision.
-    pub forced: bool,
+    /// Selected or hovered items (`priority.forced`) are placed first and
+    /// never culled by collision.
+    pub priority: LabelPriority,
 }
 
 /// Clear distance between a marker or icon and its text, in pixels.
 pub const TEXT_GAP: f32 = 3.0;
 
 impl Item {
+    pub fn forced(&self) -> bool {
+        self.priority.forced
+    }
+
     /// Where the text goes when the item is forced and nothing else is in
     /// the way: its first-choice anchor, clear of the marker. This is what
     /// [`place`] gives a lone forced item, without building a grid; the
@@ -384,22 +545,11 @@ pub fn place(
     cfg: &Config,
 ) -> Vec<Placed> {
     let mut order: Vec<usize> = (0..items.len()).collect();
-    let eff = |i: usize| -> i32 {
+    let eff = |i: usize| {
         let it = &items[i];
-        it.priority
-            + if prev.contains_key(&it.key) {
-                HYSTERESIS_BONUS
-            } else {
-                0
-            }
+        it.priority.with_recent(prev.contains_key(&it.key))
     };
-    order.sort_by(|&a, &b| {
-        items[b]
-            .forced
-            .cmp(&items[a].forced)
-            .then(eff(b).cmp(&eff(a)))
-            .then(items[a].key.cmp(&items[b].key))
-    });
+    order.sort_by(|&a, &b| eff(b).cmp(&eff(a)).then(items[a].key.cmp(&items[b].key)));
 
     let mut grid = CollisionGrid::new(cfg.view.inflate(GRID_CELL), GRID_CELL);
     for r in fixed {
@@ -420,7 +570,7 @@ pub fn place(
         let Some(r) = it.icon_r else { continue };
         let rect = Rect::around(it.center.0, it.center.1, r, r);
         let padded = rect.inflate(cfg.icon_pad);
-        if it.forced || !grid.collides(&padded, i as u32) {
+        if it.forced() || !grid.collides(&padded, i as u32) {
             grid.insert(rect, i as u32);
             icon_placed[i] = true;
         }
@@ -439,7 +589,7 @@ pub fn place(
         let Some((w, h, pref)) = it.text else {
             continue;
         };
-        if n_text >= cfg.max_text && !it.forced {
+        if n_text >= cfg.max_text && !it.forced() {
             continue;
         }
         let reach = if icon_placed[i] {
@@ -452,7 +602,7 @@ pub fn place(
             let rect = label_rect(a, it.center, reach, cfg.gap, w, h);
             let padded = rect.inflate(cfg.text_pad);
             let fits = inner.contains(&rect);
-            if it.forced || (fits && !grid.collides(&padded, i as u32)) {
+            if it.forced() || (fits && !grid.collides(&padded, i as u32)) {
                 grid.insert(padded, i as u32);
                 text_placed[i] = Some((a, rect));
                 n_text += 1;
@@ -495,7 +645,7 @@ pub struct NodeLabel {
     pub look: TextLook,
     pub pref: Anchor,
     pub icon: Option<IconChoice>,
-    pub priority: i32,
+    pub priority: LabelPriority,
 }
 
 /// Tag keys that appear in any preset's matching tags. Other tags (names,
@@ -596,32 +746,6 @@ pub fn label_text(keys: &str, tags: &HashMap<String, String>) -> Option<String> 
     }
 }
 
-/// Importance of a node's label: bigger places first. Tiers are 100 apart so
-/// the hysteresis bonus reorders only within a tier.
-pub fn node_priority(
-    tags: &HashMap<String, String>,
-    has_icon: bool,
-    has_text_key_name: bool,
-) -> i32 {
-    if let Some(p) = tags.get("place") {
-        return match p.as_str() {
-            "city" => 1000,
-            "town" => 950,
-            "village" => 900,
-            "suburb" | "neighbourhood" | "quarter" => 850,
-            "hamlet" => 800,
-            _ => 700,
-        };
-    }
-    if has_icon {
-        500
-    } else if has_text_key_name {
-        400
-    } else {
-        100
-    }
-}
-
 /// Build a node's label from its tags and resolved MapCSS properties.
 /// `None` when it has neither text nor an icon.
 pub fn resolve_node_label(
@@ -645,7 +769,13 @@ pub fn resolve_node_label(
     }
     let named = tags.contains_key("name");
     Some(NodeLabel {
-        priority: node_priority(tags, icon.is_some(), named),
+        priority: LabelPriority::of(
+            LabelClass::Node {
+                has_icon: icon.is_some(),
+                named,
+            },
+            tags,
+        ),
         text: text.map(SharedString::from),
         look: TextLook::resolve(style, TextLook::POINT),
         pref: Anchor::from_position(style.position),
@@ -1330,8 +1460,7 @@ mod tests {
             marker_r: 4.0,
             icon_r: None,
             text: Some((w, 14.0, Anchor::Right)),
-            priority,
-            forced: false,
+            priority: priority.into(),
         }
     }
 
@@ -1428,9 +1557,9 @@ mod tests {
         assert_eq!(b_anchor, Anchor::Right);
         // Equal priority: lower id is placed first, so it keeps Right.
         let mut a2 = a;
-        a2.priority = 500;
+        a2.priority = 500.into();
         let mut b2 = b;
-        b2.priority = 500;
+        b2.priority = 500.into();
         let out = place(&[b2.clone(), a2.clone()], &[], &HashMap::new(), &cfg());
         let a_anchor = out.iter().find(|p| p.item == 1).unwrap().text.unwrap().0;
         assert_eq!(a_anchor, Anchor::Right);
@@ -1557,7 +1686,7 @@ mod tests {
     #[test]
     fn forced_items_are_placed_first_even_when_blocked() {
         let mut f = item(1, 100.0, 100.0, 40.0, 100);
-        f.forced = true;
+        f.priority.forced = true;
         let fixed = [Rect::new(0.0, 0.0, 400.0, 300.0)];
         let out = place(&[f], &fixed, &HashMap::new(), &cfg());
         assert_eq!(out.len(), 1);
@@ -1675,11 +1804,14 @@ mod tests {
 
     #[test]
     fn priority_ranks_places_above_pois_above_names_above_numbers() {
-        let city = node_priority(&tags(&[("place", "city")]), false, true);
-        let town = node_priority(&tags(&[("place", "town")]), false, true);
-        let poi = node_priority(&tags(&[("amenity", "cafe")]), true, true);
-        let named = node_priority(&tags(&[("man_made", "x")]), false, true);
-        let num = node_priority(&tags(&[("addr:housenumber", "1")]), false, false);
+        let node = |t: &[(&str, &str)], has_icon, named| {
+            LabelPriority::of(LabelClass::Node { has_icon, named }, &tags(t)).tier
+        };
+        let city = node(&[("place", "city")], false, true);
+        let town = node(&[("place", "town")], false, true);
+        let poi = node(&[("amenity", "cafe")], true, true);
+        let named = node(&[("man_made", "x")], false, true);
+        let num = node(&[("addr:housenumber", "1")], false, false);
         assert!(city > town && town > poi && poi > named && named > num);
         assert!(poi - named >= HYSTERESIS_BONUS);
     }
@@ -1942,7 +2074,7 @@ mod tests {
             text: "Elm Street".into(),
             verts: &way,
             style: line_labels::LabelStyle::default(),
-            priority: 50,
+            priority: 50.into(),
         };
         let mut cache = line_labels::LineLabelCache::default();
         let mut street = |z: f64| {
@@ -1978,8 +2110,7 @@ mod tests {
                 marker_r,
                 icon_r: None,
                 text: Some((60.0, 12.0, pref)),
-                priority: 400,
-                forced: true,
+                priority: LabelPriority::from(400).with_forced(true),
             };
             let placed = place(std::slice::from_ref(&it), &[], &HashMap::new(), &cfg());
             assert_eq!(placed[0].text, it.forced_text_rect(), "{pref:?}");
@@ -2167,8 +2298,7 @@ mod tests {
             marker_r: 0.0,
             icon_r: None,
             text: Some((w, 12.0, Anchor::Center)),
-            priority,
-            forced: false,
+            priority: priority.into(),
         }
     }
 
@@ -2233,7 +2363,7 @@ mod tests {
     fn a_selected_area_is_kept_even_where_it_collides() {
         let big = area_item(1, 200.0, 150.0, 80.0, 330);
         let mut sel = area_item(2, 210.0, 150.0, 80.0, 250);
-        sel.forced = true;
+        sel.priority.forced = true;
         let out = place(&[big, sel], &[], &HashMap::new(), &cfg());
         assert!(out.iter().any(|p| p.item == 1 && p.text.is_some()));
     }
