@@ -6523,7 +6523,7 @@ impl MapViewer {
                 this.sign_in_dialog = None;
                 if matches!(event, DialogEvent::OpenSettings) {
                     let page = (purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary)
-                        .then_some(osm_gpui::ui::settings_window::IMAGERY_PAGE);
+                        .then_some(osm_gpui::ui::settings_window::SettingsPage::Imagery);
                     // Deferred so the window is opened outside this entity update.
                     cx.defer(move |cx| crate::menu::open_settings_page(page, cx));
                 }

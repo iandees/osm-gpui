@@ -30,6 +30,17 @@ pub enum ShortcutCategory {
 }
 
 impl ShortcutCategory {
+    /// Every category, in the order the Settings page lists them. A shortcut
+    /// whose category is missing here would have no row on that page.
+    pub const ALL: [ShortcutCategory; 6] = [
+        Self::General,
+        Self::File,
+        Self::Edit,
+        Self::View,
+        Self::Modes,
+        Self::Actions,
+    ];
+
     /// Whether shortcuts in this category are matched as bare, unmodified
     /// keys in the map canvas's key handler (and so can't take modifiers).
     pub fn is_bare_key_category(self) -> bool {
@@ -329,6 +340,70 @@ pub fn conflict(settings: &AppSettings, id: &str, spec: &str) -> Option<SharedSt
         .map(|(other_id, _)| def(other_id).label())
 }
 
+/// Why a recorded spec cannot become `id`'s shortcut.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rejection {
+    /// The key is a hardcoded interaction primitive (see [`is_reserved`]).
+    Reserved,
+    /// A bare-key category (`Modes`, `Actions`) only takes unmodified keys.
+    NeedsBareKey,
+    /// Another shortcut already uses the spec; carries that shortcut's label.
+    InUse(SharedString),
+}
+
+/// Whether `spec` may be saved as `id`'s shortcut. The checks run in the
+/// order reserved, bare-key category, conflict, so that is also which
+/// rejection wins when several apply.
+pub fn validate(settings: &AppSettings, id: &str, spec: &str) -> Result<(), Rejection> {
+    if is_reserved(spec) {
+        return Err(Rejection::Reserved);
+    }
+    if def(id).category.is_bare_key_category() && !is_bare_key(spec) {
+        return Err(Rejection::NeedsBareKey);
+    }
+    match conflict(settings, id, spec) {
+        Some(other) => Err(Rejection::InUse(other)),
+        None => Ok(()),
+    }
+}
+
+/// Whether `id`'s override can be dropped. Its default may since have been
+/// taken by another shortcut's rebind, which would leave two on one spec.
+pub fn validate_reset(settings: &AppSettings, id: &str) -> Result<(), Rejection> {
+    match conflict(settings, id, def(id).default_spec) {
+        Some(other) => Err(Rejection::InUse(other)),
+        None => Ok(()),
+    }
+}
+
+/// Drop every override, so each shortcut in [`SHORTCUTS`] is back on its
+/// default. The defaults are distinct (see the `no_two_defaults_collide`
+/// test), so no per-shortcut conflict check is needed.
+pub fn reset_all(settings: &mut AppSettings) {
+    settings.keybindings.clear();
+}
+
+/// What a key press means while a shortcut is being recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Recorded {
+    /// Only modifiers are held so far; keep waiting for a real key.
+    ModifierOnly,
+    /// Escape abandons the recording.
+    Cancel,
+    /// The finished spec, to be validated.
+    Spec(String),
+}
+
+pub fn classify_recorded(keystroke: &gpui::Keystroke) -> Recorded {
+    if keystroke.key.is_empty() {
+        Recorded::ModifierOnly
+    } else if keystroke.key == "escape" {
+        Recorded::Cancel
+    } else {
+        Recorded::Spec(keystroke.unparse())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,18 +425,24 @@ mod tests {
             let label = d.label();
             assert!(!label.starts_with("en."), "{}: {label}", d.id);
         }
-        for category in [
-            ShortcutCategory::General,
-            ShortcutCategory::File,
-            ShortcutCategory::Edit,
-            ShortcutCategory::View,
-            ShortcutCategory::Modes,
-            ShortcutCategory::Actions,
-        ] {
+        for category in ShortcutCategory::ALL {
             assert!(!category.title().starts_with("en."));
         }
         assert_eq!(def("undo").label(), "Undo");
         assert_eq!(ShortcutCategory::Modes.title(), "Modes");
+    }
+
+    #[test]
+    fn every_shortcut_belongs_to_a_listed_category() {
+        for d in SHORTCUTS {
+            assert!(ShortcutCategory::ALL.contains(&d.category), "{}", d.id);
+        }
+        for category in ShortcutCategory::ALL {
+            assert!(
+                SHORTCUTS.iter().any(|d| d.category == category),
+                "{category:?} has no shortcuts"
+            );
+        }
     }
 
     #[test]
@@ -464,23 +545,167 @@ mod tests {
         assert_eq!(conflict(&s, "undo", "cmd-alt-shift-z"), None);
     }
 
-    /// Mirrors `settings_window::reset_shortcut`'s pre-removal guard: resetting
-    /// `mode_add` back to its default ("a") must be flagged as a conflict once
-    /// `mode_building` has been rebound onto "a", even though `mode_building`'s
-    /// rebind was legal at the time it was made (mode_add had already vacated
-    /// "a" by moving to "c").
+    /// Resetting `mode_add` back to its default ("a") must be refused once
+    /// `mode_building` has been rebound onto "a", even though that rebind was
+    /// legal when it was made (mode_add had already vacated "a" by moving to
+    /// "c").
     #[test]
     fn reset_would_collide_with_another_shortcuts_current_binding() {
         let s = settings_with(&[("mode_add", "c"), ("mode_building", "a")]);
-
-        // What reset_shortcut would compute as the post-removal candidate spec.
-        let candidate = def("mode_add").default_spec;
-        assert_eq!(candidate, "a");
-
-        // The guard must detect that "a" is already mode_building's spec.
+        assert_eq!(def("mode_add").default_spec, "a");
         assert_eq!(
-            conflict(&s, "mode_add", candidate).as_deref(),
-            Some("Switch to Building mode")
+            validate_reset(&s, "mode_add"),
+            Err(Rejection::InUse("Switch to Building mode".into()))
+        );
+    }
+
+    #[test]
+    fn reset_all_restores_every_default() {
+        let mut s = settings_with(&[]);
+        // Override every shortcut, including ones a count of "ten" would miss.
+        for d in SHORTCUTS {
+            s.keybindings
+                .insert(d.id.to_string(), format!("override-{}", d.id));
+        }
+        for d in SHORTCUTS {
+            assert_ne!(effective_spec(&s, d.id), d.default_spec, "{}", d.id);
+        }
+        reset_all(&mut s);
+        assert!(s.keybindings.is_empty());
+        for d in SHORTCUTS {
+            assert_eq!(effective_spec(&s, d.id), d.default_spec, "{}", d.id);
+        }
+    }
+
+    #[test]
+    fn reset_is_allowed_when_the_default_is_free() {
+        let s = settings_with(&[("mode_add", "c")]);
+        assert_eq!(validate_reset(&s, "mode_add"), Ok(()));
+        assert_eq!(validate_reset(&AppSettings::default(), "undo"), Ok(()));
+    }
+
+    #[test]
+    fn validate_accepts_a_free_spec_for_each_kind_of_category() {
+        let s = AppSettings::default();
+        assert_eq!(validate(&s, "undo", "secondary-alt-shift-z"), Ok(()));
+        assert_eq!(validate(&s, "mode_add", "k"), Ok(()));
+        assert_eq!(validate(&s, "action_square", "k"), Ok(()));
+        // Re-recording a shortcut's own current spec is not a conflict.
+        assert_eq!(validate(&s, "undo", "secondary-z"), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_reserved_keys() {
+        let s = AppSettings::default();
+        assert_eq!(validate(&s, "undo", "escape"), Err(Rejection::Reserved));
+        assert_eq!(
+            validate(&s, "undo", "secondary-backspace"),
+            Err(Rejection::Reserved)
+        );
+        assert_eq!(validate(&s, "mode_add", "space"), Err(Rejection::Reserved));
+        assert_eq!(validate(&s, "zoom_in", "="), Err(Rejection::Reserved));
+        // Reserved only when bare.
+        assert_eq!(validate(&s, "zoom_in", "secondary-="), Ok(()));
+    }
+
+    #[test]
+    fn bare_key_categories_reject_modifiers_but_others_accept_bare_keys() {
+        let s = AppSettings::default();
+        assert_eq!(
+            validate(&s, "mode_add", "secondary-k"),
+            Err(Rejection::NeedsBareKey)
+        );
+        assert_eq!(
+            validate(&s, "action_square", "shift-k"),
+            Err(Rejection::NeedsBareKey)
+        );
+        // Nothing requires a modifier on the other categories.
+        assert_eq!(validate(&s, "undo", "k"), Ok(()));
+    }
+
+    #[test]
+    fn validate_reports_the_conflicting_shortcut() {
+        let s = AppSettings::default();
+        assert_eq!(
+            validate(&s, "redo", "secondary-z"),
+            Err(Rejection::InUse("Undo".into()))
+        );
+        // A rebound shortcut conflicts on its new spec, not its old one.
+        let s = settings_with(&[("undo", "secondary-alt-z")]);
+        assert_eq!(validate(&s, "redo", "secondary-z"), Ok(()));
+        assert_eq!(
+            validate(&s, "redo", "secondary-alt-z"),
+            Err(Rejection::InUse("Undo".into()))
+        );
+    }
+
+    #[test]
+    fn the_first_failing_check_wins() {
+        let s = AppSettings::default();
+        // "space" is reserved and bare-key-valid; reserved is reported first.
+        assert_eq!(validate(&s, "undo", "space"), Err(Rejection::Reserved));
+        // Not reserved, but modifier-bearing in a bare category and also
+        // unused: the category rule is what rejects it.
+        assert_eq!(
+            validate(&s, "mode_add", "secondary-z"),
+            Err(Rejection::NeedsBareKey)
+        );
+        // "s" is mode_select's: a bare spec passes the category rule, then conflicts.
+        assert_eq!(
+            validate(&s, "mode_add", "s"),
+            Err(Rejection::InUse("Switch to Select mode".into()))
+        );
+    }
+
+    fn keystroke(key: &str, modifiers: gpui::Modifiers) -> gpui::Keystroke {
+        gpui::Keystroke {
+            modifiers,
+            key: key.to_string(),
+            key_char: None,
+        }
+    }
+
+    #[test]
+    fn recording_waits_through_modifier_only_presses() {
+        let held = gpui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_recorded(&keystroke("", held)),
+            Recorded::ModifierOnly
+        );
+    }
+
+    #[test]
+    fn recording_escape_cancels_even_with_modifiers() {
+        assert_eq!(
+            classify_recorded(&keystroke("escape", Default::default())),
+            Recorded::Cancel
+        );
+        let held = gpui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_recorded(&keystroke("escape", held)),
+            Recorded::Cancel
+        );
+    }
+
+    #[test]
+    fn recording_a_key_yields_its_spec() {
+        let held = gpui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_recorded(&keystroke("k", held)),
+            Recorded::Spec("shift-k".to_string())
+        );
+        assert_eq!(
+            classify_recorded(&keystroke("k", Default::default())),
+            Recorded::Spec("k".to_string())
         );
     }
 }
