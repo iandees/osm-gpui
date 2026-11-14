@@ -237,18 +237,8 @@ impl MapViewer {
     }
 
     fn refresh_menus_for_imagery(&mut self, cx: &mut Context<Self>) {
-        for provider in PROVIDERS {
-            osm_gpui::street_imagery::set_menu_shows(provider, self.shows_imagery(provider));
-        }
         let (lat, lon, state) = self.imagery_menu_context();
-        crate::menu::rebuild_menus(
-            &mut *cx,
-            lat,
-            lon,
-            state,
-            self.show_downloaded_area,
-            self.has_uploadable_changes(),
-        );
+        crate::menu::rebuild_menus(&mut *cx, lat, lon, state, self.menu_toggles());
     }
 
     pub(crate) fn set_show_imagery(

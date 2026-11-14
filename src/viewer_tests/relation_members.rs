@@ -1,8 +1,8 @@
 //! Editing relation membership from the side panel and from selection actions.
 
 use super::{
-    pending, redo_step, relation_members, route_over, select, setup_network, setup_network_with,
-    tag_pairs, tags_of, undo_step,
+    pairs, pending, redo_step, relation_members, route_over, select, setup_network,
+    setup_network_with, tags_of, undo_step,
 };
 use crate::{side_panel, MemberRef, TagEditContext};
 use gpui::TestAppContext;
@@ -65,13 +65,13 @@ fn a_relation_selected_from_a_members_row_edits_and_zooms(cx: &mut TestAppContex
             };
             view.apply_tag_edit(&ctx, "ref", "7B");
             assert_eq!(view.undo_stack.actions.len(), 1);
-            assert_eq!(tags_of(view, Relation, 900), tag_pairs(&[("ref", "7B")]));
+            assert_eq!(tags_of(view, Relation, 900), pairs(&[("ref", "7B")]));
             assert_eq!(pending(view), (0, 1, 0));
             undo_step(view);
             assert!(tags_of(view, Relation, 900).is_empty());
             assert_eq!(pending(view), (0, 0, 0));
             redo_step(view);
-            assert_eq!(tags_of(view, Relation, 900), tag_pairs(&[("ref", "7B")]));
+            assert_eq!(tags_of(view, Relation, 900), pairs(&[("ref", "7B")]));
 
             // Copy Tags works.
             view.run_selection_action("copy_tags", cx);

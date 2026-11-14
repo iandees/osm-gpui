@@ -124,27 +124,13 @@ impl OsmLayer {
                 let mut polyline = way_stroke::Polyline::default();
                 polyline.set(pts.iter().map(|p| (p.x.as_f32(), p.y.as_f32())));
                 for (extra_width, color) in [(7.0, halo), (3.0, core)] {
-                    let mut path: Option<Path<Pixels>> = None;
-                    let mut bounds_min_max = (
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                        f32::INFINITY,
-                        f32::NEG_INFINITY,
-                    );
+                    let mut batch = PathBatch::new();
                     polyline.emit(
-                        &mut PathSink {
-                            path: &mut path,
-                            bounds: &mut bounds_min_max,
-                        },
+                        &mut batch.sink(),
                         (way_style.width + extra_width) / 2.0,
                         way_stroke::Shape::FULL,
                     );
-                    if let Some(mut path) = path {
-                        let (min_x, max_x, min_y, max_y) = bounds_min_max;
-                        path.bounds = Bounds {
-                            origin: point(px(min_x), px(min_y)),
-                            size: size(px(max_x - min_x), px(max_y - min_y)),
-                        };
+                    if let Some(path) = batch.finish() {
                         window.paint_path(path, rgb(color));
                     }
                 }
@@ -157,13 +143,7 @@ impl OsmLayer {
                     let reverse = way_style.direction == Direction::Reverse;
                     let half_base = (way_style.width + 3.0) / 2.0 + ARROW_OVERHANG;
                     for (grow, color) in [(1.5, halo), (0.0, core)] {
-                        let mut path: Option<Path<Pixels>> = None;
-                        let mut bounds_min_max = (
-                            f32::INFINITY,
-                            f32::NEG_INFINITY,
-                            f32::INFINITY,
-                            f32::NEG_INFINITY,
-                        );
+                        let mut batch = PathBatch::new();
                         for i in arrow_segments(&pts) {
                             if let Some([tip, left, right]) = arrow_triangle(
                                 pts[i],
@@ -172,15 +152,10 @@ impl OsmLayer {
                                 ARROW_HALF_LENGTH + 1.0 + 1.5 * grow,
                                 half_base + grow,
                             ) {
-                                push_triangle(&mut path, &mut bounds_min_max, tip, left, right);
+                                batch.triangle(tip, left, right);
                             }
                         }
-                        if let Some(mut path) = path {
-                            let (min_x, max_x, min_y, max_y) = bounds_min_max;
-                            path.bounds = Bounds {
-                                origin: point(px(min_x), px(min_y)),
-                                size: size(px(max_x - min_x), px(max_y - min_y)),
-                            };
+                        if let Some(path) = batch.finish() {
                             window.paint_path(path, rgb(color));
                         }
                     }

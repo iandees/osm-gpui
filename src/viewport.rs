@@ -279,6 +279,20 @@ mod tests {
         assert_eq!(viewport.center(), (new_lat, new_lon));
     }
 
+    /// Only the centre is clamped (to +-180), so the view reaches past the
+    /// antimeridian whenever the centre is near it; tile coverage must wrap.
+    #[test]
+    fn the_view_can_span_the_antimeridian_because_only_the_centre_is_clamped() {
+        let mut viewport = Viewport::new(0.0, 179.9, 5.0, size(px(800.0), px(600.0)));
+        viewport.transform.pan_by_pixels(px(10_000.0), px(0.0));
+        assert_eq!(viewport.center().1, 180.0);
+        let (_, max_x, _, _) = viewport.mercator_view_bounds();
+        assert!(max_x > crate::coordinates::MERCATOR_HALF_WORLD_M);
+        let placed =
+            crate::tiles::tiles_covering_placed(viewport.mercator_view_rect(), (0.0, 0.0), 5);
+        assert!(placed.iter().any(|t| t.world_copy == 1 && t.coord.x == 0));
+    }
+
     fn test_viewport() -> Viewport {
         Viewport::new(40.7128, -74.0060, 10.0, size(px(800.0), px(600.0)))
     }

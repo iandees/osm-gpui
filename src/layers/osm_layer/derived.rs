@@ -22,6 +22,16 @@ impl WayBbox {
         }
     }
 
+    /// Whether this box touches the view, `(min_x, max_x, min_y, max_y)` in
+    /// the order of `Viewport::mercator_view_bounds`.
+    #[inline]
+    pub(super) fn intersects(&self, view: (f64, f64, f64, f64)) -> bool {
+        crate::layers::paint::intersects_view(
+            (self.min_x, self.max_x, self.min_y, self.max_y),
+            view,
+        )
+    }
+
     /// Conservatively grow this bbox to include `(x, y)`. Never shrinks.
     pub(super) fn extend(&mut self, x: f64, y: f64) {
         if x < self.min_x {

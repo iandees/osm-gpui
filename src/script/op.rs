@@ -245,7 +245,6 @@ pub enum LayerKind {
     /// An OSM data layer.
     Osm,
     Imagery,
-    Grid,
 }
 
 /// A read-only condition about the running app, evaluated on its main thread.

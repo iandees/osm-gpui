@@ -1048,7 +1048,6 @@ impl MapViewer {
                         },
                         Kind::Osm => Some(script::LayerKind::Osm),
                         Kind::Tile => Some(script::LayerKind::Imagery),
-                        Kind::Grid => Some(script::LayerKind::Grid),
                         // The script language has no word for these.
                         Kind::Notes | Kind::StreetImagery => None,
                     }

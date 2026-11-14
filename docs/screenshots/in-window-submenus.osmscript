@@ -14,10 +14,10 @@
 #
 # The bar is a 30px row; labels are at window y=15. Imagery is at x=210.
 # Imagery menu rows (default window, x 189-355): Custom Imagery y=48,
-# OpenStreetMap Carto y=84, Coordinate Grid y=120, Adjust y=156, Reset y=184,
-# Available Imagery y=220. A submenu opens beside it from x=360; Custom's
+# OpenStreetMap Carto y=84, Adjust y=120, Reset y=148,
+# Available Imagery y=184. A submenu opens beside it from x=360; Custom's
 # rows are Add y=50, Sample A y=86, Sample B y=113; Available's rows start at
-# y=220 and are about 24px apart.
+# y=184 and are about 24px apart.
 #
 # The layers added at the end are drawn over the whole map, so that part runs
 # last; and `wait` replaces `wait_idle` there because their tiles never
@@ -56,8 +56,8 @@ wait_idle 2s
 #    enters it from the keyboard, Down moves inside it.
 click 210,15
 wait_idle 2s
-hover 235,220
-hover 240,220
+hover 235,184
+hover 240,184
 wait_idle 2s
 capture out/sub-04-available-hover.png
 key right
@@ -109,8 +109,8 @@ hover 235,48
 hover 240,48
 wait_idle 2s
 capture out/sub-10-narrow-custom.png
-hover 235,220
-hover 240,220
+hover 235,184
+hover 240,184
 wait_idle 2s
 capture out/sub-11-narrow-available.png
 key escape
@@ -135,11 +135,11 @@ capture out/sub-13-custom-chosen.png
 
 click 210,15
 wait 2s
-hover 235,220
-hover 240,220
-hover 300,220
-hover 430,222
-hover 430,245
+hover 235,184
+hover 240,184
+hover 300,184
+hover 430,186
+hover 430,209
 wait 2s
 capture out/sub-14-available-entry-hover.png
 click 430,245

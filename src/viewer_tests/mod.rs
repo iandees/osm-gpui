@@ -22,16 +22,21 @@ mod upload_guards;
 mod validation_section;
 mod vertex_preview;
 
+use crate::test_support::{
+    add_osm_layer, centered_viewport, editable_layer_mut, layer_diff, node_lat_lon, osm_window,
+    select_features, sorted_tags, way_node_ids, ways_using_node,
+};
+pub(super) use crate::test_support::{
+    pairs, redo_step, status_message as status, status_message as status_text, undo_step,
+    LAT as CENTER_LAT, LON as CENTER_LON,
+};
 use crate::undo::UndoableAction;
 use crate::{selection_actions, EditMode, MapViewer};
 use gpui::prelude::*;
-use gpui::{px, size, TestAppContext};
-use osm_gpui::layers::osm_layer::OsmLayer;
+use gpui::TestAppContext;
 use osm_gpui::layers::LayerId;
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
-use osm_gpui::viewport::Viewport;
 use std::collections::HashMap;
-use std::sync::Arc;
 
 fn empty_tags() -> HashMap<String, String> {
     HashMap::new()
@@ -40,7 +45,8 @@ fn empty_tags() -> HashMap<String, String> {
 /// A single 2-node way `10 = [1, 2]`, both nodes at `center_lat`, lon
 /// `center_lon - 0.001` / `+ 0.001` — a flat horizontal line through the
 /// viewport's center at zoom 18 (matches the convention used by
-/// `OsmLayer`'s own tests in `src/layers/osm_layer/`).
+/// `OsmLayer`'s own tests in `src/layers/osm_layer/`). Everything has
+/// version 1, unlike `test_support::Build`'s version 3.
 fn way_fixture(center_lat: f64, center_lon: f64) -> OsmData {
     let n1 = OsmNode {
         id: 1,
@@ -75,40 +81,20 @@ fn way_fixture(center_lat: f64, center_lon: f64) -> OsmData {
     }
 }
 
-const CENTER_LAT: f64 = 40.0;
-
-const CENTER_LON: f64 = -74.0;
-
 /// Builds a `MapViewer` in a headless test window, viewport centered on
 /// `way_fixture`'s line (so screen `(400, 300)` lands exactly on it, per
 /// the same convention as `OsmLayer`'s own tests), with one active OSM
 /// layer containing that fixture, in Add mode.
 fn setup(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
-    cx.update(gpui_component::init);
-    let window = cx.add_window(MapViewer::new);
-    window
-        .update(cx, |view, _window, _cx| {
-            view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
-            let layer_id = view.layer_manager.alloc_id();
-            let layer = OsmLayer::new_with_data(
-                layer_id,
-                "L".to_string(),
-                Arc::new(way_fixture(CENTER_LAT, CENTER_LON)),
-            );
-            view.layer_manager.add_layer(Box::new(layer));
-            view.active_layer = Some(layer_id);
-            view.enter_mode(EditMode::Add);
-        })
-        .unwrap();
-    window
+    osm_window(cx, "L", way_fixture(CENTER_LAT, CENTER_LON), EditMode::Add)
+}
+
+fn active(view: &MapViewer) -> LayerId {
+    view.active_layer.unwrap()
 }
 
 fn way_nodes(view: &MapViewer, layer_id: LayerId, way_id: i64) -> Vec<i64> {
-    view.layer_manager
-        .find_layer(layer_id)
-        .and_then(|l| l.as_editable())
-        .and_then(|e| e.way_node_ids(way_id))
-        .unwrap_or_default()
+    way_node_ids(view, layer_id, way_id).unwrap_or_default()
 }
 
 fn feature(
@@ -117,7 +103,7 @@ fn feature(
     id: i64,
 ) -> osm_gpui::selection::FeatureRef {
     osm_gpui::selection::FeatureRef {
-        layer_id: view.active_layer.unwrap(),
+        layer_id: active(view),
         kind,
         id,
     }
@@ -129,48 +115,15 @@ fn tags_of(
     kind: osm_gpui::selection::FeatureKind,
     id: i64,
 ) -> Vec<(String, String)> {
-    let layer_id = view.active_layer.unwrap();
-    let mut tags = view
-        .layer_manager
-        .find_layer(layer_id)
-        .unwrap()
-        .as_editable()
-        .unwrap()
-        .feature_tags(&osm_gpui::selection::FeatureRef { layer_id, kind, id })
-        .unwrap();
-    tags.sort();
-    tags
-}
-
-fn tag_pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
-    list.iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+    sorted_tags(view, active(view), kind, id).unwrap()
 }
 
 fn node_position(view: &MapViewer, id: i64) -> (f64, f64) {
-    let layer_id = view.active_layer.unwrap();
-    view.layer_manager
-        .find_layer(layer_id)
-        .unwrap()
-        .as_editable()
-        .unwrap()
-        .node_lat_lon(id)
-        .unwrap()
+    node_lat_lon(view, active(view), id).unwrap()
 }
 
 fn ways_at_node(view: &MapViewer, node: i64) -> Vec<i64> {
-    let layer_id = view.active_layer.unwrap();
-    view.layer_manager
-        .find_layer(layer_id)
-        .unwrap()
-        .as_editable()
-        .unwrap()
-        .ways_using_node(node)
-}
-
-fn status(view: &MapViewer) -> Option<&str> {
-    view.status_message.as_ref().map(|(m, _)| m.as_str())
+    ways_using_node(view, active(view), node)
 }
 
 /// A view whose active layer holds `selection_actions::test_support`'s
@@ -187,19 +140,7 @@ fn setup_network_with(
 ) -> gpui::WindowHandle<MapViewer> {
     let mut data = selection_actions::test_support::network_data();
     edit(&mut data);
-    cx.update(gpui_component::init);
-    let window = cx.add_window(MapViewer::new);
-    window
-        .update(cx, |view, _window, _cx| {
-            view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
-            let layer_id = view.layer_manager.alloc_id();
-            let layer = OsmLayer::new_with_data(layer_id, "Net".to_string(), Arc::new(data));
-            view.layer_manager.add_layer(Box::new(layer));
-            view.active_layer = Some(layer_id);
-            view.enter_mode(EditMode::Select);
-        })
-        .unwrap();
-    window
+    osm_window(cx, "Net", data, EditMode::Select)
 }
 
 /// Replace the network's relation 900 with a route over `members`
@@ -226,61 +167,21 @@ fn route_over(ways: &'static [(i64, &'static str)]) -> impl FnOnce(&mut osm_gpui
 }
 
 fn select(view: &mut MapViewer, kind: osm_gpui::selection::FeatureKind, ids: &[i64]) {
-    let layer_id = view.active_layer.unwrap();
-    view.set_selection(
-        ids.iter()
-            .map(|&id| osm_gpui::selection::FeatureRef { layer_id, kind, id })
-            .collect(),
-    );
+    let items: Vec<_> = ids.iter().map(|&id| (kind, id)).collect();
+    select_features(view, active(view), &items);
 }
 
 fn pending(view: &MapViewer) -> (usize, usize, usize) {
-    let layer_id = view.active_layer.unwrap();
-    view.layer_manager
-        .find_layer(layer_id)
-        .unwrap()
-        .as_osm()
-        .unwrap()
-        .diff_for_upload()
-        .counts()
-}
-
-fn undo_step(view: &mut MapViewer) {
-    let action = view.undo_stack.undo().expect("something to undo");
-    view.apply_undo_action(&action, false);
-}
-
-fn redo_step(view: &mut MapViewer) {
-    let action = view.undo_stack.redo().expect("something to redo");
-    view.apply_undo_action(&action, true);
+    layer_diff(view, active(view)).counts()
 }
 
 fn relation_members(view: &MapViewer, relation_id: i64) -> Vec<(i64, String)> {
-    let layer_id = view.active_layer.unwrap();
-    view.layer_manager
-        .find_layer(layer_id)
-        .unwrap()
-        .as_editable()
-        .unwrap()
-        .relation(relation_id)
-        .unwrap()
-        .members
-        .iter()
-        .map(|m| (m.reference, m.role.clone()))
-        .collect()
+    crate::test_support::relation_member_list(view, active(view), relation_id)
 }
 
 fn editable(view: &mut MapViewer) -> &mut dyn osm_gpui::layers::EditableLayer {
-    let layer_id = view.active_layer.unwrap();
-    view.layer_manager
-        .find_layer_mut(layer_id)
-        .unwrap()
-        .as_editable_mut()
-        .unwrap()
-}
-
-fn status_text(view: &MapViewer) -> Option<&str> {
-    view.status_message.as_ref().map(|(m, _)| m.as_str())
+    let layer_id = active(view);
+    editable_layer_mut(view, layer_id)
 }
 
 /// Way 100 reshaped to `len` nodes, still from node 1 to node 3.
@@ -293,11 +194,7 @@ fn long_way_nodes(len: usize) -> Vec<i64> {
 
 /// Give the test view's layer a pending change (one new node).
 fn make_pending_change(view: &mut MapViewer) {
-    let id = view.active_layer.unwrap();
-    view.layer_manager
-        .find_layer_mut(id)
-        .and_then(|l| l.as_editable_mut())
-        .unwrap()
+    editable(view)
         .create_node(CENTER_LAT, CENTER_LON, None)
         .unwrap();
 }
@@ -319,14 +216,8 @@ fn validation_view(
         .downcast::<MapViewer>()
         .unwrap();
     view.update_in(vcx, |view, _window, _cx| {
-        view.viewport = Viewport::new(CENTER_LAT, CENTER_LON, 18.0, size(px(800.0), px(600.0)));
-        let layer_id = view.layer_manager.alloc_id();
-        let layer = OsmLayer::new_with_data(
-            layer_id,
-            "L".to_string(),
-            Arc::new(way_fixture(CENTER_LAT, CENTER_LON)),
-        );
-        view.layer_manager.add_layer(Box::new(layer));
+        view.viewport = centered_viewport();
+        let layer_id = add_osm_layer(view, "L", way_fixture(CENTER_LAT, CENTER_LON));
         view.active_layer = Some(layer_id);
     });
     (view, vcx)
@@ -335,7 +226,7 @@ fn validation_view(
 /// `setup`'s layer with node 1 tagged locally (and that edit on the undo
 /// stack), as it would be when the server then refuses the upload.
 fn tag_node_one(view: &mut MapViewer) {
-    let layer_id = view.active_layer.unwrap();
+    let layer_id = active(view);
     editable(view)
         .set_tag(osm_gpui::selection::FeatureKind::Node, 1, "amenity", "cafe")
         .unwrap();

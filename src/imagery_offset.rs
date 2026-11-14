@@ -287,18 +287,20 @@ pub fn default_path() -> Option<PathBuf> {
 }
 
 static STORE: JsonStore<OffsetStore> = JsonStore::new();
-static WRITE_TO_DISK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// Load the saved offsets into the in-memory store (call once at startup).
-/// With `persist` false (scripted runs) the file is neither read nor ever
-/// written: offsets then live for the session only.
-pub fn init_store(persist: bool) {
-    WRITE_TO_DISK.store(persist, std::sync::atomic::Ordering::Relaxed);
-    let loaded = match (persist, default_path()) {
-        (true, Some(path)) => load_from(&path),
-        _ => OffsetStore::default(),
-    };
-    STORE.init(loaded);
+/// The saved offsets, or an empty store where the persistence policy forbids
+/// reading real state.
+pub fn load() -> OffsetStore {
+    default_path()
+        .map(|path| load_from(&path))
+        .unwrap_or_default()
+}
+
+/// Install the in-memory store (call once at startup). Whether `remember`
+/// reaches the disk is the persistence policy's call, as for the other stores
+/// (a scripted run is read-only, so its offsets live for the session only).
+pub fn init_store(offsets: OffsetStore) {
+    STORE.init(offsets);
 }
 
 /// The offset to auto-apply to a new layer of `imagery_id` viewed around
@@ -312,17 +314,15 @@ pub fn lookup(imagery_id: &str, lat: f64, lon: f64) -> Option<ImageryOffset> {
 /// Remember `offset` for `imagery_id` as made around `(lat, lon)`, for this
 /// session and (unless persistence is off) future launches.
 pub fn remember(imagery_id: &str, offset: ImageryOffset, lat: f64, lon: f64) {
-    let write_to_disk = WRITE_TO_DISK.load(std::sync::atomic::Ordering::Relaxed);
-    let apply = |s: &mut OffsetStore| s.remember(imagery_id, offset, lat, lon);
-    if !write_to_disk {
-        STORE.update("imagery_offset_store", apply);
-        return;
-    }
-    STORE.update_and_save("imagery_offset_store", apply, |snapshot| {
-        persist::save_reporting("imagery_offset_store", default_path().as_deref(), |p| {
-            save_to(p, snapshot)
-        });
-    });
+    STORE.update_and_save(
+        "imagery_offset_store",
+        |s| s.remember(imagery_id, offset, lat, lon),
+        |snapshot| {
+            persist::save_reporting("imagery_offset_store", default_path().as_deref(), |p| {
+                save_to(p, snapshot)
+            });
+        },
+    );
 }
 
 #[cfg(test)]
@@ -455,6 +455,23 @@ mod tests {
         assert!(!is_near(&stored, 40.1, -74.0));
         // Across the world.
         assert!(!is_near(&stored, -33.9, 151.2));
+    }
+
+    #[test]
+    fn two_stores_do_not_share_offsets() {
+        let mut a = OffsetStore::default();
+        let b = OffsetStore::default();
+        a.remember("eli-1", ImageryOffset::new(3.0, -1.0), 40.0, -74.0);
+        assert!(a.lookup("eli-1", 40.0, -74.0).is_some());
+        assert_eq!(b.lookup("eli-1", 40.0, -74.0), None);
+    }
+
+    #[test]
+    fn nothing_is_read_or_written_under_the_default_policy() {
+        // Unit tests run with persistence disabled: no real file is named, so
+        // `remember` has nowhere to write.
+        assert!(default_path().is_none());
+        assert_eq!(load(), OffsetStore::default());
     }
 
     #[test]

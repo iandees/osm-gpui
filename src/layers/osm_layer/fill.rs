@@ -6,7 +6,7 @@ impl OsmLayer {
     /// run through the same code, and the number of path vertices it
     /// produced. For `examples/perf_bench.rs`, which has no window.
     pub fn multipolygon_fill_cpu(&self, viewport: &Viewport, bounds: Bounds<Pixels>) -> usize {
-        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
+        let view = viewport.mercator_view_bounds();
         let screen_rect = (
             f32::from(bounds.origin.x),
             f32::from(bounds.origin.y),
@@ -17,13 +17,7 @@ impl OsmLayer {
         let mut min_max = (0.0, 0.0, 0.0, 0.0);
         let mut pts = Vec::new();
         for entry in self.derived.mp.entries.values() {
-            let b = &entry.bbox;
-            if entry.style.fill.is_none()
-                || b.max_x < vmin_x
-                || b.min_x > vmax_x
-                || b.max_y < vmin_y
-                || b.min_y > vmax_y
-            {
+            if entry.style.fill.is_none() || !entry.bbox.intersects(view) {
                 continue;
             }
             for polygon in &entry.polygons {
@@ -55,9 +49,7 @@ impl OsmLayer {
         color: u32,
         kind: HighlightKind,
     ) {
-        let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
-        let b = &entry.bbox;
-        if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
+        if !entry.bbox.intersects(viewport.mercator_view_bounds()) {
             return;
         }
         let alpha = match kind {
@@ -71,12 +63,7 @@ impl OsmLayer {
             f32::from(bounds.origin.y + bounds.size.height),
         );
         let mut path: Option<Path<Pixels>> = None;
-        let mut min_max = (
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-        );
+        let mut min_max = EMPTY_BOUNDS;
         let mut pts = Vec::new();
         for polygon in &entry.polygons {
             if polygon.tris.is_empty() {
@@ -114,11 +101,7 @@ impl OsmLayer {
             }
         }
         if let Some(mut path) = path {
-            let (min_x, max_x, min_y, max_y) = min_max;
-            path.bounds = Bounds {
-                origin: point(px(min_x), px(min_y)),
-                size: size(px(max_x - min_x), px(max_y - min_y)),
-            };
+            set_path_bounds(&mut path, min_max);
             let a = (alpha * 255.0) as u32;
             window.paint_path(path, rgba((color << 8) | a));
         }

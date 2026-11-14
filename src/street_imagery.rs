@@ -13,7 +13,6 @@
 //!   degrees); an API key raises the page to 100.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -557,22 +556,6 @@ impl PhotoStore {
             s.selected = None;
         });
     }
-}
-
-/// Which providers are on, for the View menu's checkmarks (the menus are built
-/// outside the window, which owns the real state).
-static MENU_SHOWS: [AtomicBool; 3] = [
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-    AtomicBool::new(false),
-];
-
-pub fn set_menu_shows(provider: Provider, on: bool) {
-    MENU_SHOWS[provider.index()].store(on, Ordering::Relaxed);
-}
-
-pub fn menu_shows(provider: Provider) -> bool {
-    MENU_SHOWS[provider.index()].load(Ordering::Relaxed)
 }
 
 #[cfg(test)]

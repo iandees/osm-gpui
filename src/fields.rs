@@ -226,24 +226,38 @@ impl Field {
     /// dropped for lacking a renderer.
     pub fn widget(&self) -> Widget {
         let has_options = !self.options.is_empty();
+        let text_unless = |has: bool, widget: Widget| if has { widget } else { Widget::Text };
         match self.field_type {
             FieldType::Check | FieldType::DefaultCheck => Widget::Check,
-            FieldType::Radio if has_options => Widget::Radio,
+            FieldType::Radio => text_unless(has_options, Widget::Radio),
             FieldType::Combo
             | FieldType::TypeCombo
             | FieldType::ManyCombo
             | FieldType::NetworkCombo
-            | FieldType::OnewayCheck
-                if has_options =>
-            {
-                Widget::Combo
+            | FieldType::OnewayCheck => text_unless(has_options, Widget::Combo),
+            FieldType::SemiCombo => text_unless(has_options, Widget::SemiCombo),
+            FieldType::MultiCombo if self.key.ends_with(':') => {
+                text_unless(has_options, Widget::PrefixMulti)
             }
-            FieldType::SemiCombo if has_options => Widget::SemiCombo,
-            FieldType::MultiCombo if has_options && self.key.ends_with(':') => Widget::PrefixMulti,
-            FieldType::MultiCombo if has_options => Widget::SemiCombo,
+            FieldType::MultiCombo => text_unless(has_options, Widget::SemiCombo),
             FieldType::Access | FieldType::StructureRadio | FieldType::Address => Widget::MultiKey,
-            FieldType::DirectionalCombo if !self.keys.is_empty() => Widget::MultiKey,
-            _ => Widget::Text,
+            FieldType::DirectionalCombo => text_unless(!self.keys.is_empty(), Widget::MultiKey),
+            FieldType::Text
+            | FieldType::Number
+            | FieldType::Url
+            | FieldType::Tel
+            | FieldType::Email
+            | FieldType::Textarea
+            | FieldType::Identifier
+            | FieldType::Colour
+            | FieldType::Date
+            | FieldType::Localized
+            | FieldType::Wikipedia
+            | FieldType::Wikidata
+            | FieldType::Roadspeed
+            | FieldType::Roadheight
+            | FieldType::Restrictions
+            | FieldType::Other => Widget::Text,
         }
     }
 
@@ -589,6 +603,102 @@ fn resolve_string_references(fields: &mut HashMap<String, Field>, order: &[Strin
 mod tests {
     use super::*;
     use crate::presets::preset_index;
+
+    /// Every `FieldType` with the widget it gets without options, with
+    /// options, with a `:`-suffixed key, and with `keys` set (in that order).
+    #[test]
+    fn widget_table_pins_every_field_type() {
+        use FieldType as T;
+        use Widget as W;
+        let table: &[(T, W, W, W, W)] = &[
+            (T::Text, W::Text, W::Text, W::Text, W::Text),
+            (T::Number, W::Text, W::Text, W::Text, W::Text),
+            (T::Url, W::Text, W::Text, W::Text, W::Text),
+            (T::Tel, W::Text, W::Text, W::Text, W::Text),
+            (T::Email, W::Text, W::Text, W::Text, W::Text),
+            (T::Textarea, W::Text, W::Text, W::Text, W::Text),
+            (T::Identifier, W::Text, W::Text, W::Text, W::Text),
+            (T::Colour, W::Text, W::Text, W::Text, W::Text),
+            (T::Date, W::Text, W::Text, W::Text, W::Text),
+            (T::Localized, W::Text, W::Text, W::Text, W::Text),
+            (T::Wikipedia, W::Text, W::Text, W::Text, W::Text),
+            (T::Wikidata, W::Text, W::Text, W::Text, W::Text),
+            (T::Roadspeed, W::Text, W::Text, W::Text, W::Text),
+            (T::Roadheight, W::Text, W::Text, W::Text, W::Text),
+            (T::Combo, W::Text, W::Combo, W::Combo, W::Text),
+            (T::TypeCombo, W::Text, W::Combo, W::Combo, W::Text),
+            (T::SemiCombo, W::Text, W::SemiCombo, W::SemiCombo, W::Text),
+            (
+                T::MultiCombo,
+                W::Text,
+                W::SemiCombo,
+                W::PrefixMulti,
+                W::Text,
+            ),
+            (T::ManyCombo, W::Text, W::Combo, W::Combo, W::Text),
+            (T::NetworkCombo, W::Text, W::Combo, W::Combo, W::Text),
+            (T::DirectionalCombo, W::Text, W::Text, W::Text, W::MultiKey),
+            (T::Check, W::Check, W::Check, W::Check, W::Check),
+            (T::DefaultCheck, W::Check, W::Check, W::Check, W::Check),
+            (T::OnewayCheck, W::Text, W::Combo, W::Combo, W::Text),
+            (T::Radio, W::Text, W::Radio, W::Radio, W::Text),
+            (
+                T::StructureRadio,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+            ),
+            (
+                T::Access,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+            ),
+            (
+                T::Address,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+                W::MultiKey,
+            ),
+            (T::Restrictions, W::Text, W::Text, W::Text, W::Text),
+            (T::Other, W::Text, W::Text, W::Text, W::Text),
+        ];
+        let make = |ft: T, options: bool, key: &str, keys: bool| Field {
+            field_type: ft,
+            key: key.to_string(),
+            keys: if keys {
+                vec!["a".to_string()]
+            } else {
+                Vec::new()
+            },
+            options: if options {
+                vec![FieldOption {
+                    value: "v".into(),
+                    label: String::new(),
+                }]
+            } else {
+                Vec::new()
+            },
+            ..Field::default()
+        };
+        for (ft, bare, opts, prefix, multi) in table {
+            assert_eq!(make(*ft, false, "k", false).widget(), *bare, "{ft:?} bare");
+            assert_eq!(
+                make(*ft, true, "k", false).widget(),
+                *opts,
+                "{ft:?} options"
+            );
+            assert_eq!(
+                make(*ft, true, "k:", false).widget(),
+                *prefix,
+                "{ft:?} prefix"
+            );
+            assert_eq!(make(*ft, false, "k", true).widget(), *multi, "{ft:?} keys");
+        }
+    }
 
     const FIXTURE: &str = r#"
     [
