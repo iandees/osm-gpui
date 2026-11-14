@@ -8,7 +8,7 @@
 use gpui::{AnyElement, Bounds, Pixels, Point, Window};
 
 use crate::layers::paint::{circle_outline, paint_polygon, PaintFrame};
-use crate::layers::{LayerHit, LayerId, MapLayer};
+use crate::layers::{LayerHit, LayerId, LayerKind, MapLayer};
 use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
 use crate::viewport::Viewport;
 
@@ -102,6 +102,10 @@ impl MapLayer for StreetImageryLayer {
 
     fn id(&self) -> LayerId {
         self.id
+    }
+
+    fn kind(&self) -> LayerKind {
+        LayerKind::StreetImagery
     }
 
     fn is_visible(&self) -> bool {

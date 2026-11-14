@@ -20,7 +20,7 @@ use gpui_component::{
     v_flex, ActiveTheme, Sizable,
 };
 use osm_gpui::imagery_offset::{self, ImageryOffset, Nudge, OffsetSession};
-use osm_gpui::layers::LayerId;
+use osm_gpui::layers::{LayerId, LayerKind};
 use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
 use schemars::JsonSchema;
@@ -83,7 +83,7 @@ impl MapViewer {
             .layers()
             .iter()
             .rev()
-            .find(|layer| layer.is_visible() && layer.as_imagery().is_some())
+            .find(|layer| layer.is_visible() && layer.kind() == LayerKind::Tile)
             .map(|layer| layer.id())
     }
 
@@ -251,7 +251,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .get(action.index)
-            .filter(|l| l.as_imagery().is_some())
+            .filter(|l| l.kind() == LayerKind::Tile)
             .map(|l| l.id());
         if let Some(layer) = layer {
             self.begin_offset_adjust(layer, window, cx);
@@ -299,7 +299,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .get(action.index)
-            .filter(|l| l.as_imagery().is_some())
+            .filter(|l| l.kind() == LayerKind::Tile)
             .map(|l| l.id());
         if let Some(layer) = layer {
             self.reset_layer_offset(layer, cx);

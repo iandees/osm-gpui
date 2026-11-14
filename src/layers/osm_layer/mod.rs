@@ -6,7 +6,7 @@ use crate::layers::merge::{self, MergeStats};
 use crate::layers::node_markers::{self, NodeForm};
 use crate::layers::resolve;
 use crate::layers::way_stroke::{self, Layer, PathSink};
-use crate::layers::{EditError, EditableLayer, HighlightKind, LayerId, MapLayer};
+use crate::layers::{EditError, EditableLayer, HighlightKind, LayerId, LayerKind, MapLayer};
 use crate::osm::{FileEdits, OsmData, OsmNode, OsmWay};
 use crate::osm_upload::UploadResult;
 use crate::selection::{
@@ -453,6 +453,10 @@ impl MapLayer for OsmLayer {
 
     fn id(&self) -> LayerId {
         self.id
+    }
+
+    fn kind(&self) -> LayerKind {
+        LayerKind::Osm
     }
 
     fn is_visible(&self) -> bool {

@@ -14,7 +14,7 @@ use gpui::*;
 
 use crate::layers::paint::{PaintFrame, PathBatch};
 use crate::layers::way_stroke::{self, Layer, PathSink, Polyline};
-use crate::layers::{LayerHit, LayerId, MapLayer};
+use crate::layers::{LayerHit, LayerId, LayerKind, MapLayer};
 use crate::reference::{Format, MercBox, ReferenceData};
 use crate::trace_style::{ColorBy, TraceStyle};
 use crate::viewport::Viewport;
@@ -348,6 +348,10 @@ impl MapLayer for ReferenceLayer {
 
     fn id(&self) -> LayerId {
         self.id
+    }
+
+    fn kind(&self) -> LayerKind {
+        LayerKind::Reference
     }
 
     fn as_reference(&self) -> Option<&ReferenceLayer> {

@@ -62,6 +62,10 @@ pub trait MapLayer: Send + Sync {
     /// This layer's stable identity. See `LayerId`.
     fn id(&self) -> LayerId;
 
+    /// Which type of layer this is. Code that needs to know what a layer
+    /// is asks this, not whether some accessor happens to answer.
+    fn kind(&self) -> LayerKind;
+
     fn is_visible(&self) -> bool;
 
     fn set_visible(&mut self, visible: bool);
@@ -133,6 +137,20 @@ pub trait MapLayer: Send + Sync {
     fn as_editable_mut(&mut self) -> Option<&mut dyn EditableLayer> {
         None
     }
+}
+
+/// The type of a layer: one variant per `MapLayer` implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LayerKind {
+    /// Tile imagery.
+    Tile,
+    /// OSM data.
+    Osm,
+    Grid,
+    Notes,
+    /// GPX, GeoJSON and downloaded GPS traces.
+    Reference,
+    StreetImagery,
 }
 
 /// What a layer found under a click, in the layer's own terms.
@@ -645,11 +663,11 @@ impl LayerManager {
         let above_imagery = self
             .layers
             .iter()
-            .rposition(|l| l.as_imagery().is_some())
+            .rposition(|l| l.kind() == LayerKind::Tile)
             .map_or(0, |i| i + 1);
         let at = self.layers[above_imagery..]
             .iter()
-            .position(|l| l.as_osm().is_some())
+            .position(|l| l.kind() == LayerKind::Osm)
             .map_or(self.layers.len(), |i| i + above_imagery);
         self.layers.insert(at, layer);
     }
@@ -743,7 +761,7 @@ impl LayerManager {
         let mut elements = Vec::new();
 
         for layer in &self.layers {
-            if layer.is_visible() && (show_imagery || layer.as_imagery().is_none()) {
+            if layer.is_visible() && (show_imagery || layer.kind() != LayerKind::Tile) {
                 elements.extend(layer.render_elements(viewport, window, cx));
             }
         }
@@ -1346,6 +1364,16 @@ mod tests {
         assert_eq!(layers.len(), expected.len());
         for ((kind, layer), (want_kind, want)) in layers.iter_mut().zip(expected) {
             assert_eq!(*kind, want_kind);
+            let want_layer_kind = match want_kind {
+                "tile" => LayerKind::Tile,
+                "osm" => LayerKind::Osm,
+                "grid" => LayerKind::Grid,
+                "notes" => LayerKind::Notes,
+                "reference" => LayerKind::Reference,
+                "street imagery" => LayerKind::StreetImagery,
+                other => panic!("no kind for {other}"),
+            };
+            assert_eq!(layer.kind(), want_layer_kind, "{kind}");
             let got = (
                 layer.as_osm().is_some(),
                 layer.as_imagery().is_some(),

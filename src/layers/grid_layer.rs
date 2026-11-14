@@ -1,7 +1,7 @@
 use gpui::*;
 
 use crate::coordinates::{is_point_valid, validate_coords};
-use crate::layers::{LayerId, MapLayer};
+use crate::layers::{LayerId, LayerKind, MapLayer};
 use crate::viewport::Viewport;
 
 /// Layer for rendering coordinate grid lines
@@ -47,6 +47,10 @@ impl MapLayer for GridLayer {
 
     fn id(&self) -> LayerId {
         self.id
+    }
+
+    fn kind(&self) -> LayerKind {
+        LayerKind::Grid
     }
 
     fn is_visible(&self) -> bool {

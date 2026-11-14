@@ -9,7 +9,7 @@
 use gpui::{AnyElement, Bounds, Pixels, Point, Window};
 
 use crate::layers::paint::{circle_outline, paint_polygon, PaintFrame};
-use crate::layers::{LayerHit, LayerId, MapLayer};
+use crate::layers::{LayerHit, LayerId, LayerKind, MapLayer};
 use crate::notes::{Note, NoteStore};
 use crate::viewport::Viewport;
 
@@ -103,6 +103,10 @@ impl MapLayer for NotesLayer {
         self.id
     }
 
+    fn kind(&self) -> LayerKind {
+        LayerKind::Notes
+    }
+
     fn is_visible(&self) -> bool {
         self.visible
     }
@@ -172,8 +176,8 @@ impl MapLayer for NotesLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{point, px, size};
     use crate::notes::{CommentAction, NoteComment, NoteStatus};
+    use gpui::{point, px, size};
 
     fn note(id: i64, lat: f64, lon: f64, status: NoteStatus) -> Note {
         Note {
