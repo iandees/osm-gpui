@@ -51,7 +51,7 @@ impl Mods {
     }
 }
 
-/// Kept for scripts and tests written when only `alt` and `cmd` could be held.
+/// Alias of [`Mods`].
 pub type DragMods = Mods;
 
 /// Where a pointer op acts.
