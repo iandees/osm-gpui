@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use crate::layers::area_labels::Fingerprint;
 use crate::layers::labels::{
-    CollisionGrid, FadeSet, Rect, TextLook, GRID_CELL, HYSTERESIS_BONUS, NO_OWNER,
+    CollisionGrid, FadeSet, LabelPriority, Rect, TextLook, GRID_CELL, NO_OWNER,
 };
 use crate::layers::way_stroke::{Polyline, Shape};
 use crate::style::TextStyle;
@@ -749,7 +749,7 @@ pub struct Candidate<'a> {
     pub verts: &'a [(i64, f64, f64)],
     pub style: LabelStyle,
     /// Importance among line labels (higher is placed first).
-    pub priority: i32,
+    pub priority: LabelPriority,
 }
 
 /// A label that won placement. Its glyphs are relative to the way's first
@@ -1038,7 +1038,7 @@ impl LineLabelCache {
         }
         let mut built = 0;
         // (candidate index, slot, effective priority, screen reference)
-        let mut order: Vec<(usize, usize, i32, Pt)> = Vec::new();
+        let mut order: Vec<(usize, usize, LabelPriority, Pt)> = Vec::new();
         for (ci, c) in cands.iter().enumerate() {
             if c.verts.len() < 2 {
                 continue;
@@ -1079,12 +1079,8 @@ impl LineLabelCache {
             }
             let n = self.layouts[&c.way_id].labels.len();
             for slot in 0..n {
-                let bonus = if prev.contains(&(c.way_id, slot)) {
-                    HYSTERESIS_BONUS
-                } else {
-                    0
-                };
-                order.push((ci, slot, c.priority + bonus, (rx, ry)));
+                let priority = c.priority.with_recent(prev.contains(&(c.way_id, slot)));
+                order.push((ci, slot, priority, (rx, ry)));
             }
         }
         order.sort_by(|a, b| {
@@ -1533,7 +1529,7 @@ mod tests {
             text: text.to_string(),
             verts,
             style: LabelStyle::default(),
-            priority: 40,
+            priority: 40.into(),
         }
     }
 
@@ -1596,8 +1592,8 @@ mod tests {
         // little more important, way 1 was placed last time.
         let mut a = cand(1, "Elm St", &verts);
         let mut b = cand(2, "Elm St", &verts);
-        a.priority = 40;
-        b.priority = 50;
+        a.priority = 40.into();
+        b.priority = 50.into();
         let view = (800.0, 600.0);
         let none = HashSet::new();
         let (fresh, _) = cache.place(
@@ -1613,7 +1609,7 @@ mod tests {
         let prev: HashSet<(i64, usize)> = [(1, 0)].into();
         let a = cand(1, "Elm St", &verts);
         let mut b = cand(2, "Elm St", &verts);
-        b.priority = 50;
+        b.priority = 50.into();
         let (kept, _) = cache.place(
             &[a, b],
             17.0,

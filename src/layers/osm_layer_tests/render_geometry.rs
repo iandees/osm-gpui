@@ -275,7 +275,7 @@ fn multipolygon_area_label_uses_the_relation_tags_and_avoids_holes() {
     let key = (crate::layers::labels::KIND_REL, 500);
     let l = layer.area_label_for(&mut cache, key, 17.0).unwrap();
     assert_eq!(l.text.as_ref(), "Ring Park");
-    assert_eq!(l.priority, 300);
+    assert_eq!(l.priority.tier, 300);
     let g = layer.area_geom_for(&mut cache, key).unwrap();
     assert_eq!(g.polys.len(), 1);
     assert_eq!(g.polys[0].rings.len(), 2, "outer ring plus the hole");

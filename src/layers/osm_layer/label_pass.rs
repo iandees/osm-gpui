@@ -259,10 +259,9 @@ impl OsmLayer {
             found.retain(|f| !dup.contains(&f.0));
         }
         let rank = |f: &(labels::Key, Arc<area_labels::AreaLabel>, f32)| {
-            (
-                forced.contains(&f.0),
-                f.1.priority + area_labels::size_bonus(f.2),
-            )
+            f.1.priority
+                .with_forced(forced.contains(&f.0))
+                .with_size_px(f.2)
         };
         found.sort_by(|a, b| rank(b).cmp(&rank(a)).then(a.0.cmp(&b.0)));
         found.truncate(area_labels::MAX_AREA_CANDIDATES);
@@ -288,8 +287,7 @@ impl OsmLayer {
                     marker_r: 0.0,
                     icon_r: None,
                     text: Some((w, h, labels::Anchor::Center)),
-                    priority: label.priority + area_labels::size_bonus(bpx),
-                    forced: is_forced,
+                    priority: label.priority.with_size_px(bpx).with_forced(is_forced),
                 },
                 subject: Subject::Area {
                     label,
@@ -365,8 +363,7 @@ impl OsmLayer {
                         marker_r: r,
                         icon_r: l.icon.as_ref().map(|i| i.backing() / 2.0),
                         text: None,
-                        priority: l.priority,
-                        forced: selected.contains(&id),
+                        priority: l.priority.with_forced(selected.contains(&id)),
                     };
                     cands.push((idx, item, l));
                 }
@@ -376,12 +373,7 @@ impl OsmLayer {
         }
         // Keep the most important candidates; the rest are plain obstacles.
         if cands.len() > labels::MAX_CANDIDATES {
-            cands.sort_by(|a, b| {
-                b.1.forced
-                    .cmp(&a.1.forced)
-                    .then(b.1.priority.cmp(&a.1.priority))
-                    .then(a.1.key.cmp(&b.1.key))
-            });
+            cands.sort_by(|a, b| b.1.priority.cmp(&a.1.priority).then(a.1.key.cmp(&b.1.key)));
             for (_, it, _) in cands.drain(labels::MAX_CANDIDATES..) {
                 if it.marker_r > 0.0 {
                     fixed.push(labels::Rect::around(
@@ -738,7 +730,7 @@ impl OsmLayer {
                 text,
                 verts: &self.derived.way_vertices[i],
                 style: LabelStyle::resolve(&st, half_width),
-                priority: highway_label_rank(&way.tags),
+                priority: labels::LabelPriority::of(labels::LabelClass::Street, &way.tags),
             });
         }
         cands
@@ -912,7 +904,7 @@ fn forced_item(
     marker_r: f32,
     line: &ShapedLine,
     anchor: labels::Anchor,
-    priority: i32,
+    priority: labels::LabelPriority,
 ) -> labels::Item {
     labels::Item {
         key,
@@ -924,8 +916,7 @@ fn forced_item(
             f32::from(line.ascent + line.descent),
             anchor,
         )),
-        priority,
-        forced: true,
+        priority: priority.with_forced(true),
     }
 }
 
@@ -948,20 +939,6 @@ fn paint_forced(
         1.0,
         labels::HaloMode::Offsets,
     );
-}
-
-/// Order among street names: bigger roads first.
-pub(super) fn highway_label_rank(tags: &HashMap<String, String>) -> i32 {
-    match tags.get("highway").map(String::as_str) {
-        Some("motorway" | "trunk") => 90,
-        Some("primary") => 80,
-        Some("secondary") => 70,
-        Some("tertiary") => 60,
-        Some("unclassified" | "residential") => 50,
-        Some("service" | "living_street" | "pedestrian") => 40,
-        Some(_) => 30,
-        None => 20,
-    }
 }
 
 #[cfg(test)]

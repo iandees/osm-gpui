@@ -2,10 +2,9 @@
 //! grid and which one wins a contested spot. Only `Feat::item` and
 //! `Feat::score` know how a priority is built; the expectations are literals.
 
-use super::label_pass::highway_label_rank;
-use crate::layers::area_labels::{area_priority, size_bonus};
 use crate::layers::labels::{
-    node_priority, place, Anchor, Config, Item, Prev, HYSTERESIS_BONUS, KIND_NODE, KIND_WAY,
+    place, Anchor, Config, Item, LabelClass, LabelPriority, Prev, HYSTERESIS_BONUS, KIND_NODE,
+    KIND_WAY,
 };
 use std::collections::HashMap;
 
@@ -55,12 +54,22 @@ impl Feat {
     }
 
     /// The priority without hysteresis.
-    fn score(&self) -> i32 {
+    fn priority(&self) -> LabelPriority {
         match self.class {
-            Class::Node { icon, named } => node_priority(&self.tags, icon, named),
-            Class::Area(px) => area_priority(&self.tags) + size_bonus(px),
-            Class::Street => highway_label_rank(&self.tags),
+            Class::Node { icon, named } => LabelPriority::of(
+                LabelClass::Node {
+                    has_icon: icon,
+                    named,
+                },
+                &self.tags,
+            ),
+            Class::Area(px) => LabelPriority::of(LabelClass::Area, &self.tags).with_size_px(px),
+            Class::Street => LabelPriority::of(LabelClass::Street, &self.tags),
         }
+    }
+
+    fn score(&self) -> i32 {
+        self.priority().score()
     }
 
     fn item(&self, x: f32, y: f32) -> Item {
@@ -70,8 +79,7 @@ impl Feat {
             marker_r: 0.0,
             icon_r: None,
             text: Some((60.0, 12.0, Anchor::Center)),
-            priority: self.score(),
-            forced: self.forced,
+            priority: self.priority().with_forced(self.forced),
         }
     }
 }
