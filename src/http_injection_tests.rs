@@ -91,11 +91,10 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// `UreqClient::new()` may be written in two places only: the one construction
-/// in `fn main` and the tile loader (a static gpui asset function that has no
-/// viewer to ask). Anywhere else must take a client.
+/// `UreqClient::new()` may be written in one place only: the construction in
+/// `fn main`. Anywhere else must take a client or use `http::default_client()`.
 #[test]
-fn the_real_client_is_constructed_only_at_the_allowed_sites() {
+fn the_real_client_is_constructed_only_in_main() {
     let needle = ["UreqClient", "::new()"].concat();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
@@ -119,8 +118,7 @@ fn the_real_client_is_constructed_only_at_the_allowed_sites() {
         }
     }
     found.sort();
-    let expected: Vec<(String, usize)> =
-        vec![("main.rs".to_string(), 1), ("tile_cache.rs".to_string(), 1)];
+    let expected: Vec<(String, usize)> = vec![("main.rs".to_string(), 1)];
     assert_eq!(
         found, expected,
         "construct the client once in `fn main` and pass it down"

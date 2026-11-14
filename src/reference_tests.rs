@@ -39,7 +39,10 @@ fn a_reference_layer_is_inert_for_editing(cx: &mut TestAppContext) {
 }
 
 fn has_unsaved_changes_in(view: &MapViewer) -> bool {
-    view.layer_manager.layers().iter().any(|l| l.is_modified())
+    view.layer_manager
+        .layers()
+        .iter()
+        .any(|l| l.as_osm().is_some_and(|o| o.is_modified()))
 }
 
 #[gpui::test]

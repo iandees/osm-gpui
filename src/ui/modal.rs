@@ -77,7 +77,7 @@ pub fn ensure_modal_focus(open: &[OpenModal], window: &mut Window, cx: &mut App)
 ///
 /// This is the `div().track_focus(...).on_key_down(...).absolute().inset_0()
 /// .occlude().bg(scrim_color()).flex().justify_center().items_center()`
-/// pattern previously duplicated in every dialog's `render`.
+/// pattern shared by every dialog's `render`.
 pub fn scrim(
     focus_handle: &FocusHandle,
     on_key_down: impl Fn(&KeyDownEvent, &mut Window, &mut App) + 'static,

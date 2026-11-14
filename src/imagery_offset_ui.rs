@@ -83,7 +83,7 @@ impl MapViewer {
             .layers()
             .iter()
             .rev()
-            .find(|layer| layer.is_visible() && layer.imagery_offset().is_some())
+            .find(|layer| layer.is_visible() && layer.as_imagery().is_some())
             .map(|layer| layer.id())
     }
 
@@ -94,12 +94,19 @@ impl MapViewer {
             return Some(adjust.session.current());
         }
         let id = self.topmost_imagery_layer()?;
-        self.layer_manager.find_layer(id)?.imagery_offset()
+        Some(
+            self.layer_manager
+                .find_layer(id)?
+                .as_imagery()?
+                .imagery_offset(),
+        )
     }
 
     fn set_layer_offset(&mut self, layer: LayerId, offset: ImageryOffset) {
         if let Some(layer) = self.layer_manager.find_layer_mut(layer) {
-            layer.set_imagery_offset(offset);
+            if let Some(imagery) = layer.as_imagery_mut() {
+                imagery.set_imagery_offset(offset);
+            }
         }
     }
 
@@ -121,7 +128,7 @@ impl MapViewer {
         let Some(id) = self
             .layer_manager
             .find_layer(layer)
-            .and_then(|l| l.imagery_id().map(str::to_string))
+            .and_then(|l| l.as_imagery().map(|i| i.imagery_id().to_string()))
         else {
             return;
         };
@@ -139,7 +146,7 @@ impl MapViewer {
         let Some(entry) = self
             .layer_manager
             .find_layer(layer)
-            .and_then(|l| l.imagery_offset())
+            .and_then(|l| l.as_imagery().map(|i| i.imagery_offset()))
         else {
             return;
         };
@@ -244,7 +251,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .get(action.index)
-            .filter(|l| l.imagery_offset().is_some())
+            .filter(|l| l.as_imagery().is_some())
             .map(|l| l.id());
         if let Some(layer) = layer {
             self.begin_offset_adjust(layer, window, cx);
@@ -292,7 +299,7 @@ impl MapViewer {
             .layer_manager
             .layers()
             .get(action.index)
-            .filter(|l| l.imagery_offset().is_some())
+            .filter(|l| l.as_imagery().is_some())
             .map(|l| l.id());
         if let Some(layer) = layer {
             self.reset_layer_offset(layer, cx);
@@ -634,8 +641,9 @@ mod tests {
         view.layer_manager
             .find_layer(id)
             .unwrap()
-            .imagery_offset()
+            .as_imagery()
             .unwrap()
+            .imagery_offset()
     }
 
     #[gpui::test]

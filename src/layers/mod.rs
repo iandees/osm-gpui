@@ -3,6 +3,9 @@ use std::collections::HashSet;
 
 use crate::viewport::Viewport;
 
+use osm_layer::OsmLayer;
+use reference_layer::ReferenceLayer;
+
 pub mod area_labels;
 pub mod diff;
 pub mod grid_layer;
@@ -52,29 +55,17 @@ const DOWNLOAD_HALO_WIDTH: f32 = 5.0;
 pub struct LayerId(pub u64);
 
 /// Trait that all map layers must implement: the universal surface (name,
-/// identity, visibility, rendering, stats, attribution). Vector-editing
-/// operations (hit-testing, tags, node moves, create/delete...) live on
-/// `EditableLayer` instead, reached via `as_editable`/`as_editable_mut` —
-/// see that trait's doc comment.
+/// identity, visibility, rendering, stats). What only one kind of layer has
+/// is reached through a typed accessor that is `None` everywhere else:
+/// `as_osm` (the data layer), `as_imagery` (tile imagery), `as_reference`
+/// (GPX/GeoJSON traces) and `as_editable` (the vector-editing surface; see
+/// `EditableLayer`). A new layer type decides which of these it answers.
 pub trait MapLayer: Send + Sync {
     /// Get the name of this layer for debugging/UI purposes
     fn name(&self) -> &str;
 
     /// This layer's stable identity. See `LayerId`.
     fn id(&self) -> LayerId;
-
-    /// Downcast support for callers that need `OsmLayer`-specific methods
-    /// not otherwise part of this trait or `EditableLayer` (e.g. Extrude
-    /// mode's segment hit-testing). For a simple "does this layer support
-    /// editing at all" check, prefer `as_editable`/`as_editable_mut`
-    /// instead — `is_some()` there already answers that without a downcast.
-    fn as_any(&self) -> &dyn std::any::Any;
-
-    /// `as_any` for changing a layer's own settings (a reference layer's
-    /// trace style). `None` for layers that offer nothing to change.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        None
-    }
 
     /// Check if this layer is currently visible
     fn is_visible(&self) -> bool;
@@ -96,125 +87,39 @@ pub trait MapLayer: Send + Sync {
     /// Render this layer using canvas drawing (for vector content)
     fn render_canvas(&self, viewport: &Viewport, bounds: Bounds<Pixels>, window: &mut Window);
 
-    /// Paint labels and POI icons above everything `render_canvas` and the
-    /// highlights drew. `selected` and `hovered` keep their labels even
-    /// when collision would drop them. Default: nothing.
-    #[allow(clippy::too_many_arguments)]
-    fn render_labels(
-        &self,
-        _viewport: &Viewport,
-        _bounds: Bounds<Pixels>,
-        _selected: &[crate::selection::FeatureRef],
-        _hovered: Option<&crate::selection::FeatureRef>,
-        _window: &mut Window,
-        _cx: &App,
-    ) {
-    }
-
-    /// The rectangles (Web Mercator meters) this layer's data was downloaded
-    /// for; empty when that is not known. See `render_all_download_bounds`.
-    fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
-        &[]
-    }
-
-    /// Update this layer (called on each frame)
-    fn update(&mut self) {}
-
-    /// Get layer statistics for debugging
+    /// Get layer statistics for display. Code that needs a number reads it
+    /// from the typed accessor instead of parsing these strings.
     fn stats(&self) -> Vec<(String, String)> {
         vec![]
     }
 
-    /// Whether this layer has uncommitted-to-disk edits (e.g. moved nodes).
-    /// Default: `false`. Kept on `MapLayer` (rather than gated behind
-    /// `as_editable`) since it's queried uniformly across every layer, both
-    /// for the quit-confirmation check and the per-layer "modified" dot in
-    /// the side panel — routing it through `as_editable` would just push an
-    /// `unwrap_or(false)` onto every call site for no benefit.
-    fn is_modified(&self) -> bool {
-        false
-    }
-
-    /// Re-derive `is_modified` from the layer's actual difference to its
-    /// server baseline. Edits (and the undo of one) set the flag without
-    /// looking at the diff, so after an undo back to the baseline this is
-    /// what clears it. Default: no-op.
-    fn refresh_modified(&mut self) {}
-
-    /// Required source-credit (text and optional link) for this layer's
-    /// content, if any (e.g. "© OpenStreetMap contributors"). Default:
-    /// `None`. Layers that render tiles from a source requiring attribution
-    /// should override this.
-    fn attribution(&self) -> Option<&crate::imagery::AttributionInfo> {
+    /// This layer as the OSM data layer, if it is one.
+    fn as_osm(&self) -> Option<&OsmLayer> {
         None
     }
 
-    /// The imagery shift of a tile layer (`None` for every other kind of
-    /// layer). Only where imagery pixels are painted moves; see
-    /// `imagery_offset`.
-    fn imagery_offset(&self) -> Option<crate::imagery_offset::ImageryOffset> {
+    /// Mutable counterpart to `as_osm`.
+    fn as_osm_mut(&mut self) -> Option<&mut OsmLayer> {
         None
     }
 
-    /// Set the imagery shift; ignored by layers that are not imagery.
-    fn set_imagery_offset(&mut self, _offset: crate::imagery_offset::ImageryOffset) {}
-
-    /// Stable identity of the imagery source (ELI id, `osm-carto`, or
-    /// `custom:<url template>`), the key under which offsets are remembered.
-    fn imagery_id(&self) -> Option<&str> {
+    /// This layer as tile imagery, if it is.
+    fn as_imagery(&self) -> Option<&dyn ImageryLayer> {
         None
     }
 
-    /// Compute the set of created/modified/deleted nodes/ways needed to
-    /// bring the server up to date with this layer's current data, relative
-    /// to whatever snapshot it was last loaded/synced from. Default: an
-    /// empty diff (nothing to upload). Only `OsmLayer` overrides this.
-    ///
-    /// Kept on `MapLayer` (like `is_modified`) rather than gated behind
-    /// `as_editable`: callers iterate every layer uniformly to build an
-    /// upload summary without first checking which ones are editable.
-    fn diff_for_upload(&self) -> crate::layers::diff::LayerDiff {
-        crate::layers::diff::LayerDiff::default()
-    }
-
-    /// Apply a successful changeset upload's result (server-assigned ids/
-    /// versions) back into this layer's data, then mark it clean. Default:
-    /// no-op. Only `OsmLayer` overrides this.
-    fn apply_upload_result(&mut self, _result: &crate::osm_upload::UploadResult) {}
-
-    /// Apply one accepted chunk of a multi-changeset upload (see
-    /// `OsmLayer::apply_chunk_result`): the layer keeps whatever has not been
-    /// uploaded yet as pending. Default: no-op.
-    fn apply_chunk_result(
-        &mut self,
-        _result: &crate::osm_upload::UploadResult,
-        _chunk: &crate::layers::diff::LayerDiff,
-    ) {
-    }
-
-    /// This layer's data as a JOSM-style `.osm` document, including pending
-    /// local edits, or `None` if it has nothing to export. Default: `None`.
-    /// Only `OsmLayer` overrides this.
-    fn export_xml(&self) -> Option<String> {
+    /// Mutable counterpart to `as_imagery`.
+    fn as_imagery_mut(&mut self) -> Option<&mut dyn ImageryLayer> {
         None
     }
 
-    /// A counter that changes whenever the layer's data or baseline does
-    /// (see `OsmLayer`); the autosave uses it to skip layers that have not
-    /// changed since they were last written. Default: always 0.
-    fn edit_revision(&self) -> u64 {
-        0
+    /// This layer as a reference (GPX/GeoJSON) layer, if it is one.
+    fn as_reference(&self) -> Option<&ReferenceLayer> {
+        None
     }
 
-    /// The layer's current data and its server baseline, shared (not copied)
-    /// so a background thread can serialize them; see
-    /// `OsmLayer::autosave_snapshot`. Default: `None`.
-    fn autosave_snapshot(
-        &self,
-    ) -> Option<(
-        std::sync::Arc<crate::osm::OsmData>,
-        std::sync::Arc<crate::osm::OsmData>,
-    )> {
+    /// Mutable counterpart to `as_reference`.
+    fn as_reference_mut(&mut self) -> Option<&mut ReferenceLayer> {
         None
     }
 
@@ -229,10 +134,36 @@ pub trait MapLayer: Send + Sync {
     fn as_editable_mut(&mut self) -> Option<&mut dyn EditableLayer> {
         None
     }
+}
 
-    /// Restyle the layer with `stylesheet` (the user changed their MapCSS
-    /// style). Default: ignored, for layers that aren't styled by MapCSS.
-    fn set_stylesheet(&mut self, _stylesheet: std::sync::Arc<crate::style::Stylesheet>) {}
+/// What tile imagery has that other layers do not.
+pub trait ImageryLayer {
+    /// Required source-credit (text and optional link) for this layer's
+    /// content, if any (e.g. "© OpenStreetMap contributors").
+    fn attribution(&self) -> Option<&crate::imagery::AttributionInfo>;
+
+    /// The imagery shift. Only where imagery pixels are painted moves; see
+    /// `imagery_offset`.
+    fn imagery_offset(&self) -> crate::imagery_offset::ImageryOffset;
+
+    /// Set the imagery shift.
+    fn set_imagery_offset(&mut self, offset: crate::imagery_offset::ImageryOffset);
+
+    /// Stable identity of the imagery source (ELI id, `osm-carto`, or
+    /// `custom:<url template>`), the key under which offsets are remembered.
+    fn imagery_id(&self) -> &str;
+
+    /// How many tile files the layer's cache holds (0 while the cache is busy).
+    fn cached_file_count(&self) -> usize;
+}
+
+/// The numbers the status line shows, read from the layers' typed accessors.
+/// With several layers of a kind the last one wins.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LayerStats {
+    pub cached_files: usize,
+    pub osm_nodes: usize,
+    pub osm_ways: usize,
 }
 
 /// Why a feature is being highlighted, which picks the overlay's colors.
@@ -247,6 +178,70 @@ pub enum HighlightKind {
     Member,
 }
 
+/// Why an edit primitive of an `EditableLayer` refused; the layer is left
+/// unchanged. Callers turn it into their own user-facing message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditError {
+    /// The layer holds no data.
+    NoData,
+    UnknownNode(i64),
+    UnknownWay(i64),
+    UnknownRelation(i64),
+    /// A node cannot be removed while a way still lists it.
+    NodeInWay(i64),
+    /// A relation cannot be deleted while another has it as a member.
+    RelationInUse(i64),
+    /// An object with this id exists already.
+    IdInUse(crate::selection::FeatureKind, i64),
+    /// A position past the end of a way's node list.
+    IndexOutOfRange {
+        way_id: i64,
+        index: usize,
+        len: usize,
+    },
+    /// The operation covers nodes and ways only.
+    NotNodeOrWay(crate::selection::FeatureKind),
+    /// A node snapshot without coordinates.
+    MissingCoordinates(i64),
+}
+
+impl EditError {
+    /// The unknown-object error for `kind`.
+    pub fn unknown(kind: crate::selection::FeatureKind, id: i64) -> Self {
+        use crate::selection::FeatureKind;
+        match kind {
+            FeatureKind::Node => EditError::UnknownNode(id),
+            FeatureKind::Way => EditError::UnknownWay(id),
+            FeatureKind::Relation => EditError::UnknownRelation(id),
+        }
+    }
+}
+
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditError::NoData => write!(f, "the layer has no data"),
+            EditError::UnknownNode(id) => write!(f, "no node {id}"),
+            EditError::UnknownWay(id) => write!(f, "no way {id}"),
+            EditError::UnknownRelation(id) => write!(f, "no relation {id}"),
+            EditError::NodeInWay(id) => write!(f, "node {id} is still part of a way"),
+            EditError::RelationInUse(id) => {
+                write!(f, "relation {id} is still a member of another relation")
+            }
+            EditError::IdInUse(kind, id) => write!(f, "{kind:?} {id} already exists"),
+            EditError::IndexOutOfRange { way_id, index, len } => {
+                write!(
+                    f,
+                    "index {index} is past the end of way {way_id} ({len} nodes)"
+                )
+            }
+            EditError::NotNodeOrWay(kind) => write!(f, "{kind:?} is not a node or way"),
+            EditError::MissingCoordinates(id) => write!(f, "node {id} has no coordinates"),
+        }
+    }
+}
+
+impl std::error::Error for EditError {}
 /// The vector-editing surface a layer may support: hit-testing, selection
 /// highlight, tag read/write, node moves, and create/delete. Reached from a
 /// `&dyn MapLayer`/`&mut dyn MapLayer` via `as_editable`/`as_editable_mut`.
@@ -408,73 +403,85 @@ pub trait EditableLayer {
     /// The member node ids of a way this layer owns, if any.
     fn way_node_ids(&self, way_id: i64) -> Option<Vec<i64>>;
 
-    /// Commit a set of `(node_id, new_lat, new_lon)` moves into this layer's
-    /// data, rebuilding derived caches once.
-    fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]);
+    // -- Edit primitives. Each changes the data and every derived cache
+    // together and marks the layer modified. A refusal returns `Err` having
+    // changed nothing. --
 
-    /// Set (insert or overwrite) a single tag on a feature this layer owns.
-    fn set_tag(&mut self, kind: crate::selection::FeatureKind, id: i64, key: &str, value: &str);
+    /// Move nodes: `(node_id, new_lat, new_lon)`. Moves none if any id is
+    /// unknown. Caches are patched for the moved nodes and their ways only.
+    fn commit_node_moves(&mut self, moves: &[(i64, f64, f64)]) -> Result<(), EditError>;
 
-    /// Remove a single tag key from a feature this layer owns.
-    fn remove_tag(&mut self, kind: crate::selection::FeatureKind, id: i64, key: &str);
+    /// Set (insert or overwrite) a tag on a node, way or relation.
+    fn set_tag(
+        &mut self,
+        kind: crate::selection::FeatureKind,
+        id: i64,
+        key: &str,
+        value: &str,
+    ) -> Result<(), EditError>;
 
-    /// Create a new, tag-less node at `(lat, lon)` and return its id.
-    /// `id`, when given, forces the new node to use exactly that id
-    /// (fails/returns `None` if a feature with that id already exists) —
-    /// used by redo, so a recreated node reuses its original id rather than
-    /// allocating a fresh one. When `id` is `None`, the layer allocates a
-    /// fresh negative (not-yet-uploaded) id.
-    fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Option<i64>;
+    /// Remove a tag key from a node, way or relation.
+    fn remove_tag(
+        &mut self,
+        kind: crate::selection::FeatureKind,
+        id: i64,
+        key: &str,
+    ) -> Result<(), EditError>;
 
-    /// Delete a node or way this layer owns, returning a snapshot with
-    /// enough information to restore it later (see
-    /// `crate::selection::DeletedFeatureSnapshot`). `None` if nothing was
-    /// deleted (feature not found, or — for a node — refused because it's
-    /// still referenced by a way; see `OsmLayer::delete_feature`'s doc
-    /// comment for that limitation).
+    /// Create a tag-less node at `(lat, lon)` and return its id: a fresh
+    /// negative one when `id` is `None`, else exactly `id` (redo), which must
+    /// be unused.
+    fn create_node(&mut self, lat: f64, lon: f64, id: Option<i64>) -> Result<i64, EditError>;
+
+    /// `create_node` with a fresh id, which cannot fail.
+    fn add_node(&mut self, lat: f64, lon: f64) -> i64;
+
+    /// Delete a node or way, returning what `restore_feature` needs. A node
+    /// still in a way is refused (delete or edit the way first); a way's
+    /// nodes stay. Relations have their own `delete_relation`.
     fn delete_feature(
         &mut self,
         kind: crate::selection::FeatureKind,
         id: i64,
-    ) -> Option<crate::selection::DeletedFeatureSnapshot>;
+    ) -> Result<crate::selection::DeletedFeatureSnapshot, EditError>;
 
-    /// Re-insert a feature previously removed by `delete_feature`, using
-    /// exactly the id/tags/geometry captured in `snapshot`.
-    fn restore_feature(&mut self, snapshot: crate::selection::DeletedFeatureSnapshot);
+    /// Put a deleted node or way back with the snapshot's id, tags and
+    /// geometry; its id must be unused.
+    fn restore_feature(
+        &mut self,
+        snapshot: crate::selection::DeletedFeatureSnapshot,
+    ) -> Result<(), EditError>;
 
-    /// Insert a brand-new node at `(lat, lon)` and return its id.
-    fn add_node(&mut self, lat: f64, lon: f64) -> i64;
-
-    /// Insert a brand-new way referencing existing node ids, with the given
-    /// tags, and return its id.
+    /// Add a way over existing nodes with a fresh negative id and return it.
     fn add_way(&mut self, node_ids: Vec<i64>, tags: Vec<(String, String)>) -> i64;
 
-    /// Append a node id to an existing way.
-    fn extend_way(&mut self, way_id: i64, node_id: i64);
+    /// Append a node id to a way.
+    fn extend_way(&mut self, way_id: i64, node_id: i64) -> Result<(), EditError>;
 
-    /// Create a new node and splice it into an existing way at `index`,
-    /// returning the new node's id.
-    fn insert_node_into_way(&mut self, way_id: i64, index: usize, lat: f64, lon: f64) -> i64;
+    /// Create a node and splice it into a way at `index` (`0..=len`), returning
+    /// its id. Creates nothing if the way or index is bad.
+    fn insert_node_into_way(
+        &mut self,
+        way_id: i64,
+        index: usize,
+        lat: f64,
+        lon: f64,
+    ) -> Result<i64, EditError>;
 
-    /// Remove a node this layer owns (must not still be referenced by any
-    /// way).
-    fn remove_node(&mut self, node_id: i64);
+    /// Remove a node that no way uses (undo of a create).
+    fn remove_node(&mut self, node_id: i64) -> Result<(), EditError>;
 
-    /// Remove a way this layer owns (its member nodes are untouched).
-    fn remove_way(&mut self, way_id: i64);
+    /// Remove a way; its nodes stay.
+    fn remove_way(&mut self, way_id: i64) -> Result<(), EditError>;
 
-    /// Inverse of `insert_node_into_way`: remove the node at `index` from a
-    /// way's node list without deleting the node.
-    fn remove_node_from_way(&mut self, way_id: i64, index: usize);
+    /// Take the node at `index` out of a way's node list; the node stays.
+    fn remove_node_from_way(&mut self, way_id: i64, index: usize) -> Result<(), EditError>;
 
-    /// Reverse a way's node order. Its own inverse (applying it twice
-    /// restores the original). Returns whether the way was found.
-    fn reverse_way(&mut self, way_id: i64) -> bool;
+    /// Reverse a way's node order (its own inverse).
+    fn reverse_way(&mut self, way_id: i64) -> Result<(), EditError>;
 
-    /// Replace a way's whole node list (the nodes must already exist).
-    /// Returns whether the way was found.
-    fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> bool;
-
+    /// Replace a way's node list. The nodes should already exist.
+    fn set_way_nodes(&mut self, way_id: i64, node_ids: Vec<i64>) -> Result<(), EditError>;
     /// The ids of the ways whose node list includes `node_id`.
     fn ways_using_node(&self, node_id: i64) -> Vec<i64>;
 
@@ -491,13 +498,12 @@ pub trait EditableLayer {
     /// The ids of every relation the layer has, in the order it stores them.
     fn relation_ids(&self) -> Vec<i64>;
 
-    /// Replace a relation's whole member list and return the previous one
-    /// (`None`, changing nothing, if the layer has no such relation).
+    /// Replace a relation's whole member list and return the previous one.
     fn set_relation_members(
         &mut self,
         relation_id: i64,
         members: Vec<crate::osm::OsmMember>,
-    ) -> Option<Vec<crate::osm::OsmMember>>;
+    ) -> Result<Vec<crate::osm::OsmMember>, EditError>;
 
     /// Copies of every relation in the layer.
     fn relations(&self) -> Vec<crate::osm::OsmRelation>;
@@ -506,25 +512,26 @@ pub trait EditableLayer {
     fn relations_containing_relation(&self, relation_id: i64) -> Vec<i64>;
 
     /// Create a relation with a fresh negative id (from the same pool new
-    /// nodes and ways draw from) and return it; `None` if the layer has no
-    /// data.
+    /// nodes and ways draw from) and return it. Member refs are not checked.
     fn create_relation(
         &mut self,
         tags: Vec<(String, String)>,
         members: Vec<crate::osm::OsmMember>,
-    ) -> Option<i64>;
+    ) -> Result<i64, EditError>;
 
     /// Delete a relation, returning a snapshot for `restore_relation`.
-    /// `None`, changing nothing, if there is no such relation or it is a
-    /// member of another relation (remove that membership first).
+    /// Refused while another relation has it as a member.
     fn delete_relation(
         &mut self,
         relation_id: i64,
-    ) -> Option<crate::selection::DeletedRelationSnapshot>;
+    ) -> Result<crate::selection::DeletedRelationSnapshot, EditError>;
 
     /// Put a deleted (or, for redo, created) relation back with its original
-    /// id, version, content and position. `false` if the id is taken.
-    fn restore_relation(&mut self, snapshot: crate::selection::DeletedRelationSnapshot) -> bool;
+    /// id, version, content and position; the id must be unused.
+    fn restore_relation(
+        &mut self,
+        snapshot: crate::selection::DeletedRelationSnapshot,
+    ) -> Result<(), EditError>;
 
     /// Whether the object has a pending local edit: it was created here, or
     /// differs from the server baseline. `false` for an unknown object.
@@ -544,6 +551,21 @@ pub trait EditableLayer {
 
     /// Undo of `purge_features`: put the objects back in data and baseline.
     fn restore_purged(&mut self, purged: crate::selection::PurgedFeatures);
+}
+
+/// Read the status-line numbers off `layers` through their typed accessors.
+pub fn compute_layer_stats(layers: &[Box<dyn MapLayer>]) -> LayerStats {
+    let mut stats = LayerStats::default();
+    for layer in layers {
+        if let Some(imagery) = layer.as_imagery() {
+            stats.cached_files = imagery.cached_file_count();
+        }
+        if let Some((nodes, ways)) = layer.as_osm().and_then(|osm| osm.feature_counts()) {
+            stats.osm_nodes = nodes;
+            stats.osm_ways = ways;
+        }
+    }
+    stats
 }
 
 /// Manager for all map layers
@@ -589,11 +611,11 @@ impl LayerManager {
         let above_imagery = self
             .layers
             .iter()
-            .rposition(|l| l.imagery_offset().is_some())
+            .rposition(|l| l.as_imagery().is_some())
             .map_or(0, |i| i + 1);
         let at = self.layers[above_imagery..]
             .iter()
-            .position(|l| l.as_editable().is_some())
+            .position(|l| l.as_osm().is_some())
             .map_or(self.layers.len(), |i| i + above_imagery);
         self.layers.insert(at, layer);
     }
@@ -692,7 +714,7 @@ impl LayerManager {
         let mut elements = Vec::new();
 
         for layer in &self.layers {
-            if layer.is_visible() && (show_imagery || layer.imagery_id().is_none()) {
+            if layer.is_visible() && (show_imagery || layer.as_imagery().is_none()) {
                 elements.extend(layer.render_elements(viewport, window, cx));
             }
         }
@@ -717,7 +739,8 @@ impl LayerManager {
             .layers
             .iter()
             .filter(|layer| layer.is_visible())
-            .flat_map(|layer| layer.download_rects().iter().copied())
+            .filter_map(|layer| layer.as_osm())
+            .flat_map(|osm| osm.download_rects().iter().copied())
             .collect();
         if rects.is_empty() {
             return;
@@ -831,16 +854,16 @@ impl LayerManager {
     ) {
         for layer in &self.layers {
             if layer.is_visible() {
-                layer.render_labels(viewport, bounds, selected, hovered, window, cx);
+                if let Some(osm) = layer.as_osm() {
+                    osm.render_labels(viewport, bounds, selected, hovered, window, cx);
+                }
             }
         }
     }
 
-    /// Update all layers
-    pub fn update_all(&mut self) {
-        for layer in &mut self.layers {
-            layer.update();
-        }
+    /// The status-line numbers; see `compute_layer_stats`.
+    pub fn layer_stats(&self) -> LayerStats {
+        compute_layer_stats(&self.layers)
     }
 
     /// Get statistics from all layers
@@ -1216,5 +1239,155 @@ mod tests {
 
         let hit = manager.hit_test_selection(&viewport, point(px(400.0), px(300.0)), &selected);
         assert_eq!(hit, None);
+    }
+
+    fn gpx_layer(id: LayerId) -> crate::layers::reference_layer::ReferenceLayer {
+        use crate::reference::{Builder, FeatureKind, Format};
+        let mut b = Builder::new(Format::Gpx);
+        let f = b.feature(FeatureKind::Track, "", None, vec![]);
+        b.line(f, &[(-74.0, 40.0), (-73.999, 40.001)]).unwrap();
+        crate::layers::reference_layer::ReferenceLayer::new(id, "ref", b.finish().unwrap())
+    }
+
+    /// One layer of each type, in a fixed order, for tests that pin down what
+    /// each type answers. The tile layer needs an executor, hence the context.
+    fn one_of_each(cx: &mut gpui::TestAppContext) -> Vec<(&'static str, Box<dyn MapLayer>)> {
+        use crate::layers::grid_layer::GridLayer;
+        use crate::layers::notes_layer::NotesLayer;
+        use crate::layers::osm_layer::OsmLayer;
+        use crate::layers::street_imagery_layer::StreetImageryLayer;
+        use crate::layers::tile_layer::TileLayer;
+        use std::sync::{Arc, Mutex};
+
+        let cache = Arc::new(Mutex::new(crate::tile_cache::TileCache::new(
+            cx.executor(),
+            crate::idle_tracker::IdleTracker::new(),
+        )));
+        vec![
+            ("tile", Box::new(TileLayer::new(LayerId(1), cache))),
+            ("osm", Box::new(OsmLayer::new(LayerId(2)))),
+            ("grid", Box::new(GridLayer::new(LayerId(3)))),
+            (
+                "notes",
+                Box::new(NotesLayer::new(
+                    LayerId(4),
+                    "notes".into(),
+                    crate::notes::NoteStore::default(),
+                )),
+            ),
+            ("reference", Box::new(gpx_layer(LayerId(5)))),
+            (
+                "street imagery",
+                Box::new(StreetImageryLayer::new(
+                    LayerId(6),
+                    "street".into(),
+                    crate::street_imagery::Provider::Fotoshi,
+                    crate::street_imagery::PhotoStore::default(),
+                )),
+            ),
+        ]
+    }
+
+    #[gpui::test]
+    fn each_layer_type_answers_exactly_its_own_accessors(cx: &mut gpui::TestAppContext) {
+        // (osm, imagery, reference, editable) per type. A new layer type has
+        // to be added to `one_of_each` and to this table.
+        let expected = [
+            ("tile", (false, true, false, false)),
+            ("osm", (true, false, false, true)),
+            ("grid", (false, false, false, false)),
+            ("notes", (false, false, false, false)),
+            ("reference", (false, false, true, false)),
+            ("street imagery", (false, false, false, false)),
+        ];
+        let mut layers = one_of_each(cx);
+        assert_eq!(layers.len(), expected.len());
+        for ((kind, layer), (want_kind, want)) in layers.iter_mut().zip(expected) {
+            assert_eq!(*kind, want_kind);
+            let got = (
+                layer.as_osm().is_some(),
+                layer.as_imagery().is_some(),
+                layer.as_reference().is_some(),
+                layer.as_editable().is_some(),
+            );
+            assert_eq!(got, want, "{kind}");
+            let got_mut = (
+                layer.as_osm_mut().is_some(),
+                layer.as_imagery_mut().is_some(),
+                layer.as_reference_mut().is_some(),
+                layer.as_editable_mut().is_some(),
+            );
+            assert_eq!(got_mut, want, "{kind} (mut)");
+        }
+    }
+
+    #[gpui::test]
+    fn add_reference_layer_goes_above_imagery_and_below_the_first_data_layer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut by_kind: std::collections::HashMap<&str, Box<dyn MapLayer>> =
+            one_of_each(cx).into_iter().collect();
+        let mut m = LayerManager::new();
+        m.add_layer(by_kind.remove("tile").unwrap());
+        m.add_layer(by_kind.remove("grid").unwrap());
+        m.add_layer(by_kind.remove("osm").unwrap());
+        m.add_reference_layer(by_kind.remove("reference").unwrap());
+        let ids: Vec<u64> = m.layers().iter().map(|l| l.id().0).collect();
+        assert_eq!(ids, [1, 3, 5, 2]);
+    }
+
+    #[test]
+    fn add_reference_layer_with_no_imagery_goes_below_the_first_data_layer() {
+        let mut m = manager_with(&["a", "b"]);
+        let id = m.alloc_id();
+        m.add_reference_layer(Box::new(gpx_layer(id)));
+        let names: Vec<&str> = m.layers().iter().map(|l| l.name()).collect();
+        assert_eq!(names, ["ref", "a", "b"]);
+    }
+
+    #[test]
+    fn layer_stats_take_the_last_layer_of_each_kind() {
+        let mut m = manager_with(&["a", "b"]);
+        assert_eq!(m.layer_stats(), LayerStats::default());
+
+        let id = m.alloc_id();
+        let mut data = crate::osm::OsmData {
+            nodes: std::collections::HashMap::new(),
+            ways: std::collections::HashMap::new(),
+            relations: Vec::new(),
+            bounds: Vec::new(),
+        };
+        for n in 1..=3 {
+            data.nodes.insert(
+                n,
+                crate::osm::OsmNode {
+                    id: n,
+                    lat: 0.0,
+                    lon: 0.0,
+                    version: 1,
+                    tags: Default::default(),
+                },
+            );
+        }
+        let layer =
+            crate::layers::osm_layer::OsmLayer::new_with_data(id, "c", std::sync::Arc::new(data));
+        m.add_layer(Box::new(layer));
+        assert_eq!(
+            m.layer_stats(),
+            LayerStats {
+                cached_files: 0,
+                osm_nodes: 3,
+                osm_ways: 0
+            }
+        );
+    }
+
+    #[test]
+    fn an_osm_layer_without_data_has_no_feature_counts() {
+        let layer = crate::layers::osm_layer::OsmLayer::new(LayerId(1));
+        assert_eq!(layer.feature_counts(), None);
+        let mut m = LayerManager::new();
+        m.add_layer(Box::new(layer));
+        assert_eq!(m.layer_stats(), LayerStats::default());
     }
 }

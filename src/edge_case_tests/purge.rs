@@ -149,7 +149,9 @@ fn a_relation_with_an_edited_member_list_is_refused(cx: &mut TestAppContext) {
         .done();
     with_session(cx, data, |s| {
         s.select(&[(R, 900)]);
-        s.editable_mut().set_relation_members(900, Vec::new());
+        s.editable_mut()
+            .set_relation_members(900, Vec::new())
+            .unwrap();
         assert!(!s.act("purge"));
         assert!(s.status().contains("900"), "{}", s.status());
         assert!(s.editable().relation(900).is_some());

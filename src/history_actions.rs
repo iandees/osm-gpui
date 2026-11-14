@@ -311,18 +311,9 @@ impl MapViewer {
             cx.notify();
             return;
         }
-        for (feature, key, _before, after) in &entries {
-            let Some(editable) = self
-                .layer_manager
-                .find_layer_mut(feature.layer_id)
-                .and_then(|layer| layer.as_editable_mut())
-            else {
-                continue;
-            };
-            match after {
-                Some(value) => editable.set_tag(feature.kind, feature.id, key, value),
-                None => editable.remove_tag(feature.kind, feature.id, key),
-            }
+        let entries = crate::undo::write_tag_entries(&mut self.layer_manager, entries);
+        if entries.is_empty() {
+            return;
         }
         self.undo_stack.push(UndoableAction::SetTags { entries });
         self.set_status(tr!("object_history.reverted", version = version));
@@ -538,7 +529,8 @@ mod tests {
                     .unwrap()
                     .as_editable_mut()
                     .unwrap()
-                    .set_tag(FeatureKind::Way, 3001, "lit", "yes");
+                    .set_tag(FeatureKind::Way, 3001, "lit", "yes")
+                    .unwrap();
                 view.sync_history_local(cx);
                 assert!(shown.read(cx).has_local_row());
                 // The header still describes the downloaded version.

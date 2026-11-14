@@ -824,8 +824,6 @@ mod tests {
         assert!(roles_of(&r, MemberType::Way, 2).is_empty());
     }
 
-    // -- split --
-
     #[test]
     fn split_without_a_membership_changes_nothing() {
         let r = relation("route", vec![way(10, ""), way(30, "")]);
@@ -1016,8 +1014,6 @@ mod tests {
         );
     }
 
-    // -- merge nodes --
-
     #[test]
     fn merge_replaces_removed_nodes_and_keeps_the_role() {
         let members = vec![way(1, ""), node(5, "stop"), node(6, "stop_entry_only")];
@@ -1053,8 +1049,6 @@ mod tests {
         let m = merge_node_members(&members, &[5], 4).unwrap();
         assert_eq!(m.len(), 3);
     }
-
-    // -- join ways --
 
     #[test]
     fn join_drops_a_removed_way_when_the_survivor_has_the_same_role() {
@@ -1110,8 +1104,6 @@ mod tests {
         let r = restriction(vec![way(1, "from")]);
         assert_eq!(join_members(&r, 1, &[2]), Ok(None));
     }
-
-    // -- delete --
 
     #[test]
     fn delete_drops_every_membership_of_the_feature() {
@@ -1182,8 +1174,6 @@ mod tests {
         .message("node", 5);
         assert!(msg.contains("via") && msg.contains("900"), "{msg}");
     }
-
-    // -- editing the member list --
 
     fn roles(members: &[OsmMember]) -> Vec<(i64, &str)> {
         refs(members)
@@ -1348,8 +1338,6 @@ mod tests {
             "Relation 9 (not downloaded)"
         );
     }
-
-    // -- members as map features --
 
     fn rel(id: i64, members: Vec<OsmMember>) -> OsmRelation {
         OsmRelation {

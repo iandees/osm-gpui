@@ -215,6 +215,7 @@ fn lat_to_y(lat: f64, zoom: u32) -> f64 {
     (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / PI) / 2.0 * 2.0_f64.powi(zoom as i32)
 }
 
+#[cfg(test)]
 fn lat_lon_to_tile(lat: f64, lon: f64, zoom: u32) -> TileCoord {
     let lat_rad = lat.to_radians();
     let n = 2.0_f64.powi(zoom as i32);
@@ -223,22 +224,6 @@ fn lat_lon_to_tile(lat: f64, lon: f64, zoom: u32) -> TileCoord {
     let y = ((1.0 - lat_rad.tan().asinh() / PI) / 2.0 * n).floor() as u32;
 
     TileCoord::new(x, y, zoom)
-}
-
-/// The tiles under `b` at `zoom` without clamping to the grid on the upper
-/// side (a box past the antimeridian or the pole yields tiles that do not
-/// exist; the lower side saturates at 0). The status bar's visible-tile count
-/// has always been computed this way; use `tiles_covering_geo` to fetch tiles.
-/// Listed column by column.
-pub fn tiles_covering_geo_unclamped(b: &GeoBounds, zoom: u32) -> Vec<TileCoord> {
-    let min_tile = lat_lon_to_tile(b.max_lat, b.min_lon, zoom);
-    let max_tile = lat_lon_to_tile(b.min_lat, b.max_lon, zoom);
-    TileBlock {
-        zoom,
-        x: (min_tile.x, max_tile.x),
-        y: (min_tile.y, max_tile.y),
-    }
-    .columns_first()
 }
 
 #[cfg(test)]
@@ -335,25 +320,20 @@ mod tests {
     }
 
     #[test]
-    fn test_unclamped_coverage() {
-        let tiles = tiles_covering_geo_unclamped(&GeoBounds::new(51.0, 52.0, -1.0, 0.0), 5);
-        assert!(!tiles.is_empty());
-        assert!(tiles.iter().all(|t| t.z == 5));
+    fn a_view_wider_than_the_world_counts_only_the_real_tiles() {
+        let world = GeoBounds::new(-90.0, 90.0, -200.0, 200.0);
+        let tiles = tiles_covering_geo(&world, 2);
+        assert_eq!(tiles.len(), 16);
+        assert!(tiles.iter().all(|t| t.x <= 3 && t.y <= 3 && t.z == 2));
     }
 
-    /// The status-bar tile count relies on the lower edge saturating at 0 but
-    /// the upper edge NOT being clamped to the grid, and on column order.
     #[test]
-    fn unclamped_coverage_overshoots_the_grid_on_the_upper_edge() {
-        let tiles = tiles_covering_geo_unclamped(&GeoBounds::new(-10.0, 10.0, -200.0, 200.0), 2);
-        assert_eq!(tiles.iter().map(|t| t.x).min(), Some(0));
-        assert_eq!(
-            tiles.iter().map(|t| t.x).max(),
-            Some(4),
-            "grid has 4 columns"
-        );
-        let first_column: Vec<u32> = tiles.iter().take_while(|t| t.x == 0).map(|t| t.y).collect();
-        assert_eq!(first_column, vec![1, 2]);
+    fn an_ordinary_view_covers_the_tiles_under_it() {
+        let tiles = tiles_covering_geo(&GeoBounds::new(51.0, 52.0, -1.0, 0.0), 5);
+        assert!(!tiles.is_empty());
+        assert!(tiles.iter().all(|t| t.z == 5));
+        let point = tiles_covering_geo(&GeoBounds::new(51.5, 51.5, -0.5, -0.5), 5);
+        assert_eq!(point, vec![lat_lon_to_tile(51.5, -0.5, 5)]);
     }
 
     #[test]

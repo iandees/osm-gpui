@@ -284,7 +284,6 @@ fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<GeoRin
         return (None, None);
     }
 
-    // Compute axis-aligned bbox across all rings.
     let mut min_lat = f64::INFINITY;
     let mut max_lat = f64::NEG_INFINITY;
     let mut min_lon = f64::INFINITY;

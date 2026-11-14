@@ -514,7 +514,6 @@ fn fetch_user_details_with(
     Ok((display_name, id))
 }
 
-// --- Token persistence. ---
 //
 // Secrets (access_token, refresh_token) live in the platform keyring, one entry per
 // OAuth base URL under the `osm-gpui` service. Non-secret bookkeeping (display name,
@@ -1404,8 +1403,6 @@ mod tests {
             .pending_keyring
             .contains("https://www.openstreetmap.org"));
     }
-
-    // --- Keychain seam tests: a fake backend stands in for the platform keyring. ---
 
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;

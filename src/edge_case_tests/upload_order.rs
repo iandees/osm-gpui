@@ -100,7 +100,8 @@ fn moving_a_node_and_deleting_its_way_uploads_both(cx: &mut TestAppContext) {
             .unwrap()
             .as_editable_mut()
             .unwrap()
-            .commit_node_moves(&[(2, 40.5, -74.5)]);
+            .commit_node_moves(&[(2, 40.5, -74.5)])
+            .unwrap();
         s.select(&[(W, 10)]);
         assert!(s.act("delete"));
         let d = s.diff();
@@ -160,7 +161,8 @@ fn modified_then_reverted_uploads_nothing(cx: &mut TestAppContext) {
             .unwrap()
             .as_editable_mut()
             .unwrap()
-            .remove_tag(W, 10, "name");
+            .remove_tag(W, 10, "name")
+            .unwrap();
         assert_eq!(s.counts(), (0, 0, 0));
         // Reverse twice is the same.
         s.select(&[(W, 10)]);

@@ -1,8 +1,6 @@
 //! iD tagging schema preset support: vendored preset/area-key data,
-//! geometry classification, and geometry-aware tag matching. Read-only
-//! (no editing UI) — mirrors the shape of `nsi.rs` but with vendored
-//! rather than runtime-fetched data. See
-//! `docs/superpowers/specs/2026-07-07-id-preset-labels-design.md`.
+//! geometry classification, and geometry-aware tag matching. Mirrors the
+//! shape of `nsi.rs` but with vendored rather than runtime-fetched data.
 
 use crate::osm::OsmData;
 use crate::preset_translations::{active, PresetTranslations};
@@ -250,7 +248,6 @@ impl PresetIndex {
         self.presets.is_empty()
     }
 
-    /// Every preset in the index.
     pub fn iter(&self) -> impl Iterator<Item = &Preset> {
         self.presets.iter()
     }

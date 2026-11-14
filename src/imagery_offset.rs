@@ -190,10 +190,6 @@ impl OffsetSession {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Remembered offsets
-// ---------------------------------------------------------------------------
-
 /// One remembered offset: for which imagery source, and the place it was made
 /// (view centre) since an offset is only right near there.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

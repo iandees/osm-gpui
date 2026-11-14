@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct OsmData {
     pub nodes: HashMap<i64, OsmNode>,
     pub ways: HashMap<i64, OsmWay>,

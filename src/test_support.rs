@@ -241,7 +241,7 @@ pub(crate) fn node_lat_lon(view: &MapViewer, layer: LayerId, id: i64) -> Option<
 /// (node count, way count) of the OSM layer `layer`.
 pub(crate) fn osm_counts(view: &MapViewer, layer: LayerId) -> (usize, usize) {
     let l = view.layer_manager.find_layer(layer).unwrap();
-    let osm = l.as_any().downcast_ref::<OsmLayer>().unwrap();
+    let osm = l.as_osm().unwrap();
     let data = osm.get_osm_data().unwrap();
     (data.nodes.len(), data.ways.len())
 }
@@ -380,6 +380,8 @@ impl Session<'_, '_> {
             .layer_manager
             .find_layer(self.layer)
             .unwrap()
+            .as_osm()
+            .unwrap()
             .diff_for_upload()
     }
     pub(crate) fn counts(&self) -> (usize, usize, usize) {
@@ -389,7 +391,7 @@ impl Session<'_, '_> {
         osm_gpui::osm_upload::build_osm_change_xml(1, &[("Net", self.diff())])
     }
     pub(crate) fn set_tag(&mut self, kind: FeatureKind, id: i64, k: &str, v: &str) {
-        self.editable_mut().set_tag(kind, id, k, v);
+        self.editable_mut().set_tag(kind, id, k, v).unwrap();
     }
     /// The one way that exists now but did not before (ids below zero).
     pub(crate) fn new_ways(&self) -> Vec<i64> {

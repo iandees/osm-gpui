@@ -2,8 +2,7 @@
 //! OAuth token bookkeeping) and other atomically-written cache files (tile
 //! cache, ELI imagery cache).
 //!
-//! Two pieces are factored out here because they were previously
-//! copy-pasted, slightly differently, in each call site:
+//! Two shared pieces:
 //!
 //! - [`write_atomic`]: write bytes to a file such that a concurrent reader,
 //!   or a crash mid-write, never observes a torn/truncated file.
@@ -54,7 +53,6 @@ pub fn set_policy(policy: Policy) {
     POLICY.store(v, Ordering::SeqCst);
 }
 
-/// The current process-wide policy.
 pub fn policy() -> Policy {
     match POLICY.load(Ordering::SeqCst) {
         1 => Policy::ReadOnly,
@@ -77,7 +75,6 @@ pub fn skipped_writes() -> usize {
     SKIPPED_WRITES.load(Ordering::SeqCst)
 }
 
-/// The directories that hold the user's real saved state.
 fn state_roots_from(config: Option<PathBuf>, data: Option<PathBuf>) -> Vec<PathBuf> {
     [config, data]
         .into_iter()
