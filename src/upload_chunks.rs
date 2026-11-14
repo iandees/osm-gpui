@@ -700,6 +700,36 @@ impl UploadDriver {
     }
 }
 
+/// What an upload-in-progress marker (`autosave::UploadMarker`) does once
+/// the driver has an answer for the request it was written for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerAfter {
+    /// The server certainly holds the chunk and the caller has applied it, or
+    /// certainly does not hold it: the marker may go once the layers' autosave
+    /// is on disk.
+    Release,
+    /// The server may hold the chunk; the layers still list it as pending. The
+    /// marker stays, with the changeset id if the failure knew it.
+    Keep { changeset_id: Option<u64> },
+}
+
+/// Decide the marker's fate from the driver's step. Only an answer that
+/// leaves the server's state unknown keeps it: a refusal (409/410/412 and
+/// the other definite 4xx, or 509), a failure before any request (no token,
+/// the changeset could not be opened) and an accepted chunk (applied by the
+/// caller before it releases) all leave nothing ambiguous.
+pub fn marker_after(step: &Step) -> MarkerAfter {
+    match step {
+        Step::Apply(_) => MarkerAfter::Release,
+        Step::Stop(stopped) => match &stopped.reason {
+            UploadStop::OutcomeUnknown(_) => MarkerAfter::Keep {
+                changeset_id: stopped.failure.as_ref().and_then(|f| f.changeset_id),
+            },
+            UploadStop::Refused(_) | UploadStop::Failed(_) => MarkerAfter::Release,
+        },
+    }
+}
+
 /// Perform one request: get a token, then send the chunk in a changeset of its
 /// own. Blocking; the app calls it on the background executor.
 pub fn send(
@@ -1551,6 +1581,81 @@ mod tests {
         assert!(driver.next_request().is_none());
         assert_eq!(client.request_count(), 0, "nothing was sent");
         assert_eq!(driver.partial(), Some((0, 2)));
+    }
+
+    /// What the marker of the second request does for each way it can end
+    /// (the first request is accepted and applied in every case).
+    fn marker_decision_for_second_request(
+        responses: Vec<Result<crate::http::HttpResponse, crate::http::HttpError>>,
+        token_ok: bool,
+    ) -> MarkerAfter {
+        let mut all = vec![
+            ok(200, "101"),
+            ok(200, diff_result(&[(-1, 5001), (-2, 5002)], &[])),
+            ok(200, ""),
+        ];
+        all.extend(responses);
+        let client = FakeClient::new(all);
+        let diff = node_way_diff();
+        let mut driver = UploadDriver::plan(&[&diff], 2, "c").unwrap();
+        let first = driver.next_request().unwrap();
+        let outcome = send(first, &client, BASE, &mut || Ok("t".into()), &mut |_, _| {});
+        let step = driver.record(outcome);
+        assert_eq!(marker_after(&step), MarkerAfter::Release, "accepted");
+        let second = driver.next_request().unwrap();
+        let outcome = send(
+            second,
+            &client,
+            BASE,
+            &mut || {
+                if token_ok {
+                    Ok("t".into())
+                } else {
+                    Err("no login".into())
+                }
+            },
+            &mut |_, _| {},
+        );
+        marker_after(&driver.record(outcome))
+    }
+
+    #[test]
+    fn the_marker_stays_only_when_the_server_may_hold_the_chunk() {
+        // Nothing was sent.
+        assert_eq!(
+            marker_decision_for_second_request(vec![], false),
+            MarkerAfter::Release
+        );
+        // The changeset could not even be opened.
+        assert_eq!(
+            marker_decision_for_second_request(vec![status_err(401, "no")], true),
+            MarkerAfter::Release
+        );
+        // The server refused the diff: a conflict, a 400, or 509 (before any work).
+        for status in [409, 412, 400, 429, 509] {
+            assert_eq!(
+                marker_decision_for_second_request(
+                    vec![ok(200, "102"), status_err(status, "refused"), ok(200, "")],
+                    true
+                ),
+                MarkerAfter::Release,
+                "{status}"
+            );
+        }
+        // A lost response, a 5xx, or an unreadable answer: it may have been applied.
+        let kept = MarkerAfter::Keep {
+            changeset_id: Some(102),
+        };
+        for answer in [
+            status_err(503, "busy"),
+            status_err(500, "oops"),
+            crate::http::fake::transport_err("connection reset"),
+        ] {
+            assert_eq!(
+                marker_decision_for_second_request(vec![ok(200, "102"), answer, ok(200, "")], true),
+                kept
+            );
+        }
     }
 
     #[test]

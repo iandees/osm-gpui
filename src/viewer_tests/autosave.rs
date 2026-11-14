@@ -378,6 +378,12 @@ fn autosave_is_off_without_a_directory(cx: &mut TestAppContext) {
             // The calls the rest of the app makes are harmless no-ops.
             view.autosave_now(cx);
             assert!(view.script_autosave_idle().is_err());
+            // So is the upload-in-progress marker.
+            assert!(view
+                .upload_marker_prepare(autosave::UploadMarker::default())
+                .is_none());
+            view.upload_marker_after(osm_gpui::upload_chunks::MarkerAfter::Release, cx);
+            assert!(view.restored_upload_warning().is_none());
         })
         .unwrap();
 }
