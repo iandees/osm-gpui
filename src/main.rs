@@ -71,7 +71,7 @@ use crate::menu::{
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
-    write_tag_entries, NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction,
+    write_tag_entries, EditLabel, NodeMoveUndoEntries, NodeMoveUndoEntry, UndoStack, UndoableAction,
 };
 
 use gpui_component::ActiveTheme;
