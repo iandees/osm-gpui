@@ -204,12 +204,42 @@ impl SettingsPage {
     }
 }
 
+/// Which page the window shows when `Settings` first renders.
+///
+/// gpui-component's `Settings` keeps its selected page in state keyed by its
+/// element id and reads `default_selected_index` only when that state is
+/// created. So showing another page later means a new id: each `show` bumps
+/// `generation`, which is part of the id, and the fresh state starts on the
+/// requested page (the search box and scroll position reset with it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PageSelection {
+    start: Option<SettingsPage>,
+    generation: u32,
+}
+
+impl PageSelection {
+    fn new(start: Option<SettingsPage>) -> Self {
+        Self {
+            start,
+            generation: 0,
+        }
+    }
+
+    fn show(&mut self, page: SettingsPage) {
+        self.start = Some(page);
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn element_id(&self) -> (&'static str, u32) {
+        ("app-settings", self.generation)
+    }
+}
+
 pub struct SettingsWindow {
     /// Used for sign-in and for fetching a custom map style; the window is
     /// opened from a global action, so it takes the installed default client.
     http: Arc<dyn crate::http::HttpClient>,
-    /// The page the window opened on, when one was requested.
-    start_page: Option<SettingsPage>,
+    page: PageSelection,
     focus_handle: FocusHandle,
     entries: Vec<CustomImageryEntry>,
     editing_index: Option<usize>,
@@ -291,7 +321,7 @@ impl SettingsWindow {
 
         Self {
             http: crate::http::default_client(),
-            start_page,
+            page: PageSelection::new(start_page),
             focus_handle: cx.focus_handle(),
             entries: custom_imagery_store::load(),
             editing_index: None,
@@ -322,6 +352,12 @@ impl SettingsWindow {
             recording: None,
             shortcut_error: None,
         }
+    }
+
+    /// Switch the open window to `page`.
+    pub fn show_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        self.page.show(page);
+        cx.notify();
     }
 
     /// The server this window signs in to and keeps client IDs for: the one in
@@ -1981,8 +2017,9 @@ impl Render for SettingsWindow {
             .bg(cx.theme().background)
             .text_size(crate::ui::style::current_text_scale().body)
             .child({
-                let mut settings = Settings::new("app-settings").pages(self.setting_pages(cx));
-                if let Some(page) = self.start_page {
+                let mut settings =
+                    Settings::new(self.page.element_id()).pages(self.setting_pages(cx));
+                if let Some(page) = self.page.start {
                     settings = settings.default_selected_index(SelectIndex {
                         page_ix: page.index(),
                         group_ix: None,
@@ -1996,11 +2033,11 @@ impl Render for SettingsWindow {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: it carries `gpui::*`, whose `test` macro shadows `#[test]`.
-    use super::SettingsPage;
     use super::{
         acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
         parse_custom_api_url, parse_map_style_location, rejection_message, CacheBudget,
-        ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, MIN_CACHE_BUDGET_MB,
+        ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, PageSelection, SettingsPage,
+        MIN_CACHE_BUDGET_MB,
     };
     use crate::auth::StoredToken;
     use crate::settings_store::{ApiServerChoice, AppSettings, DEV_API_URL, PRIMARY_API_URL};
@@ -2138,6 +2175,34 @@ mod tests {
         for (i, a) in titles.iter().enumerate() {
             assert!(!titles[i + 1..].contains(a), "duplicate title {a}");
         }
+    }
+
+    #[test]
+    fn showing_a_page_selects_it_under_a_new_element_id() {
+        let mut selection = PageSelection::new(None);
+        assert_eq!(selection.start, None);
+        let first_id = selection.element_id();
+
+        selection.show(SettingsPage::Imagery);
+        assert_eq!(selection.start, Some(SettingsPage::Imagery));
+        assert_ne!(selection.element_id(), first_id);
+
+        // Asking for the page already shown still rebuilds the state, so a
+        // page the user has since navigated away from is selected again.
+        let second_id = selection.element_id();
+        selection.show(SettingsPage::Imagery);
+        assert_eq!(selection.start, Some(SettingsPage::Imagery));
+        assert_ne!(selection.element_id(), second_id);
+    }
+
+    #[test]
+    fn a_window_opened_on_a_page_starts_there_with_the_original_id() {
+        let selection = PageSelection::new(Some(SettingsPage::Shortcuts));
+        assert_eq!(selection.start, Some(SettingsPage::Shortcuts));
+        assert_eq!(
+            selection.element_id(),
+            PageSelection::new(None).element_id()
+        );
     }
 
     #[test]

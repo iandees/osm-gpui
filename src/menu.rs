@@ -45,6 +45,9 @@ pub(crate) enum SettingsOpen {
     New { page: Option<SettingsPage> },
     /// There is one already: bring it to the front.
     Focus,
+    /// There is one already and a page was asked for: bring it to the front
+    /// on that page.
+    FocusAndShow { page: SettingsPage },
 }
 
 /// Settings is a single window: open it, or focus the one that exists.
@@ -52,10 +55,10 @@ pub(crate) fn settings_open_decision(
     already_open: bool,
     page: Option<SettingsPage>,
 ) -> SettingsOpen {
-    if already_open {
-        SettingsOpen::Focus
-    } else {
-        SettingsOpen::New { page }
+    match (already_open, page) {
+        (false, page) => SettingsOpen::New { page },
+        (true, Some(page)) => SettingsOpen::FocusAndShow { page },
+        (true, None) => SettingsOpen::Focus,
     }
 }
 
@@ -177,7 +180,7 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
 }
 
 /// Open the Settings window on `page` (the first when `None`), or focus it if
-/// it is already open.
+/// it is already open, switching it to `page` when one is given.
 pub(crate) fn open_settings_page(page: Option<SettingsPage>, cx: &mut App) {
     let existing = cx
         .try_global::<SettingsWindowSlot>()
@@ -187,6 +190,15 @@ pub(crate) fn open_settings_page(page: Option<SettingsPage>, cx: &mut App) {
         SettingsOpen::Focus => {
             if let Some(handle) = existing {
                 let _ = handle.update(cx, |_, window, _| window.activate_window());
+            }
+            return;
+        }
+        SettingsOpen::FocusAndShow { page } => {
+            if let Some(handle) = existing {
+                let _ = handle.update(cx, |root, window, cx| {
+                    window.activate_window();
+                    show_settings_page(root, page, cx);
+                });
             }
             return;
         }
@@ -229,6 +241,17 @@ pub(crate) fn open_settings_page(page: Option<SettingsPage>, cx: &mut App) {
         )
         .unwrap();
     cx.set_global(SettingsWindowSlot(Some(settings_window.into())));
+}
+
+/// Switch the open Settings window (whose root view is `root`) to `page`.
+fn show_settings_page(root: gpui::AnyView, page: SettingsPage, cx: &mut App) {
+    let Ok(root) = root.downcast::<gpui_component::Root>() else {
+        return;
+    };
+    let content = root.read(cx).view().clone();
+    if let Ok(settings) = content.downcast::<osm_gpui::ui::settings_window::SettingsWindow>() {
+        settings.update(cx, |settings, cx| settings.show_page(page, cx));
+    }
 }
 
 // Handle the File > Download from OSM menu action
@@ -1193,7 +1216,9 @@ mod tests {
         assert_eq!(settings_open_decision(true, None), SettingsOpen::Focus);
         assert_eq!(
             settings_open_decision(true, Some(SettingsPage::Imagery)),
-            SettingsOpen::Focus
+            SettingsOpen::FocusAndShow {
+                page: SettingsPage::Imagery
+            }
         );
     }
 
