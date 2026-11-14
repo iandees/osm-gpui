@@ -256,6 +256,12 @@ status:
     separator: ", "
   # After restoring layers from a session that died while uploading.
   restored_upload_interrupted: "An upload was in progress when the app stopped. Some of the restored edits may already be on the server: check your recent changesets before uploading again."
+  # Several crashed sessions each died mid-upload (`%{count}` of them).
+  restored_uploads_interrupted: "%{count} uploads were in progress when the app stopped. Some of the restored edits may already be on the server: check your recent changesets before uploading again."
+  # After selecting the objects that were being uploaded (`%{count}` of them).
+  selected_in_flight:
+    one: "Selected %{count} object that was being uploaded when the app stopped"
+    other: "Selected %{count} objects that were being uploaded when the app stopped"
 
 # The OSM server's size limits (way nodes, relation members, elements per
 # changeset). Counts arrive already formatted with digit grouping.
@@ -912,6 +918,11 @@ dialog:
       hint_deleted: "Someone deleted it on the server. Show it, then remove your edits to it or redo them elsewhere."
       hint_deleted_both: "You deleted it too, so there is nothing left to upload for it. Drop my change forgets your delete."
       hint_related: "Fix the objects involved (Show finds them), then try again."
+    # After an interrupted upload: selects the restored objects that were in
+    # the changeset being sent, so they can be found on the map.
+    select_in_flight:
+      one: "Select the %{count} object that was being uploaded"
+      other: "Select the %{count} objects that were being uploaded"
   notice:
     ok: "OK"
   sign_in:
@@ -967,6 +978,40 @@ dialog:
       other: "%{count} changes"
     upload_comment: "Changeset comment: \"%{comment}\""
     upload_changeset: "Changeset %{id}: %{url}"
+    # `%{summary}` lists what the interrupted changeset held, from `in_flight`.
+    upload_contents: "It was sending: %{summary}."
+    in_flight:
+      created_nodes:
+        one: "%{count} new node"
+        other: "%{count} new nodes"
+      created_ways:
+        one: "%{count} new way"
+        other: "%{count} new ways"
+      created_relations:
+        one: "%{count} new relation"
+        other: "%{count} new relations"
+      modified_nodes:
+        one: "%{count} changed node"
+        other: "%{count} changed nodes"
+      modified_ways:
+        one: "%{count} changed way"
+        other: "%{count} changed ways"
+      modified_relations:
+        one: "%{count} changed relation"
+        other: "%{count} changed relations"
+      deleted_nodes:
+        one: "%{count} deleted node"
+        other: "%{count} deleted nodes"
+      deleted_ways:
+        one: "%{count} deleted way"
+        other: "%{count} deleted ways"
+      deleted_relations:
+        one: "%{count} deleted relation"
+        other: "%{count} deleted relations"
+      # More than the marker has room to list.
+      omitted:
+        one: "and %{count} more that is not listed"
+        other: "and %{count} more that are not listed"
   age:
     just_now: "just now"
     minutes:

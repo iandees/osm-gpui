@@ -5763,8 +5763,10 @@ impl MapViewer {
         // Layers restored from a run that died mid-upload: the same "may have
         // gone through" stop as after a lost response.
         if let Some(warning) = self.restored_upload_warning() {
+            let in_flight = self.in_flight_features().len();
             dialog.update(cx, |dialog, cx| {
-                dialog.fail_outcome_unknown(warning.into(), cx)
+                dialog.fail_outcome_unknown(warning.into(), cx);
+                dialog.set_in_flight(in_flight, cx);
             });
         }
         // Validated once, before the first changeset is opened.
@@ -5812,6 +5814,7 @@ impl MapViewer {
                         this.close_upload_dialog_keeping_draft(cx);
                         this.show_validation_expanded(cx);
                     }
+                    DialogEvent::SelectInFlight => this.select_in_flight(cx),
                     DialogEvent::Conflict { action, conflict } => {
                         this.handle_conflict_action(*action, conflict.clone(), cx);
                     }
@@ -6040,7 +6043,7 @@ impl MapViewer {
                 let outcome = cx
                     .background_executor()
                     .spawn(async move {
-                        if let Some(write) = marker_write {
+                        if let Some(write) = &marker_write {
                             write.run();
                         }
                         osm_gpui::upload_chunks::send(
@@ -6065,7 +6068,15 @@ impl MapViewer {
                                 .map(|token| token.access_token)
                                 .map_err(|e| e.to_string())
                             },
-                            &mut |part, phase| progress.set_upload_phase(part, phase),
+                            &mut |part, phase| {
+                                // The changeset id goes to disk before the
+                                // upload request is sent: a crash while it is
+                                // in flight then still names the changeset.
+                                if let Some(write) = &marker_write {
+                                    write.observe(&phase);
+                                }
+                                progress.set_upload_phase(part, phase)
+                            },
                         )
                     })
                     .await;
