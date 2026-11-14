@@ -129,7 +129,7 @@ fn data() -> OsmData {
     }
 }
 
-fn layer() -> OsmLayer {
+pub(super) fn layer() -> OsmLayer {
     let mut l = OsmLayer::new_with_data(LayerId(1), "L", Arc::new(data()));
     l.set_stylesheet(Arc::new(crate::style::Stylesheet::parse(CSS).unwrap()));
     l

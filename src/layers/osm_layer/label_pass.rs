@@ -4,14 +4,31 @@ use super::*;
 /// label text and are not considered.
 pub(super) const MIN_AREA_PX: (f32, f32) = (16.0, 11.0);
 
-/// A named area ready for placement: its item plus what painting needs.
-pub(super) struct AreaItem {
+/// What a placed [`labels::Item`] stands for: the data turning its placement
+/// into a [`labels::PlacedLabel`]. One variant per kind of label placed in
+/// the shared grid; the item's `key.0` names the same kind.
+pub(super) enum Subject {
+    Node {
+        /// Index into `derived.node_cache.flat`.
+        idx: usize,
+        label: Arc<labels::NodeLabel>,
+        /// The shaped text, if the label has any.
+        line: Option<Arc<ShapedLine>>,
+    },
+    Area {
+        label: Arc<area_labels::AreaLabel>,
+        line: Arc<ShapedLine>,
+        /// Where the text is centred, Mercator metres.
+        mx: f64,
+        my: f64,
+    },
+}
+
+/// A thing to place and what it stands for; `place` sees only `item`, and
+/// reports results by its index.
+pub(super) struct Candidate {
     pub(super) item: labels::Item,
-    pub(super) label: Arc<area_labels::AreaLabel>,
-    pub(super) line: Arc<ShapedLine>,
-    /// Where the text is centred, Mercator metres.
-    pub(super) mx: f64,
-    pub(super) my: f64,
+    pub(super) subject: Subject,
 }
 
 impl OsmLayer {
@@ -44,10 +61,21 @@ impl OsmLayer {
     }
 
     /// Identifies what label placement depends on besides the data: the
-    /// stylesheet, and the benchmark knobs (so a script changing them
-    /// forces a new placement).
-    pub(super) fn label_sheet_id(&self) -> usize {
-        Arc::as_ptr(&self.store.stylesheet) as usize ^ crate::layers::line_labels::bench_stamp()
+    /// stylesheet, and the tuning (so changing a knob forces a new
+    /// placement).
+    pub(super) fn label_sheet_id(&self, tuning: &labels::LabelTuning) -> usize {
+        Arc::as_ptr(&self.store.stylesheet) as usize ^ tuning.stamp()
+    }
+
+    /// Apply a `LabelBench` script spec to this layer's labels (see
+    /// `line_labels::parse_bench`); the next frame places again.
+    pub fn set_label_bench(&self, spec: &str) -> Result<(), String> {
+        self.render
+            .label_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tuning
+            .set_bench(spec)
     }
 
     /// The (cached) label text and style of the area `key` (a closed way or
@@ -136,16 +164,16 @@ impl OsmLayer {
         window: &mut Window,
     ) -> Option<(area_labels::Located, Arc<ShapedLine>)> {
         let geom = self.area_geom_for(cache, key)?;
-        let line = cache.shapes.get(window, &label.text, label.font_px);
+        let line = cache.shapes.get(window, &label.text, label.look.font_px);
         let size = (f32::from(line.width), f32::from(line.ascent + line.descent));
-        let scales = area_labels::font_scales(label.font_px);
+        let scales = area_labels::font_scales(label.look.font_px);
         let at = area_labels::locate(&geom, view, size, &scales, forced, budget)?;
         let line = if at.scale == 1.0 {
             line
         } else {
             cache
                 .shapes
-                .get(window, &label.text, label.font_px * at.scale)
+                .get(window, &label.text, label.look.font_px * at.scale)
         };
         Some((at, line))
     }
@@ -166,7 +194,7 @@ impl OsmLayer {
         forced: &HashSet<labels::Key>,
         node_texts: &HashMap<SharedString, Vec<(f64, f64)>>,
         window: &mut Window,
-    ) -> Vec<AreaItem> {
+    ) -> Vec<Candidate> {
         let zoom = cam.zoom;
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
         let view = area_labels::AreaView::new(vmin_x, vmax_x, vmax_y, cam.w, cam.h);
@@ -253,7 +281,7 @@ impl OsmLayer {
             }
             let sp = viewport.mercator_to_screen(at.mx, at.my);
             let (w, h) = (f32::from(line.width), f32::from(line.ascent + line.descent));
-            out.push(AreaItem {
+            out.push(Candidate {
                 item: labels::Item {
                     key,
                     center: (f32::from(sp.x), f32::from(sp.y)),
@@ -263,10 +291,12 @@ impl OsmLayer {
                     priority: label.priority + area_labels::size_bonus(bpx),
                     forced: is_forced,
                 },
-                label,
-                line,
-                mx: at.mx,
-                my: at.my,
+                subject: Subject::Area {
+                    label,
+                    line,
+                    mx: at.mx,
+                    my: at.my,
+                },
             });
         }
         out
@@ -364,31 +394,28 @@ impl OsmLayer {
             }
         }
         // Shape (cached) to learn each text's size.
-        let mut lines: Vec<Option<Arc<ShapedLine>>> = Vec::with_capacity(cands.len());
-        for (_, it, l) in cands.iter_mut() {
-            match &l.text {
-                Some(t) => {
-                    let line = cache.shapes.get(window, t, l.font_px);
+        let mut node_texts: HashMap<SharedString, Vec<(f64, f64)>> = HashMap::new();
+        let mut cands: Vec<Candidate> = cands
+            .into_iter()
+            .map(|(idx, mut item, label)| {
+                let line = label.text.as_ref().map(|t| {
+                    let line = cache.shapes.get(window, t, label.look.font_px);
                     let w = f32::from(line.width);
                     let h = f32::from(line.ascent + line.descent);
-                    it.text = Some((w, h, l.pref));
-                    lines.push(Some(line));
+                    item.text = Some((w, h, label.pref));
+                    let (_, mx, my) = self.derived.node_cache.flat[idx];
+                    node_texts.entry(t.clone()).or_default().push((mx, my));
+                    line
+                });
+                Candidate {
+                    item,
+                    subject: Subject::Node { idx, label, line },
                 }
-                None => lines.push(None),
-            }
-        }
-        let mut items: Vec<labels::Item> = cands.iter().map(|c| c.1.clone()).collect();
-        // Named areas (after the nodes, so their item indices follow).
-        let n_nodes = items.len();
-        let mut node_texts: HashMap<SharedString, Vec<(f64, f64)>> = HashMap::new();
-        for (idx, _, l) in &cands {
-            if let Some(t) = &l.text {
-                let (_, mx, my) = self.derived.node_cache.flat[*idx];
-                node_texts.entry(t.clone()).or_default().push((mx, my));
-            }
-        }
-        let areas = self.area_items(cache, viewport, cam, forced_areas, &node_texts, window);
-        items.extend(areas.iter().map(|a| a.item.clone()));
+            })
+            .collect();
+        // Named areas follow the nodes in the one list placed together.
+        cands.extend(self.area_items(cache, viewport, cam, forced_areas, &node_texts, window));
+        let items: Vec<labels::Item> = cands.iter().map(|c| c.item.clone()).collect();
         let prev = cache.prev_state();
         let out = labels::place(
             &items,
@@ -399,54 +426,45 @@ impl OsmLayer {
         let mut placed = Vec::with_capacity(out.len());
         let mut by_id = HashMap::with_capacity(out.len());
         for p in out {
-            if p.item >= n_nodes {
-                let a = &areas[p.item - n_nodes];
-                if let Some((_, r)) = p.text {
-                    placed.push(labels::PlacedLabel::new_area(
-                        a.item.key.0,
-                        a.item.key.1,
-                        a.mx,
-                        a.my,
-                        labels::PlacedText {
-                            line: a.line.clone(),
-                            dx: r.x0 - a.item.center.0,
-                            dy: r.y0 - a.item.center.1,
-                            color: a.label.color,
-                            halo_color: a.label.halo_color,
-                            halo_radius: a.label.halo_radius,
-                            halo_alpha: a.label.halo_alpha,
-                        },
-                    ));
+            let Candidate { item, subject } = &cands[p.item];
+            match subject {
+                Subject::Area {
+                    label,
+                    line,
+                    mx,
+                    my,
+                } => {
+                    if let Some((_, r)) = p.text {
+                        placed.push(labels::PlacedLabel::new_area(
+                            item.key.0,
+                            item.key.1,
+                            *mx,
+                            *my,
+                            labels::PlacedText::in_rect(line.clone(), &r, item.center, label.look),
+                        ));
+                    }
                 }
-                continue;
+                Subject::Node { idx, label, line } => {
+                    let (id, mx, my) = self.derived.node_cache.flat[*idx];
+                    let icon = if p.icon {
+                        label.icon.clone().map(|choice| labels::PlacedIcon {
+                            choice,
+                            fill: self.derived.node_cache.styles[*idx].color,
+                        })
+                    } else {
+                        None
+                    };
+                    let text = match (p.text, line) {
+                        (Some((anchor, r)), Some(line)) => Some((
+                            labels::PlacedText::in_rect(line.clone(), &r, item.center, label.look),
+                            anchor,
+                        )),
+                        _ => None,
+                    };
+                    by_id.insert(id, placed.len());
+                    placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
+                }
             }
-            let (idx, item, l) = &cands[p.item];
-            let (id, mx, my) = self.derived.node_cache.flat[*idx];
-            let icon = if p.icon {
-                l.icon.clone().map(|choice| labels::PlacedIcon {
-                    choice,
-                    fill: self.derived.node_cache.styles[*idx].color,
-                })
-            } else {
-                None
-            };
-            let text = match (p.text, &lines[p.item]) {
-                (Some((anchor, r)), Some(line)) => Some((
-                    labels::PlacedText {
-                        line: line.clone(),
-                        dx: r.x0 - item.center.0,
-                        dy: r.y0 - item.center.1,
-                        color: l.color,
-                        halo_color: l.halo_color,
-                        halo_radius: l.halo_radius,
-                        halo_alpha: l.halo_alpha,
-                    },
-                    anchor,
-                )),
-                _ => None,
-            };
-            by_id.insert(id, placed.len());
-            placed.push(labels::PlacedLabel::new(id, mx, my, icon, text));
         }
         let n_text = placed.iter().filter(|l| l.text.is_some()).count();
         crate::frame_stats::lap("labels.place", fs);
@@ -455,11 +473,11 @@ impl OsmLayer {
         labels::Placement {
             cam,
             revision: self.store.revision,
-            sheet: self.label_sheet_id(),
+            sheet: self.label_sheet_id(&cache.tuning),
             labels: placed,
             by_id,
             fade_end: None,
-            halo: labels::halo_for(n_text),
+            halo: cache.tuning.halo_for(n_text),
         }
     }
 
@@ -478,7 +496,7 @@ impl OsmLayer {
         cx: &App,
     ) {
         let zoom = viewport.zoom_level();
-        if self.store.osm_data.is_none() || zoom < labels::LABEL_MIN_ZOOM {
+        if self.store.osm_data.is_none() || zoom < labels::ANY_LABEL_MIN_ZOOM {
             return;
         }
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
@@ -496,12 +514,12 @@ impl OsmLayer {
             w: f32::from(viewport.transform.screen_size.width),
             h: f32::from(viewport.transform.screen_size.height),
         };
-        let sheet = self.label_sheet_id();
         let mut cache = self
             .render
             .label_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let sheet = self.label_sheet_id(&cache.tuning);
         cache.validate(self.store.revision, sheet, zoom.floor() as i32);
         let now = std::time::Instant::now();
         let step = cache.step(cam, self.store.revision, sheet, now);
@@ -523,7 +541,7 @@ impl OsmLayer {
                 })
                 .collect();
             let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
-            self.place_line_labels(viewport, cam, &p, now);
+            self.place_line_labels(viewport, cam, &p, &cache.tuning.line_knobs(), now);
             cache.store(p, now);
         }
         // Frames are requested only while something is in flight: waiting to
@@ -546,7 +564,13 @@ impl OsmLayer {
             return;
         }
         // Street names under the point labels and icons they yielded to.
-        self.paint_line_labels(viewport, bounds, now, window);
+        self.paint_line_labels(
+            viewport,
+            bounds,
+            now,
+            cache.tuning.line_knobs().repeat,
+            window,
+        );
         let ox = bounds.origin.x;
         let oy = bounds.origin.y;
         let (w, h) = (cam.w, cam.h);
@@ -606,34 +630,17 @@ impl OsmLayer {
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
-            let line = cache.shapes.get(window, text, label.font_px);
+            let line = cache.shapes.get(window, text, label.look.font_px);
             let reach = Self::label_marker_radius(self.derived.node_cache.styles[idx], zoom)
                 .max((self.derived.node_cache.styles[idx].size + 2.0) / 2.0);
-            let r = labels::label_rect(
-                label.pref,
-                (0.0, 0.0),
+            let item = forced_item(
+                (labels::KIND_NODE, f.id),
                 reach,
-                3.0,
-                f32::from(line.width),
-                f32::from(line.ascent + line.descent),
+                &line,
+                label.pref,
+                label.priority,
             );
-            let t = labels::PlacedText {
-                line,
-                dx: r.x0,
-                dy: r.y0,
-                color: label.color,
-                halo_color: label.halo_color,
-                halo_radius: label.halo_radius,
-                halo_alpha: label.halo_alpha,
-            };
-            let at = point(sp.x + ox, sp.y + oy);
-            labels::paint_text(
-                window,
-                &t,
-                point(at.x + px(t.dx), at.y + px(t.dy)),
-                1.0,
-                labels::HaloMode::Offsets,
-            );
+            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
         }
         // Likewise a selected or hovered area whose label was not placed
         // (the selection changed since): shown at its label point, fitted or
@@ -673,23 +680,8 @@ impl OsmLayer {
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
-            let t = labels::PlacedText {
-                dx: -f32::from(line.width) / 2.0,
-                dy: -f32::from(line.ascent + line.descent) / 2.0,
-                line,
-                color: label.color,
-                halo_color: label.halo_color,
-                halo_radius: label.halo_radius,
-                halo_alpha: label.halo_alpha,
-            };
-            let atp = point(sp.x + ox, sp.y + oy);
-            labels::paint_text(
-                window,
-                &t,
-                point(atp.x + px(t.dx), atp.y + px(t.dy)),
-                1.0,
-                labels::HaloMode::Offsets,
-            );
+            let item = forced_item(key, 0.0, &line, labels::Anchor::Center, label.priority);
+            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
         }
         cache.placement = Some(placement);
         crate::frame_stats::lap("labels.paint", fs);
@@ -703,13 +695,12 @@ impl OsmLayer {
         viewport: &Viewport,
         zoom: f64,
     ) -> Vec<crate::layers::line_labels::Candidate<'_>> {
-        use crate::layers::line_labels::{clear_offset, Candidate, LabelStyle};
+        use crate::layers::line_labels::{Candidate, LabelStyle};
         let mut cands = Vec::new();
         let Some(data) = self.store.osm_data.as_ref() else {
             return cands;
         };
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
-        let defaults = LabelStyle::default();
         for (i, bbox) in self.derived.way_bboxes.iter().enumerate() {
             let Some(b) = bbox else { continue };
             if b.max_x < vmin_x || b.min_x > vmax_x || b.max_y < vmin_y || b.min_y > vmax_y {
@@ -733,7 +724,6 @@ impl OsmLayer {
             else {
                 continue;
             };
-            let size_px = st.font_size.unwrap_or(defaults.size_px);
             // The road's half-width on screen (stroke plus casing), so the
             // text clears it even when the stylesheet's offset is small.
             let ws = &self.render.way_styles[i];
@@ -743,23 +733,11 @@ impl OsmLayer {
                 ws.casing_width
             };
             let half_width = ws.width / 2.0 + casing;
-            let offset = clear_offset(
-                st.offset.unwrap_or(0.35 * size_px + 2.0),
-                size_px,
-                half_width,
-            );
             cands.push(Candidate {
                 way_id,
                 text,
                 verts: &self.derived.way_vertices[i],
-                style: LabelStyle {
-                    size_px,
-                    halo_px: st.halo_radius.unwrap_or(defaults.halo_px),
-                    offset_px: offset,
-                    color: st.color.unwrap_or(defaults.color),
-                    halo_color: st.halo_color.unwrap_or(defaults.halo_color),
-                    halo_alpha: st.halo_opacity.unwrap_or(defaults.halo_alpha),
-                },
+                style: LabelStyle::resolve(&st, half_width),
                 priority: highway_label_rank(&way.tags),
             });
         }
@@ -774,30 +752,14 @@ impl OsmLayer {
         viewport: &Viewport,
         cam: labels::CameraSig,
         points: &labels::Placement,
+        knobs: &crate::layers::line_labels::BenchKnobs,
         now: std::time::Instant,
     ) {
         let fs = crate::frame_stats::start();
-        let mut obstacles: Vec<labels::Rect> = Vec::new();
-        for l in &points.labels {
-            let sp = viewport.mercator_to_screen(l.mx, l.my);
-            let (cx, cy) = (f32::from(sp.x), f32::from(sp.y));
-            if let Some(icon) = &l.icon {
-                let r = icon.choice.backing() / 2.0 + 1.0;
-                obstacles.push(labels::Rect::around(cx, cy, r, r));
-            }
-            if let Some(t) = &l.text {
-                let (w, h) = (
-                    f32::from(t.line.width),
-                    f32::from(t.line.ascent + t.line.descent),
-                );
-                obstacles.push(labels::Rect::new(
-                    cx + t.dx,
-                    cy + t.dy,
-                    cx + t.dx + w,
-                    cy + t.dy + h,
-                ));
-            }
-        }
+        let obstacles = points.occupied(|mx, my| {
+            let sp = viewport.mercator_to_screen(mx, my);
+            (f32::from(sp.x), f32::from(sp.y))
+        });
         let cands = self.line_label_candidates(viewport, cam.zoom);
         let mut placed_slot = self
             .render
@@ -817,6 +779,7 @@ impl OsmLayer {
             Ok(mut cache) => cache.place(
                 &cands,
                 cam.zoom,
+                knobs,
                 to_screen,
                 (cam.w, cam.h),
                 &obstacles,
@@ -838,6 +801,7 @@ impl OsmLayer {
         viewport: &Viewport,
         bounds: Bounds<Pixels>,
         now: std::time::Instant,
+        repeat: u32,
         window: &mut Window,
     ) {
         use crate::layers::line_labels::{emit_frame, FrameOut};
@@ -874,7 +838,6 @@ impl OsmLayer {
         crate::frame_stats::count("linelabels.drawn", out.labels);
         crate::frame_stats::count("linelabels.vertices", nf + nh);
         // `repeat` > 1 is a GPU-load multiplier for benchmarking.
-        let repeat = crate::layers::line_labels::bench_knobs().repeat;
         for (verts, color) in out.halo.iter().chain(out.fill.iter()).map(|(c, v)| (v, *c)) {
             if verts.is_empty() {
                 continue;
@@ -940,6 +903,53 @@ impl OsmLayer {
     }
 }
 
+/// The [`labels::Item`] of a selected or hovered feature whose text placement
+/// dropped, centred on the origin so its text box is an offset from wherever
+/// the feature is drawn (see [`paint_forced`]). `marker_r` is the radius of the
+/// marker drawn there.
+fn forced_item(
+    key: labels::Key,
+    marker_r: f32,
+    line: &ShapedLine,
+    anchor: labels::Anchor,
+    priority: i32,
+) -> labels::Item {
+    labels::Item {
+        key,
+        center: (0.0, 0.0),
+        marker_r,
+        icon_r: None,
+        text: Some((
+            f32::from(line.width),
+            f32::from(line.ascent + line.descent),
+            anchor,
+        )),
+        priority,
+        forced: true,
+    }
+}
+
+/// Paint a forced item's text at `at`, collision ignored.
+fn paint_forced(
+    window: &mut Window,
+    at: Point<Pixels>,
+    item: &labels::Item,
+    line: Arc<ShapedLine>,
+    look: labels::TextLook,
+) {
+    let Some((_, r)) = item.forced_text_rect() else {
+        return;
+    };
+    let t = labels::PlacedText::new(line, r.x0, r.y0, look);
+    labels::paint_text(
+        window,
+        &t,
+        point(at.x + px(t.dx), at.y + px(t.dy)),
+        1.0,
+        labels::HaloMode::Offsets,
+    );
+}
+
 /// Order among street names: bigger roads first.
 pub(super) fn highway_label_rank(tags: &HashMap<String, String>) -> i32 {
     match tags.get("highway").map(String::as_str) {
@@ -951,5 +961,35 @@ pub(super) fn highway_label_rank(tags: &HashMap<String, String>) -> i32 {
         Some("service" | "living_street" | "pedestrian") => 40,
         Some(_) => 30,
         None => 20,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: it carries `gpui::test`, which shadows `#[test]`.
+    use crate::layers::osm_layer::OsmLayer;
+    use crate::layers::LayerId;
+
+    #[test]
+    fn a_bench_action_changes_the_placement_key_of_that_layer_only() {
+        let a = OsmLayer::new(LayerId(1));
+        let b = OsmLayer::new(LayerId(2));
+        let key = |l: &OsmLayer| {
+            let t = l.render.label_cache.lock().unwrap().tuning;
+            l.label_sheet_id(&t)
+        };
+        let before = key(&a);
+        a.set_label_bench("on halo=none").unwrap();
+        assert_ne!(key(&a), before);
+        assert_eq!(key(&b), before, "the other layer is untouched");
+        assert_eq!(
+            a.render.label_cache.lock().unwrap().tuning.bench.halo,
+            crate::layers::line_labels::MeshHalo::None
+        );
+        assert_eq!(
+            b.render.label_cache.lock().unwrap().tuning.bench,
+            crate::layers::line_labels::BenchKnobs::default()
+        );
+        assert!(a.set_label_bench("halo=wat").is_err());
     }
 }

@@ -7,8 +7,9 @@ use osm_gpui::edit_mode::EditMode;
 use osm_gpui::layers::LayerId;
 
 use super::preview::{blue, fill_square, line_width, red, stroke_polyline, PreviewFrame};
-use crate::undo::UndoableAction;
+use crate::undo::{EditLabel, UndoableAction};
 use crate::MapViewer;
+use osm_gpui::edit_ops::Recording;
 
 /// What a click would do to Improve Way mode's target way: the way, its node
 /// ids and their screen positions, and the planned edit (in screen space).
@@ -139,16 +140,19 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
             else {
                 return;
             };
-            let Ok(node_id) = editable.insert_node_into_way(way_id, index, lat, lon) else {
+            let mut rec = Recording::new(layer_id, editable);
+            let Ok(node_id) = rec.insert_node_into_way(way_id, index, lat, lon) else {
                 return;
             };
-            view.undo_stack.push(UndoableAction::InsertNodeIntoWay {
-                layer: layer_id,
-                way_id,
-                index,
-                node_id,
-                node_lat_lon: (lat, lon),
-            });
+            let node_ref = FeatureRef {
+                layer_id,
+                kind: FeatureKind::Node,
+                id: node_id,
+            };
+            view.undo_stack.push(
+                UndoableAction::edit(layer_id, EditLabel::InsertedNode, rec.into_ops())
+                    .selecting(vec![way_ref, node_ref]),
+            );
         }
         Plan::Delete { node } => {
             // The ordinary Delete action does the bookkeeping (other ways,

@@ -4,6 +4,7 @@ mod batching;
 mod chunked;
 mod conflicts;
 mod create_and_delete;
+mod edit_ops;
 mod fresh_rebuild;
 mod hit_testing;
 mod layer_primitives;
