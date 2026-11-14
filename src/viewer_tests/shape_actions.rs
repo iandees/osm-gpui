@@ -148,6 +148,7 @@ fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext)
             select(view, Way, &[100]);
             view.run_selection_action("rotate", cx);
             let center = view
+                .pointer
                 .rotate_session
                 .as_ref()
                 .expect("session started")
@@ -157,8 +158,8 @@ fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext)
                 gpui::point(gpui::px((cx_px + dx) as f32), gpui::px((cy_px + dy) as f32))
             };
             // The pointer starts east of the centre ...
-            view.last_mouse_pos = Some(at(100.0, 0.0));
-            view.rotate_session.as_mut().unwrap().start_angle = Some(
+            view.pointer.last_mouse_pos = Some(at(100.0, 0.0));
+            view.pointer.rotate_session.as_mut().unwrap().start_angle = Some(
                 osm_gpui::rotate::pointer_angle((cx_px, cy_px), (cx_px + 100.0, cy_px)),
             );
             // ... and circles a quarter turn clockwise (to the south).
@@ -169,7 +170,7 @@ fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext)
             // Nothing is on the undo stack until it is applied.
             assert_eq!(view.undo_stack.actions.len(), 0);
             view.finish_rotate();
-            assert!(view.rotate_session.is_none());
+            assert!(view.pointer.rotate_session.is_none());
             assert_eq!(view.undo_stack.actions.len(), 1);
             let done: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_eq!(done, during);
@@ -194,9 +195,9 @@ fn rotate_snaps_with_shift_and_cancel_restores_everything(cx: &mut TestAppContex
             let original: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
             select(view, Node, &ids);
             view.run_selection_action("rotate", cx);
-            let center = view.rotate_session.as_ref().unwrap().center;
+            let center = view.pointer.rotate_session.as_ref().unwrap().center;
             let (cx_px, cy_px) = view.rotate_center_px(center);
-            view.rotate_session.as_mut().unwrap().start_angle = Some(
+            view.pointer.rotate_session.as_mut().unwrap().start_angle = Some(
                 osm_gpui::rotate::pointer_angle((cx_px, cy_px), (cx_px + 100.0, cy_px)),
             );
             // About 20 degrees clockwise snaps to 15.
@@ -211,7 +212,7 @@ fn rotate_snaps_with_shift_and_cancel_restores_everything(cx: &mut TestAppContex
             assert!((view.rotate_degrees().unwrap() - 20.0).abs() < 1e-2);
 
             assert!(view.cancel_rotate());
-            assert!(view.rotate_session.is_none());
+            assert!(view.pointer.rotate_session.is_none());
             let now: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_eq!(now, original);
             assert_eq!(view.undo_stack.actions.len(), 0);
@@ -227,7 +228,7 @@ fn rotate_is_refused_for_a_single_node(cx: &mut TestAppContext) {
         .update(cx, |view, _window, cx| {
             select(view, Node, &[1]);
             view.run_selection_action("rotate", cx);
-            assert!(view.rotate_session.is_none());
+            assert!(view.pointer.rotate_session.is_none());
         })
         .unwrap();
 }
@@ -303,10 +304,10 @@ fn parallel_way_asks_first_then_is_one_undo_step_and_redoable(cx: &mut TestAppCo
             select(view, Way, &[100]);
             // Running the action only asks for the offset.
             view.run_selection_action("parallel", cx);
-            assert!(view.pending_parallel_dialog);
+            assert!(view.dialogs.pending_parallel_dialog);
             assert!(view.undo_stack.actions.is_empty());
             assert_eq!(pending(view), (0, 0, 0));
-            view.pending_parallel_dialog = false;
+            view.dialogs.pending_parallel_dialog = false;
 
             view.create_parallel_ways(osm_gpui::parallel::ParallelParams::default());
             assert_eq!(view.undo_stack.actions.len(), 1);
@@ -340,7 +341,7 @@ fn parallel_way_is_refused_during_an_upload(cx: &mut TestAppContext) {
                 TransferPhase::OpeningChangeset,
             ));
             view.run_selection_action("parallel", cx);
-            assert!(!view.pending_parallel_dialog);
+            assert!(!view.dialogs.pending_parallel_dialog);
             view.create_parallel_ways(osm_gpui::parallel::ParallelParams::default());
             assert!(view.undo_stack.actions.is_empty());
             assert_eq!(pending(view), (0, 0, 0));

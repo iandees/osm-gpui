@@ -83,7 +83,7 @@ pub(super) fn press(view: &mut MapViewer, position: Point<Pixels>) -> bool {
         down: position,
         placed_first_corner,
     }));
-    view.interaction = Interaction::Idle;
+    view.pointer.interaction = Interaction::Idle;
     true
 }
 
@@ -206,7 +206,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
             let corners = view
                 .building_reference()
                 .copied()
-                .zip(view.last_mouse_pos)
+                .zip(view.pointer.last_mouse_pos)
                 .and_then(|(reference, mouse)| {
                     osm_gpui::building::rectangle_from_opposite_corners(
                         progress.corner_a,
@@ -231,12 +231,13 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
         // from).
         None => {
             fill_square(window, a, gpui::px(4.0), blue());
-            if let Some(mouse_pos) = view.last_mouse_pos {
+            if let Some(mouse_pos) = view.pointer.last_mouse_pos {
                 stroke_polyline(window, [a, frame.local(mouse_pos)], line_width(), blue());
             }
         }
         Some(corner_b) => {
             let cursor_geo = view
+                .pointer
                 .last_mouse_pos
                 .map(|p| frame.viewport.screen_to_geo(p).to_pair())
                 .unwrap_or(corner_b);
@@ -302,10 +303,10 @@ impl MapViewer {
                 .selecting(vec![way]),
         );
         self.selected = vec![way];
-        self.fields_text_inputs.clear();
-        self.fields_text_subscribed.clear();
-        self.fields_open_combo = None;
-        self.fields_promoted_more_fields.clear();
+        self.fields_panel.fields_text_inputs.clear();
+        self.fields_panel.fields_text_subscribed.clear();
+        self.fields_panel.fields_open_combo = None;
+        self.fields_panel.fields_promoted_more_fields.clear();
     }
 
     /// If the selection is exactly one closed, squared way, the reference a

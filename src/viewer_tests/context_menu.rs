@@ -16,11 +16,11 @@ fn right_click_selects_the_feature_and_opens_the_menu(cx: &mut TestAppContext) {
     window
         .update(cx, |view, window, cx| {
             view.enter_mode(EditMode::Select);
-            view.right_press = Some(on_the_way());
+            view.pointer.right_press = Some(on_the_way());
             view.finish_right_press(on_the_way(), window, cx);
             assert_eq!(view.selected.len(), 1);
             assert_eq!(view.selected[0].id, 10);
-            assert!(view.context_menu.is_some());
+            assert!(view.pointer.context_menu.is_some());
         })
         .unwrap();
 }
@@ -57,7 +57,7 @@ fn right_click_events_open_the_menu(cx: &mut TestAppContext) {
     window
         .update(vcx, |view, _, _| {
             assert_eq!(view.selected.len(), 1);
-            assert!(view.context_menu.is_some());
+            assert!(view.pointer.context_menu.is_some());
         })
         .unwrap();
 }
@@ -68,11 +68,11 @@ fn right_drag_pans_without_opening_the_menu(cx: &mut TestAppContext) {
     window
         .update(cx, |view, window, cx| {
             view.enter_mode(EditMode::Select);
-            view.right_press = Some(on_the_way());
+            view.pointer.right_press = Some(on_the_way());
             let released = on_the_way() + point(px(30.0), px(0.0));
             view.finish_right_press(released, window, cx);
             assert!(view.selected.is_empty());
-            assert!(view.context_menu.is_none());
+            assert!(view.pointer.context_menu.is_none());
         })
         .unwrap();
 }
@@ -84,9 +84,9 @@ fn right_click_on_empty_map_opens_nothing(cx: &mut TestAppContext) {
         .update(cx, |view, window, cx| {
             view.enter_mode(EditMode::Select);
             let empty = point(px(100.0), px(500.0));
-            view.right_press = Some(empty);
+            view.pointer.right_press = Some(empty);
             view.finish_right_press(empty, window, cx);
-            assert!(view.context_menu.is_none());
+            assert!(view.pointer.context_menu.is_none());
         })
         .unwrap();
 }
@@ -109,10 +109,10 @@ fn right_click_inside_the_selection_keeps_it(cx: &mut TestAppContext) {
                 id: 1,
             };
             view.set_selection(vec![way, node]);
-            view.right_press = Some(on_the_way());
+            view.pointer.right_press = Some(on_the_way());
             view.finish_right_press(on_the_way(), window, cx);
             assert_eq!(view.selected, vec![way, node]);
-            assert!(view.context_menu.is_some());
+            assert!(view.pointer.context_menu.is_some());
         })
         .unwrap();
 }

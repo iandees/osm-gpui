@@ -523,7 +523,7 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.restore_dialog.is_some() {
+        if self.dialogs.restore_dialog.is_some() {
             return;
         }
         let Some(state) = self.autosave.as_mut() else {
@@ -564,7 +564,7 @@ impl MapViewer {
             dialog.update(cx, |dialog, cx| dialog.set_upload_notices(notices, cx));
         }
         cx.subscribe(&dialog, |this, _entity, event: &DialogEvent, cx| {
-            this.restore_dialog = None;
+            this.dialogs.restore_dialog = None;
             let sessions = this
                 .autosave
                 .as_mut()
@@ -583,7 +583,7 @@ impl MapViewer {
             cx.notify();
         })
         .detach();
-        self.restore_dialog = Some(dialog);
+        self.dialogs.restore_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -799,7 +799,7 @@ impl MapViewer {
                 Ok(())
             }
             AutosaveCmd::Restore | AutosaveCmd::Discard => {
-                let Some(dialog) = self.restore_dialog.clone() else {
+                let Some(dialog) = self.dialogs.restore_dialog.clone() else {
                     return Err("the restore dialog is not open".into());
                 };
                 // Deferred like the other dialogs' button presses: the event

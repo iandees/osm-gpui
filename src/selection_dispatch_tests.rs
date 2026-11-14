@@ -130,9 +130,9 @@ fn the_upload_guard_refuses_every_editing_action_in_one_place(cx: &mut TestAppCo
             s.view.run_selection_action(action.id, s.cx);
             assert_eq!(s.status(), blocked, "{} was not refused", action.id);
             assert_eq!(s.steps(), steps, "{}", action.id);
-            assert!(!s.view.pending_relation_picker, "{}", action.id);
-            assert!(!s.view.pending_parallel_dialog, "{}", action.id);
-            assert!(s.view.rotate_session.is_none(), "{}", action.id);
+            assert!(!s.view.dialogs.pending_relation_picker, "{}", action.id);
+            assert!(!s.view.dialogs.pending_parallel_dialog, "{}", action.id);
+            assert!(s.view.pointer.rotate_session.is_none(), "{}", action.id);
         }
         // Copy only reads, so the guard lets it through.
         s.view.status_message = None;

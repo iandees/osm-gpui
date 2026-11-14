@@ -31,7 +31,7 @@ impl MapViewer {
     /// Get or create the `InputState` entity for a text field, seeded from
     /// `current_value` only on creation (an existing entity keeps whatever
     /// the user has typed, even if `current_value` hasn't changed — it's
-    /// re-read from `self.fields_text_inputs`, not rebuilt every render).
+    /// re-read from `self.fields_panel.fields_text_inputs`, not rebuilt every render).
     /// Subscribes to `InputEvent` (committing on Blur/Enter) only the first
     /// time an entity is created for `field_id`, so re-renders never leak
     /// duplicate subscriptions.
@@ -46,7 +46,7 @@ impl MapViewer {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> gpui::Entity<InputState> {
-        if let Some(existing) = self.fields_text_inputs.get(field_id) {
+        if let Some(existing) = self.fields_panel.fields_text_inputs.get(field_id) {
             return existing.clone();
         }
         let placeholder = placeholder.unwrap_or("").to_string();
@@ -56,9 +56,12 @@ impl MapViewer {
             state.set_value(current_value, window, cx);
             state
         });
-        self.fields_text_inputs
+        self.fields_panel
+            .fields_text_inputs
             .insert(field_id.to_string(), entity.clone());
-        self.fields_text_subscribed.insert(field_id.to_string());
+        self.fields_panel
+            .fields_text_subscribed
+            .insert(field_id.to_string());
         cx.subscribe(
             &entity,
             move |this: &mut Self, entity, event: &InputEvent, cx| {
@@ -192,7 +195,8 @@ impl MapViewer {
             }
             Widget::Combo => {
                 let current_value = tags.get(&field.key).cloned();
-                let is_open = self.fields_open_combo.as_deref() == Some(field.id.as_str());
+                let is_open =
+                    self.fields_panel.fields_open_combo.as_deref() == Some(field.id.as_str());
                 // A value the options don't list (a custom one) is shown as
                 // it is rather than as "None".
                 let current_label = current_value
@@ -249,13 +253,14 @@ impl MapViewer {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _ev, _window, cx| {
-                            this.fields_open_combo = if this.fields_open_combo.as_deref()
-                                == Some(field_id_for_toggle.as_str())
-                            {
-                                None
-                            } else {
-                                Some(field_id_for_toggle.clone())
-                            };
+                            this.fields_panel.fields_open_combo =
+                                if this.fields_panel.fields_open_combo.as_deref()
+                                    == Some(field_id_for_toggle.as_str())
+                                {
+                                    None
+                                } else {
+                                    Some(field_id_for_toggle.clone())
+                                };
                             cx.notify();
                         }),
                     );
@@ -291,7 +296,7 @@ impl MapViewer {
                                         String::new(),
                                     )]),
                                 );
-                                this.fields_open_combo = None;
+                                this.fields_panel.fields_open_combo = None;
                                 cx.notify();
                             }),
                         );
@@ -325,7 +330,7 @@ impl MapViewer {
                                                     value.clone(),
                                                 )]),
                                             );
-                                            this.fields_open_combo = None;
+                                            this.fields_panel.fields_open_combo = None;
                                             cx.notify();
                                         }),
                                     )
@@ -355,7 +360,8 @@ impl MapViewer {
                     .iter()
                     .filter(|o| tags.get(&format!("{}{}", field.key, o.value)).is_some())
                     .collect();
-                let is_open = self.fields_open_combo.as_deref() == Some(field.id.as_str());
+                let is_open =
+                    self.fields_panel.fields_open_combo.as_deref() == Some(field.id.as_str());
                 let mut column = gpui::div()
                     .flex()
                     .flex_col()
@@ -403,13 +409,14 @@ impl MapViewer {
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _ev, _window, cx| {
-                                this.fields_open_combo = if this.fields_open_combo.as_deref()
-                                    == Some(field_id_for_toggle.as_str())
-                                {
-                                    None
-                                } else {
-                                    Some(field_id_for_toggle.clone())
-                                };
+                                this.fields_panel.fields_open_combo =
+                                    if this.fields_panel.fields_open_combo.as_deref()
+                                        == Some(field_id_for_toggle.as_str())
+                                    {
+                                        None
+                                    } else {
+                                        Some(field_id_for_toggle.clone())
+                                    };
                                 cx.notify();
                             }),
                         ),
@@ -451,7 +458,7 @@ impl MapViewer {
                                                             "yes".to_string(),
                                                         )]),
                                                     );
-                                                    this.fields_open_combo = None;
+                                                    this.fields_panel.fields_open_combo = None;
                                                     cx.notify();
                                                 }),
                                             )
@@ -472,7 +479,8 @@ impl MapViewer {
                             .collect()
                     })
                     .unwrap_or_default();
-                let is_open = self.fields_open_combo.as_deref() == Some(field.id.as_str());
+                let is_open =
+                    self.fields_panel.fields_open_combo.as_deref() == Some(field.id.as_str());
 
                 let mut column = gpui::div()
                     .flex()
@@ -534,13 +542,14 @@ impl MapViewer {
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _ev, _window, cx| {
-                                this.fields_open_combo = if this.fields_open_combo.as_deref()
-                                    == Some(field_id_for_toggle.as_str())
-                                {
-                                    None
-                                } else {
-                                    Some(field_id_for_toggle.clone())
-                                };
+                                this.fields_panel.fields_open_combo =
+                                    if this.fields_panel.fields_open_combo.as_deref()
+                                        == Some(field_id_for_toggle.as_str())
+                                    {
+                                        None
+                                    } else {
+                                        Some(field_id_for_toggle.clone())
+                                    };
                                 cx.notify();
                             }),
                         ),
@@ -589,7 +598,7 @@ impl MapViewer {
                                                             updated.join(";"),
                                                         )]),
                                                     );
-                                                    this.fields_open_combo = None;
+                                                    this.fields_panel.fields_open_combo = None;
                                                     cx.notify();
                                                 }),
                                             )
@@ -629,7 +638,12 @@ impl MapViewer {
         // and inheritance); here only the feature's geometry and tags decide
         // what applies, plus what the user has added.
         let cat = osm_gpui::catalogue::Catalogue::bundled();
-        let resolved = cat.fields_for(preset, geometry, &tags, &self.fields_promoted_more_fields);
+        let resolved = cat.fields_for(
+            preset,
+            geometry,
+            &tags,
+            &self.fields_panel.fields_promoted_more_fields,
+        );
         // Only a feature with nothing to show *and* nothing to add is empty;
         // universal fields (name, note, ...) are always on offer.
         if resolved.shown.is_empty() && resolved.addable.is_empty() {
@@ -654,7 +668,7 @@ impl MapViewer {
             // (a cafe has fifteen), so the Tags and History sections below
             // stay on screen. Its list opens on demand and closes again
             // once a field is picked.
-            let more_open = self.fields_more_open_for == Some(feature);
+            let more_open = self.fields_panel.fields_more_open_for == Some(feature);
             column = column.child(
                 gpui::div().flex().flex_row().child(
                     Button::new("field-add-more-toggle")
@@ -667,7 +681,7 @@ impl MapViewer {
                         .ghost()
                         .small()
                         .on_click(cx.listener(move |this, _ev, _window, cx| {
-                            this.fields_more_open_for =
+                            this.fields_panel.fields_more_open_for =
                                 if more_open { None } else { Some(feature) };
                             cx.notify();
                         })),
@@ -697,8 +711,10 @@ impl MapViewer {
                             .small()
                             .on_click(cx.listener(
                                 move |this, _ev, _window, cx| {
-                                    this.fields_promoted_more_fields.insert(field_id.clone());
-                                    this.fields_more_open_for = None;
+                                    this.fields_panel
+                                        .fields_promoted_more_fields
+                                        .insert(field_id.clone());
+                                    this.fields_panel.fields_more_open_for = None;
                                     cx.notify();
                                 },
                             ))

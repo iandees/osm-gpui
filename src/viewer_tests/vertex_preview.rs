@@ -81,20 +81,26 @@ fn hovering_a_way_previews_its_vertices_and_a_vertex_becomes_the_hover(cx: &mut 
         .update(cx, |view, _w, cx| {
             // Far from everything: nothing hovered, nothing previewed.
             pointer_to(view, point(px(400.0), px(500.0)), false, cx);
-            assert_eq!(view.hovered, None);
+            assert_eq!(view.pointer.hovered, None);
             assert_eq!(preview_way_of(view), None);
             // On the line: the way is hovered and previewed.
             pointer_to(view, point(px(400.0), px(300.0)), false, cx);
-            assert_eq!(view.hovered, Some(feature(view, FeatureKind::Way, 10)));
+            assert_eq!(
+                view.pointer.hovered,
+                Some(feature(view, FeatureKind::Way, 10))
+            );
             assert_eq!(preview_way_of(view), Some(10));
             // Onto a vertex: the node is hovered, the way stays previewed.
             let n1 = node_screen(view, 1);
             pointer_to(view, n1, false, cx);
-            assert_eq!(view.hovered, Some(feature(view, FeatureKind::Node, 1)));
+            assert_eq!(
+                view.pointer.hovered,
+                Some(feature(view, FeatureKind::Node, 1))
+            );
             assert_eq!(preview_way_of(view), Some(10));
             // A little off the line, past its tolerance: still previewed.
             pointer_to(view, point(px(400.0), px(310.0)), false, cx);
-            assert_eq!(view.hovered, None);
+            assert_eq!(view.pointer.hovered, None);
             assert_eq!(preview_way_of(view), Some(10));
             // Away: gone.
             pointer_to(view, point(px(400.0), px(500.0)), false, cx);
@@ -111,7 +117,10 @@ fn a_pointer_landing_straight_on_a_vertex_hovers_the_node(cx: &mut TestAppContex
         .update(cx, |view, _w, cx| {
             let n2 = node_screen(view, 2);
             pointer_to(view, n2, false, cx);
-            assert_eq!(view.hovered, Some(feature(view, FeatureKind::Node, 2)));
+            assert_eq!(
+                view.pointer.hovered,
+                Some(feature(view, FeatureKind::Node, 2))
+            );
         })
         .unwrap();
 }
@@ -122,10 +131,10 @@ fn no_preview_outside_select_mode_while_space_is_held_or_when_zoomed_out(cx: &mu
     window
         .update(cx, |view, _w, cx| {
             let on_line = point(px(400.0), px(300.0));
-            view.space_held = true;
+            view.pointer.space_held = true;
             pointer_to(view, on_line, false, cx);
             assert_eq!(preview_way_of(view), None);
-            view.space_held = false;
+            view.pointer.space_held = false;
             pointer_to(view, on_line, false, cx);
             assert_eq!(preview_way_of(view), Some(10));
             // Switching to Add mode drops it and keeps it away.
@@ -133,7 +142,7 @@ fn no_preview_outside_select_mode_while_space_is_held_or_when_zoomed_out(cx: &mu
             view.clear_vertex_preview();
             pointer_to(view, on_line, false, cx);
             assert_eq!(preview_way_of(view), None);
-            assert_eq!(view.hovered, None);
+            assert_eq!(view.pointer.hovered, None);
             // Select mode below the preview zoom.
             view.enter_mode(EditMode::Select);
             view.viewport.set_zoom(17.0);
@@ -252,8 +261,11 @@ fn add_mode_press_on_a_vertex_does_not_grab_it(cx: &mut TestAppContext) {
             pointer_to(view, n1, false, cx);
             assert_eq!(preview_way_of(view), None);
             press(view, n1);
-            assert!(view.vertex_grab.is_none());
-            assert!(matches!(view.interaction, Interaction::Pending { .. }));
+            assert!(view.pointer.vertex_grab.is_none());
+            assert!(matches!(
+                view.pointer.interaction,
+                Interaction::Pending { .. }
+            ));
         })
         .unwrap();
 }

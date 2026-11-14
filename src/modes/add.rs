@@ -68,7 +68,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     let Some(progress) = view.add_progress() else {
         return;
     };
-    let Some(mouse_pos) = view.last_mouse_pos else {
+    let Some(mouse_pos) = view.pointer.last_mouse_pos else {
         return;
     };
     let Some(layer_id) = view.active_layer else {
@@ -162,10 +162,10 @@ impl MapViewer {
                     kind: osm_gpui::selection::FeatureKind::Way,
                     id: way_id,
                 }];
-                self.fields_text_inputs.clear();
-                self.fields_text_subscribed.clear();
-                self.fields_open_combo = None;
-                self.fields_promoted_more_fields.clear();
+                self.fields_panel.fields_text_inputs.clear();
+                self.fields_panel.fields_text_subscribed.clear();
+                self.fields_panel.fields_open_combo = None;
+                self.fields_panel.fields_promoted_more_fields.clear();
                 return;
             }
         }
@@ -310,10 +310,10 @@ impl MapViewer {
                 }];
             }
         }
-        self.fields_text_inputs.clear();
-        self.fields_text_subscribed.clear();
-        self.fields_open_combo = None;
-        self.fields_promoted_more_fields.clear();
+        self.fields_panel.fields_text_inputs.clear();
+        self.fields_panel.fields_text_subscribed.clear();
+        self.fields_panel.fields_open_combo = None;
+        self.fields_panel.fields_promoted_more_fields.clear();
     }
 
     /// Shared by the "continue clicking" and "connect to existing feature"

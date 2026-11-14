@@ -111,7 +111,7 @@ fn copy_and_paste_features_is_one_undo_step_with_the_same_ids_on_redo(cx: &mut T
             let nodes_before = ids_of(view, Node);
             let ways_before = ids_of(view, Way);
             let pointer = point(px(500.0), px(200.0));
-            view.last_mouse_pos = Some(pointer);
+            view.pointer.last_mouse_pos = Some(pointer);
             view.run_selection_action("paste_features", cx);
             assert_eq!(view.undo_stack.actions.len(), 1);
             assert_eq!(status(view), Some("Pasted 7 features"));

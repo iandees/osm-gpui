@@ -112,6 +112,7 @@ impl MapViewer {
     fn paste_position(&self) -> PastePosition {
         let size = self.viewport.transform.screen_size;
         let at = self
+            .pointer
             .last_mouse_pos
             .unwrap_or_else(|| gpui::point(size.width / 2.0, size.height / 2.0));
         PastePosition::CenterAt(self.viewport.screen_to_geo(at))

@@ -212,6 +212,7 @@ impl MapViewer {
         let account =
             auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
         let cursor = self
+            .pointer
             .last_mouse_pos
             .map(|position| self.viewport.screen_to_geo(position));
         // The OSM API refuses downloads above the server's maximum area; say

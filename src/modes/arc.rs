@@ -110,10 +110,13 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     let half = gpui::px(4.0);
     fill_square(window, frame.geo(progress.start.geo), half, blue());
     // The cursor, snapped onto a way as a click would be.
-    let cursor_geo = view.last_mouse_pos.map(|p| match view.active_layer {
-        Some(layer_id) => view.arc_point_at(layer_id, p, false).geo,
-        None => frame.viewport.screen_to_geo(p).to_pair(),
-    });
+    let cursor_geo = view
+        .pointer
+        .last_mouse_pos
+        .map(|p| match view.active_layer {
+            Some(layer_id) => view.arc_point_at(layer_id, p, false).geo,
+            None => frame.viewport.screen_to_geo(p).to_pair(),
+        });
     let path_points: Vec<(f64, f64)> = match (progress.end, cursor_geo) {
         (None, Some(cursor)) => vec![progress.start.geo, cursor],
         (None, None) => Vec::new(),
@@ -330,9 +333,9 @@ impl MapViewer {
             kind: osm_gpui::selection::FeatureKind::Way,
             id: way_id,
         }];
-        self.fields_text_inputs.clear();
-        self.fields_text_subscribed.clear();
-        self.fields_open_combo = None;
-        self.fields_promoted_more_fields.clear();
+        self.fields_panel.fields_text_inputs.clear();
+        self.fields_panel.fields_text_subscribed.clear();
+        self.fields_panel.fields_open_combo = None;
+        self.fields_panel.fields_promoted_more_fields.clear();
     }
 }

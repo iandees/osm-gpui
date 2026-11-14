@@ -34,7 +34,7 @@ fn a_reference_layer_is_inert_for_editing(cx: &mut TestAppContext) {
         assert_eq!(view.active_layer_pending(), Some(0));
         // Deleting needs no confirmation.
         view.on_delete_layer(&DeleteLayer { index: 0 }, window, cx);
-        assert!(view.delete_layer_dialog.is_none());
+        assert!(view.dialogs.delete_layer_dialog.is_none());
         assert_eq!(view.layer_manager.layers().len(), 1);
     });
 }

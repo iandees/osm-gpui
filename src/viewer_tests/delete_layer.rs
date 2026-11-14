@@ -66,7 +66,7 @@ fn deleting_a_layer_removes_its_undo_and_redo_steps(cx: &mut TestAppContext) {
                 kind: osm_gpui::selection::FeatureKind::Node,
                 id: 1,
             }];
-            view.hovered = view.selected.first().copied();
+            view.pointer.hovered = view.selected.first().copied();
             view.active_layer = Some(a);
             let revision = view.undo_stack.revision;
 
@@ -85,7 +85,7 @@ fn deleting_a_layer_removes_its_undo_and_redo_steps(cx: &mut TestAppContext) {
             // B's first step is undoable, its undone last step redoable.
             assert_eq!(view.undo_stack.cursor, 1);
             assert!(view.selected.is_empty());
-            assert!(view.hovered.is_none());
+            assert!(view.pointer.hovered.is_none());
             assert_eq!(view.active_layer, None);
 
             let b_created = |view: &MapViewer| {
@@ -122,7 +122,11 @@ fn press_delete_layer_dialog(
 ) {
     window
         .update(cx, |view, _window, cx| {
-            let dialog = view.delete_layer_dialog.clone().expect("dialog is open");
+            let dialog = view
+                .dialogs
+                .delete_layer_dialog
+                .clone()
+                .expect("dialog is open");
             dialog.update(cx, |dialog, cx| {
                 if confirm {
                     dialog.press_confirm(cx)
@@ -160,7 +164,11 @@ fn deleting_a_layer_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
         .update(cx, |view, _window, cx| {
             assert_eq!(layer_count(view), 2);
             assert!(view.layer_manager.find_layer(a).is_some());
-            let dialog = view.delete_layer_dialog.clone().expect("dialog opens");
+            let dialog = view
+                .dialogs
+                .delete_layer_dialog
+                .clone()
+                .expect("dialog opens");
             let dialog = dialog.read(cx);
             assert_eq!(dialog.layer(), a);
             assert!(dialog.pending() > 0);
@@ -192,7 +200,7 @@ fn cancelling_the_delete_keeps_the_layer_its_edits_and_history(cx: &mut TestAppC
     press_delete_layer_dialog(window, cx, false);
     window
         .update(cx, |view, _w, _cx| {
-            assert!(view.delete_layer_dialog.is_none());
+            assert!(view.dialogs.delete_layer_dialog.is_none());
             assert_eq!(layer_count(view), 2);
             let after = (
                 view.undo_stack.actions.len(),
@@ -214,7 +222,10 @@ fn enter_and_escape_cancel_the_delete(cx: &mut TestAppContext) {
         cx.simulate_keystrokes(window.into(), key);
         window
             .update(cx, |view, _w, _cx| {
-                assert!(view.delete_layer_dialog.is_none(), "{key} closes it");
+                assert!(
+                    view.dialogs.delete_layer_dialog.is_none(),
+                    "{key} closes it"
+                );
                 assert!(view.layer_manager.find_layer(a).is_some(), "{key} keeps it");
                 assert_eq!(layer_count(view), 2);
             })
@@ -248,7 +259,7 @@ fn a_confirmation_opened_from_the_menu_is_focused_and_escape_closes_it(cx: &mut 
     .unwrap();
     window
         .update(cx, |view, window, cx| {
-            let dialog = view.delete_layer_dialog.clone().unwrap();
+            let dialog = view.dialogs.delete_layer_dialog.clone().unwrap();
             let handle = gpui::Focusable::focus_handle(dialog.read(cx), cx);
             assert!(handle.contains_focused(window, cx));
         })
@@ -256,7 +267,10 @@ fn a_confirmation_opened_from_the_menu_is_focused_and_escape_closes_it(cx: &mut 
     cx.simulate_keystrokes(window.into(), "escape");
     window
         .update(cx, |view, _w, _cx| {
-            assert!(view.delete_layer_dialog.is_none(), "escape closes it");
+            assert!(
+                view.dialogs.delete_layer_dialog.is_none(),
+                "escape closes it"
+            );
             assert!(view.layer_manager.find_layer(a).is_some());
         })
         .unwrap();
@@ -282,7 +296,7 @@ fn confirming_the_delete_removes_the_layer_and_its_history(cx: &mut TestAppConte
     press_delete_layer_dialog(window, cx, true);
     window
         .update(cx, |view, _w, _cx| {
-            assert!(view.delete_layer_dialog.is_none());
+            assert!(view.dialogs.delete_layer_dialog.is_none());
             assert!(view.layer_manager.find_layer(a).is_none());
             assert!(view.layer_manager.find_layer(b).is_some());
             assert!(!view.undo_stack.actions.is_empty());
@@ -303,12 +317,12 @@ fn a_layer_without_unsaved_edits_is_deleted_without_asking(cx: &mut TestAppConte
             let b = add_second_layer(view);
             assert_eq!(layer_count(view), 2);
             view.on_delete_layer(&DeleteLayer { index: 1 }, window, cx);
-            assert!(view.delete_layer_dialog.is_none());
+            assert!(view.dialogs.delete_layer_dialog.is_none());
             assert!(view.layer_manager.find_layer(b).is_none());
             assert_eq!(layer_count(view), 1);
             // An index past the end is ignored.
             view.on_delete_layer(&DeleteLayer { index: 7 }, window, cx);
-            assert!(view.delete_layer_dialog.is_none());
+            assert!(view.dialogs.delete_layer_dialog.is_none());
             assert_eq!(layer_count(view), 1);
         })
         .unwrap();
@@ -325,7 +339,7 @@ fn deleting_is_refused_during_an_upload_before_the_dialog_and_at_confirm(cx: &mu
             let (_a, _b) = mixed_layer_history(view);
             view.transfer = Some(upload());
             view.on_delete_layer(&DeleteLayer { index: 0 }, window, cx);
-            assert!(view.delete_layer_dialog.is_none());
+            assert!(view.dialogs.delete_layer_dialog.is_none());
             assert_eq!(layer_count(view), 2);
             assert!(view.status_message.is_some());
         })
@@ -336,7 +350,7 @@ fn deleting_is_refused_during_an_upload_before_the_dialog_and_at_confirm(cx: &mu
     let (a, _b) = open_delete_dialog_for_edited_layer(window, cx);
     window
         .update(cx, |view, _w, _cx| {
-            assert!(view.delete_layer_dialog.is_some());
+            assert!(view.dialogs.delete_layer_dialog.is_some());
             view.transfer = Some(upload());
             view.status_message = None;
         })
@@ -344,7 +358,7 @@ fn deleting_is_refused_during_an_upload_before_the_dialog_and_at_confirm(cx: &mu
     press_delete_layer_dialog(window, cx, true);
     window
         .update(cx, |view, _w, _cx| {
-            assert!(view.delete_layer_dialog.is_none());
+            assert!(view.dialogs.delete_layer_dialog.is_none());
             assert!(view.layer_manager.find_layer(a).is_some());
             assert_eq!(layer_count(view), 2);
             assert!(view.status_message.is_some());
@@ -360,13 +374,13 @@ fn confirming_after_the_layer_disappeared_does_not_panic(cx: &mut TestAppContext
         .update(cx, |view, _w, cx| {
             // The layer goes away some other way while the dialog is up.
             view.delete_layer_now(a, cx);
-            assert!(view.delete_layer_dialog.is_some());
+            assert!(view.dialogs.delete_layer_dialog.is_some());
         })
         .unwrap();
     press_delete_layer_dialog(window, cx, true);
     window
         .update(cx, |view, _w, _cx| {
-            assert!(view.delete_layer_dialog.is_none());
+            assert!(view.dialogs.delete_layer_dialog.is_none());
             // The other layer is untouched.
             assert!(view.layer_manager.find_layer(b).is_some());
             assert_eq!(layer_count(view), 1);

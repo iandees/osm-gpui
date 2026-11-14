@@ -1585,7 +1585,11 @@ fn a_crash_after_part_two_was_accepted_but_before_it_was_applied_is_flagged_on_r
     window
         .update(cx, |view, window, cx| {
             view.check_for_pending_restore(window, cx);
-            let dialog = view.restore_dialog.clone().expect("the offer is shown");
+            let dialog = view
+                .dialogs
+                .restore_dialog
+                .clone()
+                .expect("the offer is shown");
             let notices = dialog.read(cx).upload_notices().to_vec();
             assert_eq!(notices.len(), 1);
             assert!(
@@ -1632,7 +1636,11 @@ fn a_crash_after_part_two_was_accepted_but_before_it_was_applied_is_flagged_on_r
 
             // The upload dialog opens on the same "may have gone through" stop.
             view.open_upload_dialog_with(Some("tester"), false, window, cx);
-            let dialog = view.upload_dialog.clone().expect("the dialog opens");
+            let dialog = view
+                .dialogs
+                .upload_dialog
+                .clone()
+                .expect("the dialog opens");
             assert_eq!(
                 dialog.read(cx).failure_kind(),
                 Some(FailureKind::OutcomeUnknown)
@@ -1760,7 +1768,11 @@ fn a_crash_while_the_request_is_in_flight_leaves_the_changeset_id_and_the_object
     window
         .update(cx, |view, window, cx| {
             view.check_for_pending_restore(window, cx);
-            let dialog = view.restore_dialog.clone().expect("the offer is shown");
+            let dialog = view
+                .dialogs
+                .restore_dialog
+                .clone()
+                .expect("the offer is shown");
             let text = dialog.read(cx).upload_notices()[0].join("\n");
             assert!(text.contains(&format!("/changeset/{id}")), "{text}");
             assert!(text.contains("It was sending: 3 new nodes."), "{text}");
@@ -1775,7 +1787,11 @@ fn a_crash_while_the_request_is_in_flight_leaves_the_changeset_id_and_the_object
             // are found.
             assert_eq!(view.in_flight_features().len(), 3);
             view.open_upload_dialog_with(Some("tester"), false, window, cx);
-            let dialog = view.upload_dialog.clone().expect("the dialog opens");
+            let dialog = view
+                .dialogs
+                .upload_dialog
+                .clone()
+                .expect("the dialog opens");
             assert_eq!(
                 dialog.read(cx).failure_kind(),
                 Some(FailureKind::OutcomeUnknown)
@@ -1788,7 +1804,7 @@ fn a_crash_while_the_request_is_in_flight_leaves_the_changeset_id_and_the_object
     window
         .update(cx, |view, _window, _cx| {
             assert_eq!(view.selected.len(), 3);
-            assert!(view.upload_dialog.is_none());
+            assert!(view.dialogs.upload_dialog.is_none());
         })
         .unwrap();
     let _ = std::fs::remove_dir_all(live_root);
@@ -1846,7 +1862,11 @@ fn two_crashed_sessions_with_markers_are_both_carried_and_both_warned_about(
     window
         .update(cx, |view, window, cx| {
             view.check_for_pending_restore(window, cx);
-            let dialog = view.restore_dialog.clone().expect("the offer is shown");
+            let dialog = view
+                .dialogs
+                .restore_dialog
+                .clone()
+                .expect("the offer is shown");
             assert_eq!(dialog.read(cx).upload_notices().len(), 2);
             dialog.update(cx, |dialog, cx| dialog.press_restore(cx));
         })
@@ -1866,7 +1886,7 @@ fn two_crashed_sessions_with_markers_are_both_carried_and_both_warned_about(
             assert!(warning.contains("changeset/111"), "{warning}");
             assert!(warning.contains("changeset/222"), "{warning}");
             view.open_upload_dialog_with(Some("tester"), false, window, cx);
-            assert!(view.upload_dialog.is_some());
+            assert!(view.dialogs.upload_dialog.is_some());
         })
         .unwrap();
     let _ = std::fs::remove_dir_all(live_root);

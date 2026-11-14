@@ -26,6 +26,7 @@ mod autosave_driver;
 mod clipboard_actions;
 #[cfg(test)]
 mod dialog_tests;
+mod dialogs;
 #[cfg(test)]
 mod edge_case_tests;
 mod fields_section;
@@ -39,12 +40,14 @@ mod imagery_state_tests;
 #[cfg(test)]
 mod improve_click_tests;
 mod menu;
+mod menu_sync;
 mod mode_panel;
 mod modes;
 use modes::AddProgress;
 #[cfg(test)]
 use modes::{BuildingReference, ExtrudeDrag, ExtrudeStyle};
 mod notes_ui;
+mod pointer_state;
 #[cfg(test)]
 mod reference_tests;
 mod script_harness;
@@ -53,6 +56,7 @@ mod selection_actions;
 mod selection_dispatch_tests;
 mod side_panel;
 mod side_panel_layout;
+mod side_panel_state;
 mod status_bar;
 mod street_imagery_ui;
 mod tag_suggest_ui;
@@ -680,6 +684,16 @@ pub(crate) fn uploaded_taint(
 
 use osm_gpui::upload_chunks::UploadStop;
 
+/// The state of one editor window. Fields touched everywhere (viewport, layers,
+/// selection, undo stack, mode) live here directly; the rest is grouped by
+/// concern, so a new field goes in the group that owns its concern:
+/// - `dialogs`: open modal dialogs and requests to open one (`dialogs.rs`)
+/// - `pointer`: mouse, hover, drag and modifier state on the map (`pointer_state.rs`)
+/// - `fields_panel`: the Fields section's widgets (`side_panel_state.rs`)
+/// - `tag_edit`: in-place Tags table and Members list editing (`side_panel_state.rs`)
+/// - `menu_sync`: what the menus were last built from (`menu_sync.rs`)
+/// - `notes`, `gps_traces`, `imagery`, `object_history`, `autosave`: the
+///   feature modules' own state
 struct MapViewer {
     viewport: Viewport,
     layer_manager: LayerManager,
@@ -696,9 +710,6 @@ struct MapViewer {
     /// a poll task re-renders. Unlike `status_message` it never expires on
     /// its own, and at most one transfer runs at a time.
     transfer: Option<TransferHandle>,
-    /// Whether Space is currently held with the map focused; a left-drag
-    /// then pans instead of selecting.
-    space_held: bool,
     /// Bumped whenever layer data changes outside the undo stack (upload
     /// reconciliation, layer add/delete); part of `pending_edits`' cache key.
     data_generation: u64,
@@ -708,49 +719,26 @@ struct MapViewer {
     selected: Vec<osm_gpui::selection::FeatureRef>,
     /// What Copy and Copy Tags set aside, for Paste and Paste Tags.
     clipboards: clipboard_actions::Clipboards,
-    /// Current mouse interaction: idle, a pending press, an in-progress
-    /// box-select, or an in-progress move-drag of the selection. See
-    /// `osm_gpui::interaction` for the pure click/drag/box-select decision
-    /// tree this drives.
-    interaction: Interaction,
     frame_times: VecDeque<Instant>,
-    /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
-    last_menu_center: Option<LatLon>,
-    /// Where the Editor Layer Index load stands.
-    imagery_load_state: ImageryLoadState,
-    /// The load state the Imagery menu was last rebuilt for.
-    last_imagery_load_state: Option<ImageryLoadState>,
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
     /// Whether the downloaded-area wash (everything outside the downloaded
     /// bounds dimmed) is drawn. View > Show Downloaded Area; on by default and
     /// not persisted (the settings store holds no other View preferences).
     show_downloaded_area: bool,
-    /// Whether the menus were last built with File > Upload to OSM enabled.
-    upload_menu_enabled: bool,
-    /// Active custom imagery dialog, if open.
-    custom_imagery_dialog:
-        Option<gpui::Entity<osm_gpui::ui::custom_imagery_dialog::CustomImageryDialog>>,
-    /// Active "unsaved changes" quit-confirmation dialog, if open.
-    quit_confirm_dialog: Option<gpui::Entity<osm_gpui::ui::quit_confirm_dialog::QuitConfirmDialog>>,
-    delete_layer_dialog: Option<gpui::Entity<osm_gpui::ui::delete_layer_dialog::DeleteLayerDialog>>,
-    /// The startup offer to restore autosaved layers, if showing.
-    restore_dialog: Option<gpui::Entity<osm_gpui::ui::restore_dialog::RestoreDialog>>,
+    dialogs: dialogs::Dialogs,
+    pointer: pointer_state::PointerState,
+    menu_sync: menu_sync::MenuSync,
     /// Autosave and crash recovery for this run; `None` when off (see
     /// `autosave_driver`).
     autosave: Option<autosave_driver::AutosaveState>,
     /// The object history view and what was learned from the server's
     /// version history of objects (see `history_actions`).
     object_history: history_actions::HistoryState,
-    /// Edit > Find, while open.
-    find_dialog: Option<gpui::Entity<osm_gpui::ui::find_dialog::FindDialog>>,
     /// The last few queries run through Find this session, newest first.
     find_history: osm_gpui::search::QueryHistory,
     /// The mode Find was last used in; the dialog opens with it.
     find_mode: osm_gpui::search::SearchMode,
-    about_dialog: Option<gpui::Entity<osm_gpui::ui::about_dialog::AboutDialog>>,
-    /// Active upload-review dialog, if open.
-    upload_dialog: Option<gpui::Entity<osm_gpui::ui::upload_dialog::UploadDialog>>,
     /// The side panel's Validation section, once Tools > Validate has run
     /// (see `validation_panel.rs`).
     validation: Option<validation_panel::ValidationPanel>,
@@ -761,77 +749,17 @@ struct MapViewer {
     /// The sources text kept when the upload dialog closed without
     /// uploading; `None` means prefill the last uploaded one.
     upload_source_draft: Option<String>,
-    sign_in_dialog: Option<gpui::Entity<osm_gpui::ui::sign_in_dialog::SignInDialog>>,
-    /// Active "can't do that" notice (an upload refused for a server size
-    /// limit), if open.
-    notice_dialog: Option<gpui::Entity<osm_gpui::ui::notice_dialog::NoticeDialog>>,
-    /// The tag currently being edited in place in the Tags table, if any.
-    tag_inline_edit: Option<InlineTagEdit>,
-    /// A request to start an inline tag edit, recorded by a cell/button
-    /// click and acted on during the next `render()` — see
-    /// `PendingTagEditOpen`'s doc comment.
-    pending_tag_edit_open: Option<PendingTagEditOpen>,
-    /// Autocomplete for the tag inputs: layer indexes, taginfo bookkeeping.
-    tag_suggest: tag_suggest_ui::TagSuggestState,
-    /// The role of a relation member being edited in place in the Members
-    /// list, if any.
-    role_edit: Option<RoleEdit>,
-    /// A request to start a role edit, acted on during the next `render()`
-    /// for the same reason as `pending_tag_edit_open`.
-    pending_role_edit_open: Option<(MemberRef, String)>,
-    /// Whether the Members list shows every member of a long relation
-    /// instead of the first few.
-    members_show_all: bool,
-    /// One focus handle per Members row, grouping that row's buttons so the
-    /// row can tell whether focus is inside it (grown lazily while rendering).
-    member_controls_focus: std::cell::RefCell<Vec<gpui::FocusHandle>>,
-    /// Set by "Add to Relation…"; `render` opens the picker (it needs the
-    /// window) and clears it.
-    pending_relation_picker: bool,
-    /// Active "add to relation" picker dialog, if open.
-    relation_picker_dialog:
-        Option<gpui::Entity<osm_gpui::ui::relation_picker_dialog::RelationPickerDialog>>,
-    /// Set by "Create Parallel Way…"; `render` opens the dialog and clears it.
-    pending_parallel_dialog: bool,
-    /// Active "create parallel way" dialog, if open.
-    parallel_dialog: Option<gpui::Entity<osm_gpui::ui::parallel_dialog::ParallelDialog>>,
-    /// What the parallel-way dialog was last submitted with, offered again
-    /// next time (this session only).
-    parallel_params: osm_gpui::parallel::ParallelParams,
-    /// The feature whose Fields section has its "Add field" list expanded.
-    /// Keyed by feature so the list is closed again for any other selection
-    /// without every selection-changing path having to reset it.
-    fields_more_open_for: Option<osm_gpui::selection::FeatureRef>,
+    fields_panel: side_panel_state::FieldsState,
+    tag_edit: side_panel_state::TagEditState,
     /// Current width of the side panel in pixels (user-resizable).
     side_panel_width: f32,
     /// An in-progress drag of the side panel's resize handle: the window x
     /// and panel width at mouse-down.
     side_panel_resize: Option<(f32, f32)>,
-    /// Active NSI preset search dialog, if open.
-    nsi_dialog: Option<gpui::Entity<osm_gpui::ui::nsi_dialog::NsiPresetDialog>>,
-    /// Active "change feature type" preset picker dialog, if open.
-    preset_picker_dialog:
-        Option<gpui::Entity<osm_gpui::ui::preset_picker_dialog::PresetPickerDialog>>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
     /// Tags, History, Relations, Members, Validation, by the indices
     /// `render_side_panel` gives them) is expanded.
     side_panel_open: [bool; 8],
-    /// Live `InputState` entities for the Fields section's text widgets,
-    /// keyed by field id. Rebuilt whenever the selected feature changes so
-    /// stale entities from a previous feature never leak into a new one.
-    fields_text_inputs:
-        std::collections::HashMap<String, gpui::Entity<gpui_component::input::InputState>>,
-    /// Field ids that already have a `cx.subscribe` registered on their
-    /// `fields_text_inputs` entity, so `text_field_input` never subscribes
-    /// twice for the same field across re-renders. Cleared alongside
-    /// `fields_text_inputs`.
-    fields_text_subscribed: std::collections::HashSet<String>,
-    /// Which field's combo/multiCombo option list is currently expanded,
-    /// if any (`None` = all collapsed). Only one at a time.
-    fields_open_combo: Option<String>,
-    /// Field ids promoted from a preset's `more_fields` into the visible
-    /// list for the current editing session. Cleared on selection change.
-    fields_promoted_more_fields: std::collections::HashSet<String>,
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
@@ -842,38 +770,9 @@ struct MapViewer {
     /// Id of the OSM layer that the drawing modes write into, or `None` if
     /// no layer is designated (those modes are disabled then).
     active_layer: Option<LayerId>,
-    /// What the pointer would snap onto right now (Add mode hover, or a
-    /// single node being dragged), drawn as a highlight. See `SnapTarget`.
-    snap_preview: Option<SnapTarget>,
-    /// The modifier keys as of the last mouse move, click or modifier change;
-    /// Improve Way mode reads it to preview and pick its operation.
-    last_modifiers: gpui::Modifiers,
-    /// Last known mouse position within the map area, updated on every
-    /// mouse-move; used to drive the live Building-mode preview (which
-    /// needs a cursor position outside of a drag) during `render()`.
-    last_mouse_pos: Option<gpui::Point<gpui::Pixels>>,
-    /// The feature under the cursor that a click would select, if any
-    /// (Select mode only). Drawn with the hover highlight.
-    hovered: Option<osm_gpui::selection::FeatureRef>,
-    /// A visible vertex (previewed, or on a selected way) that was pressed
-    /// without being selected: the move-drag it started moves just this node,
-    /// and the node becomes the selection once the drag passes the threshold
-    /// (a release without moving is a plain click and selects it that way).
-    vertex_grab: Option<osm_gpui::selection::FeatureRef>,
-    /// The interactive Rotate in progress, if any (see `RotateSession`).
-    rotate_session: Option<RotateSession>,
-    /// Window position of the last right-button press on the map, kept until
-    /// the button is released: a release within `CLICK_SLOP` of it is a click
-    /// (opens the context menu), anything further was a pan.
-    right_press: Option<gpui::Point<gpui::Pixels>>,
-    /// The left press now in progress began while an in-window menu was open
-    /// (so it only closes the menu): the map ignores it and its release.
-    menu_swallow_press: bool,
     /// Whether the window has been drawn once, so there is a dispatch tree to
     /// ask whether focus is inside a dialog (see `keep_dialog_focus`).
     drawn_once: bool,
-    /// The open right-click context menu, if any.
-    context_menu: Option<ContextMenuState>,
     /// The "Adjust imagery offset" mode, while it is on (see
     /// `imagery_offset_ui`).
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
@@ -980,8 +879,8 @@ impl MapViewer {
         // If the map loses focus while Space is held, its key-up goes
         // elsewhere; don't leave the map stuck in pan-drag mode.
         cx.on_blur(&focus_handle, window, |this, _, cx| {
-            if this.space_held {
-                this.space_held = false;
+            if this.pointer.space_held {
+                this.pointer.space_held = false;
                 cx.notify();
             }
         })
@@ -1043,38 +942,25 @@ impl MapViewer {
             window_bounds: None,
             status_message: None,
             transfer: None,
-            space_held: false,
             data_generation: 0,
             pending_edits: None,
             selected: Vec::new(),
             clipboards: Default::default(),
-            interaction: Interaction::Idle,
             frame_times: VecDeque::with_capacity(120),
-            last_menu_center: None,
-            imagery_load_state: ImageryLoadState::Loading,
-            last_imagery_load_state: None,
             show_debug_overlay: false,
             show_downloaded_area: true,
-            upload_menu_enabled: false,
-            custom_imagery_dialog: None,
-            quit_confirm_dialog: None,
-            delete_layer_dialog: None,
-            restore_dialog: None,
+            dialogs: Default::default(),
+            pointer: Default::default(),
+            menu_sync: Default::default(),
             autosave: None,
             object_history: Default::default(),
-            find_dialog: None,
             find_history: Default::default(),
             find_mode: Default::default(),
-            about_dialog: None,
-            upload_dialog: None,
             validation: None,
             upload_comment_draft: String::new(),
             upload_source_draft: None,
-            sign_in_dialog: None,
-            notice_dialog: None,
-            tag_inline_edit: None,
-            tag_suggest: tag_suggest_ui::TagSuggestState::new(),
-            fields_more_open_for: None,
+            fields_panel: Default::default(),
+            tag_edit: Default::default(),
             // Scripted runs use the default width, not the user's saved one,
             // so scripts' click coordinates hold on every machine.
             side_panel_width: osm_gpui::ui::style::initial_side_panel_width(
@@ -1083,18 +969,6 @@ impl MapViewer {
                     .filter(|_| !script_harness::script_mode()),
             ),
             side_panel_resize: None,
-            pending_tag_edit_open: None,
-            role_edit: None,
-            pending_relation_picker: false,
-            relation_picker_dialog: None,
-            pending_parallel_dialog: false,
-            parallel_dialog: None,
-            parallel_params: osm_gpui::parallel::ParallelParams::default(),
-            pending_role_edit_open: None,
-            members_show_all: false,
-            member_controls_focus: std::cell::RefCell::new(Vec::new()),
-            nsi_dialog: None,
-            preset_picker_dialog: None,
             // Everything open except History and Validation, which keep to
             // their headers until the user opens them.
             side_panel_open: {
@@ -1103,24 +977,11 @@ impl MapViewer {
                 open[validation_panel::SECTION] = false;
                 open
             },
-            fields_text_inputs: std::collections::HashMap::new(),
-            fields_text_subscribed: std::collections::HashSet::new(),
-            fields_open_combo: None,
-            fields_promoted_more_fields: std::collections::HashSet::new(),
             focus_handle,
             undo_stack: UndoStack::default(),
             mode_state: modes::ModeState::fresh(EditMode::Select),
             active_layer: None,
-            snap_preview: None,
-            last_modifiers: gpui::Modifiers::none(),
-            last_mouse_pos: None,
-            hovered: None,
-            vertex_grab: None,
-            rotate_session: None,
-            right_press: None,
-            menu_swallow_press: false,
             drawn_once: false,
-            context_menu: None,
             offset_adjust: None,
             notes: Default::default(),
             gps_traces: Default::default(),
@@ -1134,7 +995,7 @@ impl MapViewer {
     /// window's keybindings-changed handler in `menu.rs`) can trigger an
     /// immediate menu rebuild without duplicating this lookup.
     pub(crate) fn imagery_menu_context(&self) -> (LatLon, ImageryLoadState) {
-        (self.viewport.center(), self.imagery_load_state)
+        (self.viewport.center(), self.menu_sync.imagery_load_state)
     }
 
     /// Whether View > Show Downloaded Area is on (drives its menu checkmark).
@@ -1177,7 +1038,7 @@ impl MapViewer {
         result: Result<Vec<ImageryEntry>, String>,
         cx: &mut Context<Self>,
     ) {
-        self.imagery_load_state = match result {
+        self.menu_sync.imagery_load_state = match result {
             Ok(entries) => {
                 eprintln!("imagery: loaded {} ELI entries", entries.len());
                 if let Some(index) = IMAGERY_INDEX.get() {
@@ -1200,10 +1061,10 @@ impl MapViewer {
     fn maybe_rebuild_imagery_menu(&mut self, cx: &mut Context<Self>) {
         let center = self.viewport.center();
 
-        let current_state = self.imagery_load_state;
+        let current_state = self.menu_sync.imagery_load_state;
 
-        let state_changed = self.last_imagery_load_state != Some(current_state);
-        let center_moved = match self.last_menu_center {
+        let state_changed = self.menu_sync.last_imagery_load_state != Some(current_state);
+        let center_moved = match self.menu_sync.last_menu_center {
             None => true,
             Some(prev) => {
                 (prev.lat - center.lat).abs() > 0.5 || (prev.lon - center.lon).abs() > 0.5
@@ -1215,8 +1076,8 @@ impl MapViewer {
         // Only refresh when the imagery index has reached a terminal state
         // (Ready or Failed). In Loading we don't have entries yet.
         rebuild_menus(&mut *cx, center, current_state, self.menu_toggles());
-        self.last_menu_center = Some(center);
-        self.last_imagery_load_state = Some(current_state);
+        self.menu_sync.last_menu_center = Some(center);
+        self.menu_sync.last_imagery_load_state = Some(current_state);
     }
 
     /// Record the current frame timestamp and return smoothed FPS over the
@@ -1374,7 +1235,7 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.delete_layer_dialog.is_some() {
+        if self.dialogs.delete_layer_dialog.is_some() {
             return;
         }
         let dialog = cx.new(|cx| {
@@ -1384,7 +1245,7 @@ impl MapViewer {
             &dialog,
             |this, _entity, event: &osm_gpui::ui::delete_layer_dialog::DialogEvent, cx| {
                 use osm_gpui::ui::delete_layer_dialog::DialogEvent;
-                this.delete_layer_dialog = None;
+                this.dialogs.delete_layer_dialog = None;
                 match event {
                     DialogEvent::Cancelled => cx.notify(),
                     DialogEvent::Confirmed(id) => {
@@ -1398,7 +1259,7 @@ impl MapViewer {
             },
         )
         .detach();
-        self.delete_layer_dialog = Some(dialog);
+        self.dialogs.delete_layer_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -1420,12 +1281,17 @@ impl MapViewer {
         if self.extrude_drag().is_some_and(|d| d.layer == id) {
             self.set_extrude_drag(None);
         }
-        if self.rotate_session.as_ref().is_some_and(|r| r.layer == id) {
-            self.rotate_session = None;
+        if self
+            .pointer
+            .rotate_session
+            .as_ref()
+            .is_some_and(|r| r.layer == id)
+        {
+            self.pointer.rotate_session = None;
         }
-        self.interaction = Interaction::Idle;
-        if self.hovered.is_some_and(|h| h.layer_id == id) {
-            self.hovered = None;
+        self.pointer.interaction = Interaction::Idle;
+        if self.pointer.hovered.is_some_and(|h| h.layer_id == id) {
+            self.pointer.hovered = None;
         }
         if self.selected.iter().any(|f| f.layer_id == id) {
             let kept = self
@@ -1436,37 +1302,45 @@ impl MapViewer {
                 .collect();
             self.set_selection(kept);
         }
-        if self.fields_more_open_for.is_some_and(|f| f.layer_id == id) {
-            self.fields_more_open_for = None;
+        if self
+            .fields_panel
+            .fields_more_open_for
+            .is_some_and(|f| f.layer_id == id)
+        {
+            self.fields_panel.fields_more_open_for = None;
         }
         // Inline editors aimed at the deleted layer would commit nowhere.
         if self
+            .tag_edit
             .tag_inline_edit
             .as_ref()
             .is_some_and(|e| e.ctx.features.iter().any(|f| f.layer_id == id))
         {
-            self.tag_inline_edit = None;
+            self.tag_edit.tag_inline_edit = None;
         }
         if self
+            .tag_edit
             .pending_tag_edit_open
             .as_ref()
             .is_some_and(|p| p.features.iter().any(|f| f.layer_id == id))
         {
-            self.pending_tag_edit_open = None;
+            self.tag_edit.pending_tag_edit_open = None;
         }
         if self
+            .tag_edit
             .role_edit
             .as_ref()
             .is_some_and(|e| e.member.layer_id == id)
         {
-            self.role_edit = None;
+            self.tag_edit.role_edit = None;
         }
         if self
+            .tag_edit
             .pending_role_edit_open
             .as_ref()
             .is_some_and(|(m, _)| m.layer_id == id)
         {
-            self.pending_role_edit_open = None;
+            self.tag_edit.pending_role_edit_open = None;
         }
         removed
     }
@@ -1524,7 +1398,7 @@ impl MapViewer {
         // Picking a tool ends the imagery offset adjustment, keeping it.
         self.finish_offset_adjust(true, window, cx);
         self.switch_to_mode(mode);
-        self.hovered = None;
+        self.pointer.hovered = None;
         self.clear_vertex_preview();
         self.cancel_rotate();
         cx.notify();
@@ -1628,10 +1502,10 @@ impl MapViewer {
     /// layer without mutating any data.
     /// Returns whether a move-drag was actually in progress (and cancelled).
     fn cancel_move_drag(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(targets) = interaction::cancel_move_drag(&mut self.interaction) else {
+        let Some(targets) = interaction::cancel_move_drag(&mut self.pointer.interaction) else {
             return false;
         };
-        self.vertex_grab = None;
+        self.pointer.vertex_grab = None;
         for (layer_id, _) in &targets {
             if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                 if let Some(editable) = layer.as_editable_mut() {
@@ -1710,7 +1584,7 @@ impl MapViewer {
         use gpui_component::input::{InputState, SelectAll};
         use osm_gpui::ui::tag_edit::TagEditField;
 
-        let Some(pending) = self.pending_tag_edit_open.take() else {
+        let Some(pending) = self.tag_edit.pending_tag_edit_open.take() else {
             return;
         };
         if self.edits_blocked(cx) {
@@ -1759,7 +1633,7 @@ impl MapViewer {
             });
         }
 
-        self.tag_inline_edit = Some(InlineTagEdit {
+        self.tag_edit.tag_inline_edit = Some(InlineTagEdit {
             ctx: TagEditContext {
                 features,
                 original_key,
@@ -1790,7 +1664,7 @@ impl MapViewer {
                     .timer(std::time::Duration::from_millis(150))
                     .await;
                 let _ = this.update_in(cx, |this, window, cx| {
-                    if this.tag_inline_edit.is_some() {
+                    if this.tag_edit.tag_inline_edit.is_some() {
                         this.refresh_tag_suggestions(first, window, cx);
                     }
                 });
@@ -1817,7 +1691,7 @@ impl MapViewer {
         use gpui_component::input::InputEvent;
         use osm_gpui::ui::tag_edit::TagEditField;
 
-        let Some(edit) = &self.tag_inline_edit else {
+        let Some(edit) = &self.tag_edit.tag_inline_edit else {
             return;
         };
         // Ignore late events from an edit that was already committed or
@@ -1860,7 +1734,7 @@ impl MapViewer {
                 let empty = edit.key.read(cx).value().trim().is_empty();
                 self.close_tag_suggestions();
                 if empty {
-                    self.tag_inline_edit = None;
+                    self.tag_edit.tag_inline_edit = None;
                 }
             }
             InputEvent::Blur => {
@@ -1876,7 +1750,7 @@ impl MapViewer {
     /// discards the edit: silently for the add row, with a status message
     /// for an existing row (which would otherwise look like a failed save).
     fn commit_tag_inline_edit(&mut self, cx: &mut Context<Self>) {
-        let Some(edit) = self.tag_inline_edit.take() else {
+        let Some(edit) = self.tag_edit.tag_inline_edit.take() else {
             return;
         };
         let key = edit.key.read(cx).value().trim().to_string();
@@ -1893,7 +1767,7 @@ impl MapViewer {
     /// Abandon the open inline tag edit (Escape) and hand focus back to the
     /// map.
     pub(crate) fn cancel_tag_inline_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tag_inline_edit.take().is_some() {
+        if self.tag_edit.tag_inline_edit.take().is_some() {
             window.focus(&self.focus_handle, cx);
             cx.notify();
         }
@@ -2071,7 +1945,7 @@ impl MapViewer {
     fn check_for_pending_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui_component::input::{InputState, SelectAll};
 
-        let Some((member, original)) = self.pending_role_edit_open.take() else {
+        let Some((member, original)) = self.tag_edit.pending_role_edit_open.take() else {
             return;
         };
         if self.edits_blocked(cx) {
@@ -2093,7 +1967,7 @@ impl MapViewer {
         window.on_next_frame(|window, cx| {
             window.dispatch_action(Box::new(SelectAll), cx);
         });
-        self.role_edit = Some(RoleEdit { member, input });
+        self.tag_edit.role_edit = Some(RoleEdit { member, input });
         cx.notify();
     }
 
@@ -2108,7 +1982,7 @@ impl MapViewer {
         use gpui_component::input::InputEvent;
 
         // Ignore late events from an edit that was already finished.
-        if self.role_edit.as_ref().map(|edit| &edit.input) != Some(input) {
+        if self.tag_edit.role_edit.as_ref().map(|edit| &edit.input) != Some(input) {
             return;
         }
         match event {
@@ -2125,7 +1999,7 @@ impl MapViewer {
     /// Apply the open role edit, if any, and close it. An empty role is a
     /// valid role.
     fn commit_role_edit(&mut self, cx: &mut Context<Self>) {
-        let Some(edit) = self.role_edit.take() else {
+        let Some(edit) = self.tag_edit.role_edit.take() else {
             return;
         };
         let role = edit.input.read(cx).value().trim().to_string();
@@ -2134,7 +2008,7 @@ impl MapViewer {
 
     /// Abandon the open role edit (Escape) and hand focus back to the map.
     pub(crate) fn cancel_role_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.role_edit.take().is_some() {
+        if self.tag_edit.role_edit.take().is_some() {
             window.focus(&self.focus_handle, cx);
             cx.notify();
         }
@@ -2166,7 +2040,7 @@ impl MapViewer {
         }
         // A rotation in progress owns the selection until it is applied or
         // cancelled (Enter, click, Escape).
-        if self.rotate_session.is_some() {
+        if self.pointer.rotate_session.is_some() {
             return;
         }
         let env = selection_actions::ActionEnv {
@@ -2200,8 +2074,12 @@ impl MapViewer {
                 // `render` opens the dialog (it needs the window); the answer
                 // comes back through `add_selection_to_relation` or
                 // `create_parallel_ways`.
-                selection_actions::Dialog::RelationPicker => self.pending_relation_picker = true,
-                selection_actions::Dialog::ParallelOffset => self.pending_parallel_dialog = true,
+                selection_actions::Dialog::RelationPicker => {
+                    self.dialogs.pending_relation_picker = true
+                }
+                selection_actions::Dialog::ParallelOffset => {
+                    self.dialogs.pending_parallel_dialog = true
+                }
             },
             selection_actions::Run::Interactive(selection_actions::Interactive::Rotate) => {
                 self.start_rotate()
@@ -2235,10 +2113,11 @@ impl MapViewer {
             return;
         };
         let start_angle = self
+            .pointer
             .last_mouse_pos
             .map(|p| osm_gpui::rotate::pointer_angle(self.rotate_center_px(center), pointer_px(p)));
         self.status_message = None;
-        self.rotate_session = Some(RotateSession {
+        self.pointer.rotate_session = Some(RotateSession {
             layer,
             originals,
             center,
@@ -2255,14 +2134,14 @@ impl MapViewer {
 
     /// Turn the nodes of the Rotate in progress to follow the pointer.
     fn update_rotate(&mut self, pointer: gpui::Point<gpui::Pixels>, snap: bool) {
-        let Some(session) = self.rotate_session.as_ref() else {
+        let Some(session) = self.pointer.rotate_session.as_ref() else {
             return;
         };
         let now = osm_gpui::rotate::pointer_angle(
             self.rotate_center_px(session.center),
             pointer_px(pointer),
         );
-        let Some(session) = self.rotate_session.as_mut() else {
+        let Some(session) = self.pointer.rotate_session.as_mut() else {
             return;
         };
         let start = *session.start_angle.get_or_insert(now);
@@ -2277,7 +2156,7 @@ impl MapViewer {
 
     /// Move the session's nodes to `originals` turned by the session's angle.
     fn apply_rotation(&mut self) {
-        let Some(session) = self.rotate_session.as_ref() else {
+        let Some(session) = self.pointer.rotate_session.as_ref() else {
             return;
         };
         let before: Vec<_> = session.originals.iter().map(|&(_, p)| p).collect();
@@ -2302,7 +2181,10 @@ impl MapViewer {
 
     /// The Rotate in progress, in degrees clockwise as the user sees it.
     fn rotate_degrees(&self) -> Option<f64> {
-        self.rotate_session.as_ref().map(|s| -s.angle.to_degrees())
+        self.pointer
+            .rotate_session
+            .as_ref()
+            .map(|s| -s.angle.to_degrees())
     }
 
     /// What the status bar says while a Rotate is in progress.
@@ -2317,12 +2199,12 @@ impl MapViewer {
     /// Abandon the Rotate in progress, putting the nodes back. Returns
     /// whether there was one.
     fn cancel_rotate(&mut self) -> bool {
-        let Some(session) = self.rotate_session.as_mut() else {
+        let Some(session) = self.pointer.rotate_session.as_mut() else {
             return false;
         };
         session.angle = 0.0;
         self.apply_rotation();
-        if let Some(session) = self.rotate_session.take() {
+        if let Some(session) = self.pointer.rotate_session.take() {
             if let Some(layer) = self
                 .layer_manager
                 .find_layer_mut(session.layer)
@@ -2336,7 +2218,7 @@ impl MapViewer {
 
     /// Apply the Rotate in progress as one undo step.
     fn finish_rotate(&mut self) {
-        let Some(session) = self.rotate_session.take() else {
+        let Some(session) = self.pointer.rotate_session.take() else {
             return;
         };
         let degrees = -session.angle.to_degrees();
@@ -2401,8 +2283,8 @@ impl MapViewer {
     fn check_for_pending_relation_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use osm_gpui::ui::relation_picker_dialog::{DialogEvent, RelationPickerDialog};
 
-        if !std::mem::take(&mut self.pending_relation_picker)
-            || self.relation_picker_dialog.is_some()
+        if !std::mem::take(&mut self.dialogs.pending_relation_picker)
+            || self.dialogs.relation_picker_dialog.is_some()
         {
             return;
         }
@@ -2429,12 +2311,12 @@ impl MapViewer {
                         this.add_selection_to_relation(*relation_id);
                     }
                 }
-                this.relation_picker_dialog = None;
+                this.dialogs.relation_picker_dialog = None;
                 cx.notify();
             },
         )
         .detach();
-        self.relation_picker_dialog = Some(dialog);
+        self.dialogs.relation_picker_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -2443,10 +2325,12 @@ impl MapViewer {
     fn check_for_pending_parallel_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use osm_gpui::ui::parallel_dialog::{DialogEvent, ParallelDialog};
 
-        if !std::mem::take(&mut self.pending_parallel_dialog) || self.parallel_dialog.is_some() {
+        if !std::mem::take(&mut self.dialogs.pending_parallel_dialog)
+            || self.dialogs.parallel_dialog.is_some()
+        {
             return;
         }
-        let initial = self.parallel_params;
+        let initial = self.dialogs.parallel_params;
         let dialog = cx.new(|cx| ParallelDialog::new(initial, window, cx));
         cx.subscribe(
             &dialog,
@@ -2454,16 +2338,16 @@ impl MapViewer {
                 match event {
                     DialogEvent::Cancelled => {}
                     DialogEvent::Submitted(params) => {
-                        this.parallel_params = *params;
+                        this.dialogs.parallel_params = *params;
                         this.create_parallel_ways(*params);
                     }
                 }
-                this.parallel_dialog = None;
+                this.dialogs.parallel_dialog = None;
                 cx.notify();
             },
         )
         .detach();
-        self.parallel_dialog = Some(dialog);
+        self.dialogs.parallel_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -2514,7 +2398,7 @@ impl MapViewer {
     /// that end node while drawing.
     fn continue_way_in_add_mode(&mut self, from: osm_gpui::topology::Continuation) {
         self.enter_mode(EditMode::Add);
-        self.hovered = None;
+        self.pointer.hovered = None;
         self.clear_vertex_preview();
         self.set_add_progress(Some(AddProgress {
             way_id: Some(from.way_id),
@@ -2528,13 +2412,13 @@ impl MapViewer {
     fn set_selection(&mut self, selection: Vec<osm_gpui::selection::FeatureRef>) {
         self.selected = selection;
         // The Members list belongs to the selected relation.
-        self.role_edit = None;
-        self.pending_role_edit_open = None;
-        self.members_show_all = false;
-        self.fields_text_inputs.clear();
-        self.fields_text_subscribed.clear();
-        self.fields_open_combo = None;
-        self.fields_promoted_more_fields.clear();
+        self.tag_edit.role_edit = None;
+        self.tag_edit.pending_role_edit_open = None;
+        self.tag_edit.members_show_all = false;
+        self.fields_panel.fields_text_inputs.clear();
+        self.fields_panel.fields_text_subscribed.clear();
+        self.fields_panel.fields_open_combo = None;
+        self.fields_panel.fields_promoted_more_fields.clear();
     }
 
     /// Select relation `id` of `layer_id` on its own (relations can't be
@@ -2638,7 +2522,7 @@ impl MapViewer {
 
     /// Edit > Find: open the query dialog on the active data layer.
     fn on_find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
-        if self.find_dialog.is_some() {
+        if self.dialogs.find_dialog.is_some() {
             return;
         }
         let other_dialog_open = self.any_dialog_open(cx);
@@ -2665,7 +2549,7 @@ impl MapViewer {
                 use osm_gpui::ui::find_dialog::DialogEvent;
                 match event {
                     DialogEvent::Cancelled => {
-                        this.find_dialog = None;
+                        this.dialogs.find_dialog = None;
                         cx.notify();
                     }
                     DialogEvent::Preview { query, mode } => {
@@ -2674,7 +2558,7 @@ impl MapViewer {
                         }
                     }
                     DialogEvent::Submitted { query, mode } => {
-                        this.find_dialog = None;
+                        this.dialogs.find_dialog = None;
                         this.find_mode = *mode;
                         this.find_history.push(query);
                         // The dialog parsed it already; an error cannot happen.
@@ -2685,7 +2569,7 @@ impl MapViewer {
             },
         )
         .detach();
-        self.find_dialog = Some(dialog);
+        self.dialogs.find_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -2994,7 +2878,7 @@ impl MapViewer {
         if self.edits_blocked(cx) {
             return;
         }
-        if self.selected.len() != 1 || self.nsi_dialog.is_some() {
+        if self.selected.len() != 1 || self.dialogs.nsi_dialog.is_some() {
             return;
         }
         let target = self.selected[0];
@@ -3006,19 +2890,19 @@ impl MapViewer {
                 use osm_gpui::ui::nsi_dialog::DialogEvent;
                 match event {
                     DialogEvent::Cancelled => {
-                        this.nsi_dialog = None;
+                        this.dialogs.nsi_dialog = None;
                         cx.notify();
                     }
                     DialogEvent::Submitted(preset_tags) => {
                         this.apply_nsi_preset(&target, preset_tags.clone());
-                        this.nsi_dialog = None;
+                        this.dialogs.nsi_dialog = None;
                         cx.notify();
                     }
                 }
             },
         )
         .detach();
-        self.nsi_dialog = Some(dialog);
+        self.dialogs.nsi_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -3037,7 +2921,7 @@ impl MapViewer {
         if self.edits_blocked(cx) {
             return;
         }
-        if self.selected.len() != 1 || self.preset_picker_dialog.is_some() {
+        if self.selected.len() != 1 || self.dialogs.preset_picker_dialog.is_some() {
             return;
         }
         let target = self.selected[0];
@@ -3067,7 +2951,7 @@ impl MapViewer {
                 use osm_gpui::ui::preset_picker_dialog::DialogEvent;
                 match event {
                     DialogEvent::Cancelled => {
-                        this.preset_picker_dialog = None;
+                        this.dialogs.preset_picker_dialog = None;
                         cx.notify();
                     }
                     DialogEvent::Submitted {
@@ -3080,14 +2964,14 @@ impl MapViewer {
                             &mut osm_gpui::preset_recents::SettingsRecents,
                             preset_id,
                         );
-                        this.preset_picker_dialog = None;
+                        this.dialogs.preset_picker_dialog = None;
                         cx.notify();
                     }
                 }
             },
         )
         .detach();
-        self.preset_picker_dialog = Some(dialog);
+        self.dialogs.preset_picker_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -3248,19 +3132,19 @@ impl MapViewer {
     fn open_modals(&self, cx: &App) -> Vec<osm_gpui::ui::modal::OpenModal> {
         use osm_gpui::ui::modal::open_modal;
         [
-            open_modal(&self.custom_imagery_dialog, cx),
-            open_modal(&self.quit_confirm_dialog, cx),
-            open_modal(&self.delete_layer_dialog, cx),
-            open_modal(&self.restore_dialog, cx),
-            open_modal(&self.find_dialog, cx),
-            open_modal(&self.about_dialog, cx),
-            open_modal(&self.nsi_dialog, cx),
-            open_modal(&self.preset_picker_dialog, cx),
-            open_modal(&self.relation_picker_dialog, cx),
-            open_modal(&self.parallel_dialog, cx),
-            open_modal(&self.upload_dialog, cx),
-            open_modal(&self.sign_in_dialog, cx),
-            open_modal(&self.notice_dialog, cx),
+            open_modal(&self.dialogs.custom_imagery_dialog, cx),
+            open_modal(&self.dialogs.quit_confirm_dialog, cx),
+            open_modal(&self.dialogs.delete_layer_dialog, cx),
+            open_modal(&self.dialogs.restore_dialog, cx),
+            open_modal(&self.dialogs.find_dialog, cx),
+            open_modal(&self.dialogs.about_dialog, cx),
+            open_modal(&self.dialogs.nsi_dialog, cx),
+            open_modal(&self.dialogs.preset_picker_dialog, cx),
+            open_modal(&self.dialogs.relation_picker_dialog, cx),
+            open_modal(&self.dialogs.parallel_dialog, cx),
+            open_modal(&self.dialogs.upload_dialog, cx),
+            open_modal(&self.dialogs.sign_in_dialog, cx),
+            open_modal(&self.dialogs.notice_dialog, cx),
             open_modal(&self.new_note_dialog_element(), cx),
         ]
         .into_iter()
@@ -3385,8 +3269,8 @@ impl MapViewer {
         } else {
             self.hover_snap_target(pos, modifiers)
         };
-        let changed = self.snap_preview != target;
-        self.snap_preview = target;
+        let changed = self.pointer.snap_preview != target;
+        self.pointer.snap_preview = target;
         changed
     }
 
@@ -3400,7 +3284,7 @@ impl MapViewer {
         left_pressed: bool,
         no_button: bool,
     ) {
-        let dragged = match &self.interaction {
+        let dragged = match &self.pointer.interaction {
             Interaction::MoveDrag { targets, .. } if left_pressed => {
                 Self::single_dragged_node(targets)
             }
@@ -3409,7 +3293,7 @@ impl MapViewer {
         if dragged.is_some() || (self.snaps_on_hover() && no_button) {
             self.update_snap_preview(pos, modifiers, dragged);
         } else {
-            self.snap_preview = None;
+            self.pointer.snap_preview = None;
         }
     }
 
@@ -3418,19 +3302,19 @@ impl MapViewer {
     /// refresh it from the last pointer position instead of waiting for the
     /// next mouse move.
     fn handle_modifiers_changed(&mut self, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
-        self.last_modifiers = modifiers;
+        self.pointer.last_modifiers = modifiers;
         if self.preview_depends_on_modifiers() {
             cx.notify();
         }
-        let Some(pos) = self.last_mouse_pos else {
+        let Some(pos) = self.pointer.last_mouse_pos else {
             return;
         };
         // A held move-drag means the left button is down.
-        let dragging = matches!(self.interaction, Interaction::MoveDrag { .. });
-        let idle = matches!(self.interaction, Interaction::Idle);
-        let before = self.snap_preview.clone();
+        let dragging = matches!(self.pointer.interaction, Interaction::MoveDrag { .. });
+        let idle = matches!(self.pointer.interaction, Interaction::Idle);
+        let before = self.pointer.snap_preview.clone();
         self.refresh_snap_preview(pos, modifiers, dragging, idle);
-        if self.snap_preview != before {
+        if self.pointer.snap_preview != before {
             cx.notify();
         }
     }
@@ -3438,10 +3322,10 @@ impl MapViewer {
     fn handle_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let adjusted_position = self.window_to_map(event.position);
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
-        self.last_mouse_pos = Some(adjusted_position);
-        self.last_modifiers = event.modifiers;
+        self.pointer.last_mouse_pos = Some(adjusted_position);
+        self.pointer.last_modifiers = event.modifiers;
         // Rotating: the selection follows the pointer around its centre.
-        if self.rotate_session.is_some() {
+        if self.pointer.rotate_session.is_some() {
             self.update_rotate(adjusted_position, event.modifiers.shift);
             cx.notify();
             return;
@@ -3455,7 +3339,7 @@ impl MapViewer {
                     .hit_test_all(&this.viewport, adjusted_position),
             )
         };
-        self.hovered = if hover_enabled { hit_here(self) } else { None };
+        self.pointer.hovered = if hover_enabled { hit_here(self) } else { None };
         // Which way's vertices to preview. Nothing to do while a move-drag
         // holds the button (the dragged node's way stays previewed); a press
         // that is not a move-drag (a box-select) or any suppressing state
@@ -3463,22 +3347,23 @@ impl MapViewer {
         // preview way changes, its vertices just became targets, so the
         // hover is resolved once more; otherwise there is no second scan.
         let move_dragging = event.pressed_button.is_some()
-            && matches!(self.interaction, Interaction::MoveDrag { .. });
+            && matches!(self.pointer.interaction, Interaction::MoveDrag { .. });
         if !move_dragging {
             let enabled = hover_enabled && !self.any_dialog_open(cx);
             let changed = self.layer_manager.update_vertex_preview(
                 &self.viewport,
                 adjusted_position,
-                self.hovered.as_ref(),
+                self.pointer.hovered.as_ref(),
                 enabled,
             );
             if changed
                 && enabled
                 && self
+                    .pointer
                     .hovered
                     .is_some_and(|h| h.kind == osm_gpui::selection::FeatureKind::Way)
             {
-                self.hovered = hit_here(self);
+                self.pointer.hovered = hit_here(self);
             }
         }
         // Highlight what a click / release here would snap onto.
@@ -3497,7 +3382,7 @@ impl MapViewer {
             return;
         }
 
-        if let Interaction::MoveDrag { down, targets } = &self.interaction {
+        if let Interaction::MoveDrag { down, targets } = &self.pointer.interaction {
             if let Some(delta_pt) =
                 interaction::move_drag_delta(*down, to_pt(adjusted_position), left_pressed)
             {
@@ -3506,7 +3391,7 @@ impl MapViewer {
                 // A grabbed vertex becomes the selection once the press has
                 // really become a drag.
                 if delta_pt.0.hypot(delta_pt.1) >= interaction::DRAG_THRESHOLD {
-                    if let Some(grabbed) = self.vertex_grab.take() {
+                    if let Some(grabbed) = self.pointer.vertex_grab.take() {
                         self.set_selection(vec![grabbed]);
                     }
                 }
@@ -3534,7 +3419,7 @@ impl MapViewer {
         }
 
         if interaction::update_box_select(
-            &mut self.interaction,
+            &mut self.pointer.interaction,
             to_pt(adjusted_position),
             left_pressed,
         ) {
@@ -3544,10 +3429,15 @@ impl MapViewer {
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = self.window_to_map(event.position);
-        if self.rotate_session.is_some() {
+        if self.pointer.rotate_session.is_some() {
             // A click applies the rotation, once the pointer has moved (the
             // click that chose Rotate from a menu does not).
-            if self.rotate_session.as_ref().is_some_and(|r| r.moved) {
+            if self
+                .pointer
+                .rotate_session
+                .as_ref()
+                .is_some_and(|r| r.moved)
+            {
                 self.finish_rotate();
             }
             cx.notify();
@@ -3565,9 +3455,9 @@ impl MapViewer {
             return;
         }
 
-        match interaction::on_mouse_up(&mut self.interaction, to_pt(up_pos)) {
+        match interaction::on_mouse_up(&mut self.pointer.interaction, to_pt(up_pos)) {
             interaction::Gesture::MoveCommitted { targets, delta } => {
-                if let Some(grabbed) = self.vertex_grab.take() {
+                if let Some(grabbed) = self.pointer.vertex_grab.take() {
                     self.set_selection(vec![grabbed]);
                 }
                 let delta = from_pt(delta);
@@ -3589,7 +3479,7 @@ impl MapViewer {
                     self.drag_snap_target(up_pos, event.modifiers, dragged)
                         .map(|target| (dragged, target))
                 });
-                self.snap_preview = None;
+                self.pointer.snap_preview = None;
                 if let Some((
                     (layer_id, node),
                     SnapTarget::Way {
@@ -3708,7 +3598,7 @@ impl MapViewer {
                 cx.notify();
             }
             interaction::Gesture::MoveCancelledAsClick { targets, at } => {
-                self.vertex_grab = None;
+                self.pointer.vertex_grab = None;
                 for (layer_id, _) in &targets {
                     if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                         if let Some(editable) = layer.as_editable_mut() {
@@ -3716,7 +3606,7 @@ impl MapViewer {
                         }
                     }
                 }
-                self.last_modifiers = event.modifiers;
+                self.pointer.last_modifiers = event.modifiers;
                 self.handle_map_click(
                     from_pt(at),
                     event.modifiers.shift,
@@ -3725,7 +3615,7 @@ impl MapViewer {
                     cx,
                 );
                 // Always notify, regardless of whether the selection changed:
-                // `self.interaction` just transitioned back to `Idle` and the
+                // `self.pointer.interaction` just transitioned back to `Idle` and the
                 // drag-preview clear above needs a repaint to actually reach
                 // the screen, or both would appear to "stick" until some
                 // unrelated redraw (e.g. a pan) happened to pick it up.
@@ -3734,12 +3624,12 @@ impl MapViewer {
             interaction::Gesture::BoxSelected { rect } => {
                 let rect = normalize_rect(from_pt(rect.0), from_pt(rect.1));
                 self.selected = self.layer_manager.hit_test_rect_all(&self.viewport, rect);
-                self.fields_text_inputs.clear();
-                self.fields_text_subscribed.clear();
-                self.fields_open_combo = None;
-                self.fields_promoted_more_fields.clear();
+                self.fields_panel.fields_text_inputs.clear();
+                self.fields_panel.fields_text_subscribed.clear();
+                self.fields_panel.fields_open_combo = None;
+                self.fields_panel.fields_promoted_more_fields.clear();
                 // Always notify: the box-select overlay is driven off
-                // `self.interaction`, which just transitioned back to `Idle`.
+                // `self.pointer.interaction`, which just transitioned back to `Idle`.
                 // If the box hit nothing, `self.selected` wouldn't otherwise
                 // change and the stale rectangle would stay on screen until
                 // some unrelated redraw happened to pick up the new state.
@@ -3747,7 +3637,7 @@ impl MapViewer {
             }
             interaction::Gesture::Click { at } => {
                 let before = self.selected.clone();
-                self.last_modifiers = event.modifiers;
+                self.pointer.last_modifiers = event.modifiers;
                 self.handle_map_click(
                     from_pt(at),
                     event.modifiers.shift,
@@ -3889,7 +3779,7 @@ impl MapViewer {
     }
 
     /// Start a pan-drag of the map (right or middle button, or the left
-    /// button while Space is held). Deliberately leaves `self.interaction`
+    /// button while Space is held). Deliberately leaves `self.pointer.interaction`
     /// alone so the drag can never turn into a click or a box-select.
     fn start_pan_drag(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         self.viewport.handle_mouse_down(position);
@@ -3914,7 +3804,7 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(down) = self.right_press.take() else {
+        let Some(down) = self.pointer.right_press.take() else {
             return;
         };
         if (position - down).magnitude() < Self::CLICK_SLOP {
@@ -4003,10 +3893,10 @@ impl MapViewer {
         });
         let dismiss = cx.subscribe(&menu, |this, _menu, _: &gpui::DismissEvent, cx| {
             // The menu has already handed focus back to the map.
-            this.context_menu = None;
+            this.pointer.context_menu = None;
             cx.notify();
         });
-        self.context_menu = Some(ContextMenuState {
+        self.pointer.context_menu = Some(ContextMenuState {
             menu,
             position,
             _dismiss: dismiss,
@@ -4021,7 +3911,7 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.context_menu = None;
+        self.pointer.context_menu = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -4037,7 +3927,7 @@ impl MapViewer {
     ) -> Option<gpui::AnyElement> {
         use gpui::Focusable as _;
 
-        let state = self.context_menu.as_ref()?;
+        let state = self.pointer.context_menu.as_ref()?;
         let menu = state.menu.clone();
         // The menu takes Esc and arrow keys through its own focus.
         if !menu.focus_handle(cx).contains_focused(window, cx) {
@@ -4445,7 +4335,7 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.custom_imagery_dialog.is_some() {
+        if self.dialogs.custom_imagery_dialog.is_some() {
             return;
         }
         let dialog =
@@ -4456,7 +4346,7 @@ impl MapViewer {
                 use osm_gpui::ui::custom_imagery_dialog::DialogEvent;
                 match event {
                     DialogEvent::Cancelled => {
-                        this.custom_imagery_dialog = None;
+                        this.dialogs.custom_imagery_dialog = None;
                         cx.notify();
                     }
                     DialogEvent::Submitted(entry) => {
@@ -4472,15 +4362,15 @@ impl MapViewer {
                             },
                             cx,
                         );
-                        this.custom_imagery_dialog = None;
-                        this.last_menu_center = None;
+                        this.dialogs.custom_imagery_dialog = None;
+                        this.menu_sync.last_menu_center = None;
                         cx.notify();
                     }
                 }
             },
         )
         .detach();
-        self.custom_imagery_dialog = Some(dialog);
+        self.dialogs.custom_imagery_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -4532,7 +4422,7 @@ impl MapViewer {
     /// requirement, so it's safe to construct directly rather than
     /// deferring to the next render pass.
     pub(crate) fn show_quit_confirm_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quit_confirm_dialog.is_some() {
+        if self.dialogs.quit_confirm_dialog.is_some() {
             return;
         }
         let dialog =
@@ -4543,37 +4433,37 @@ impl MapViewer {
                 use osm_gpui::ui::quit_confirm_dialog::DialogEvent;
                 match event {
                     DialogEvent::Cancelled => {
-                        this.quit_confirm_dialog = None;
+                        this.dialogs.quit_confirm_dialog = None;
                         cx.notify();
                     }
                     DialogEvent::ConfirmQuit => {
-                        this.quit_confirm_dialog = None;
+                        this.dialogs.quit_confirm_dialog = None;
                         cx.quit();
                     }
                 }
             },
         )
         .detach();
-        self.quit_confirm_dialog = Some(dialog);
+        self.dialogs.quit_confirm_dialog = Some(dialog);
         cx.notify();
     }
 
     /// Handle the app menu's "About" item. Window-scoped (like `on_quit`)
     /// so the dialog can be built with the `Window` handed to the dispatch.
     fn on_show_about(&mut self, _: &ShowAbout, window: &mut Window, cx: &mut Context<Self>) {
-        if self.about_dialog.is_some() {
+        if self.dialogs.about_dialog.is_some() {
             return;
         }
         let dialog = cx.new(|cx| osm_gpui::ui::about_dialog::AboutDialog::new(window, cx));
         cx.subscribe(
             &dialog,
             |this, _entity, _event: &osm_gpui::ui::about_dialog::DialogEvent, cx| {
-                this.about_dialog = None;
+                this.dialogs.about_dialog = None;
                 cx.notify();
             },
         )
         .detach();
-        self.about_dialog = Some(dialog);
+        self.dialogs.about_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -4601,8 +4491,8 @@ impl MapViewer {
     /// the answer differs from the one they were last built for.
     fn sync_upload_menu(&mut self, cx: &mut Context<Self>) {
         let can_upload = self.has_uploadable_changes();
-        if can_upload != self.upload_menu_enabled {
-            self.upload_menu_enabled = can_upload;
+        if can_upload != self.menu_sync.upload_menu_enabled {
+            self.menu_sync.upload_menu_enabled = can_upload;
             cx.defer(menu::rebuild_menus_for_live_viewer);
         }
     }
@@ -4683,9 +4573,9 @@ impl MapViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.upload_dialog.is_some()
-            || self.sign_in_dialog.is_some()
-            || self.notice_dialog.is_some()
+        if self.dialogs.upload_dialog.is_some()
+            || self.dialogs.sign_in_dialog.is_some()
+            || self.dialogs.notice_dialog.is_some()
         {
             return;
         }
@@ -4834,7 +4724,7 @@ impl MapViewer {
             },
         )
         .detach();
-        self.upload_dialog = Some(dialog);
+        self.dialogs.upload_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -4878,12 +4768,12 @@ impl MapViewer {
         cx.subscribe(
             &dialog,
             |this: &mut Self, _entity, _event: &osm_gpui::ui::notice_dialog::DialogEvent, cx| {
-                this.notice_dialog = None;
+                this.dialogs.notice_dialog = None;
                 cx.notify();
             },
         )
         .detach();
-        self.notice_dialog = Some(dialog);
+        self.dialogs.notice_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -4903,7 +4793,7 @@ impl MapViewer {
             &dialog,
             move |this, _entity, event: &osm_gpui::ui::sign_in_dialog::DialogEvent, cx| {
                 use osm_gpui::ui::sign_in_dialog::DialogEvent;
-                this.sign_in_dialog = None;
+                this.dialogs.sign_in_dialog = None;
                 if matches!(event, DialogEvent::OpenSettings) {
                     let page = (purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary)
                         .then_some(osm_gpui::ui::settings_window::SettingsPage::Imagery);
@@ -4914,7 +4804,7 @@ impl MapViewer {
             },
         )
         .detach();
-        self.sign_in_dialog = Some(dialog);
+        self.dialogs.sign_in_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -4937,6 +4827,7 @@ impl MapViewer {
     ) {
         // The script-only preview can never upload.
         if self
+            .dialogs
             .upload_dialog
             .as_ref()
             .is_some_and(|d| d.read(cx).is_preview())
@@ -4948,7 +4839,7 @@ impl MapViewer {
         if let Some(refusal) =
             script_harness::scripted_upload_refusal(&settings_store::api_base_url())
         {
-            if let Some(dialog) = &self.upload_dialog {
+            if let Some(dialog) = &self.dialogs.upload_dialog {
                 let message = refusal.clone();
                 dialog.update(cx, |dialog, cx| dialog.fail(message.into(), cx));
             }
@@ -4993,7 +4884,7 @@ impl MapViewer {
         let progress = TransferHandle::new(TransferKind::Upload, TransferPhase::OpeningChangeset);
         self.status_message = None;
         self.transfer = Some(progress.clone());
-        if let Some(dialog) = &self.upload_dialog {
+        if let Some(dialog) = &self.dialogs.upload_dialog {
             dialog.update(cx, |dialog, cx| dialog.begin_transfer(progress.clone(), cx));
         }
         self.poll_transfer(progress.clone(), cx);
@@ -5009,7 +4900,7 @@ impl MapViewer {
                 Ok(driver) => driver,
                 Err(e) => {
                     self.transfer = None;
-                    if let Some(dialog) = &self.upload_dialog {
+                    if let Some(dialog) = &self.dialogs.upload_dialog {
                         let message = e.to_string();
                         dialog.update(cx, |dialog, cx| dialog.fail(message.into(), cx));
                     }
@@ -5136,7 +5027,7 @@ impl MapViewer {
                 this.data_generation += 1;
                 match stop {
                     None => {
-                        this.upload_dialog = None;
+                        this.dialogs.upload_dialog = None;
                         this.upload_comment_draft.clear();
                         this.upload_source_draft = None;
                         // Remember the source and comment for next time. Never
@@ -5160,7 +5051,7 @@ impl MapViewer {
                         // Every changeset accepted so far is already in the
                         // layers (applied as it landed), so what is pending
                         // is exactly what was not sent.
-                        if let Some(dialog) = this.upload_dialog.clone() {
+                        if let Some(dialog) = this.dialogs.upload_dialog.clone() {
                             if accepted > 0 {
                                 this.refresh_upload_dialog(&dialog, cx);
                             }
@@ -5173,7 +5064,7 @@ impl MapViewer {
                                 // and offers the ways forward.
                                 let message = conflict.describe();
                                 let view = this.conflict_view(conflict);
-                                if let Some(dialog) = &this.upload_dialog {
+                                if let Some(dialog) = &this.dialogs.upload_dialog {
                                     dialog.update(cx, |dialog, cx| {
                                         dialog.fail_with_conflict(view, cx)
                                     });
@@ -5183,7 +5074,7 @@ impl MapViewer {
                             UploadStop::OutcomeUnknown(message) => {
                                 // The dialog says to check the server first
                                 // and does not offer a plain retry.
-                                if let Some(dialog) = &this.upload_dialog {
+                                if let Some(dialog) = &this.dialogs.upload_dialog {
                                     dialog.update(cx, |dialog, cx| {
                                         dialog.fail_outcome_unknown(message.clone().into(), cx)
                                     });
@@ -5194,7 +5085,7 @@ impl MapViewer {
                                 // Keep the dialog open on the error so it can
                                 // be read and the upload retried; the status
                                 // bar gets the message too.
-                                if let Some(dialog) = &this.upload_dialog {
+                                if let Some(dialog) = &this.dialogs.upload_dialog {
                                     dialog
                                         .update(cx, |dialog, cx| dialog.fail(e.clone().into(), cx));
                                 }
@@ -5212,7 +5103,7 @@ impl MapViewer {
     /// Close the upload dialog without uploading, remembering what was typed
     /// in the comment field so reopening it restores it.
     fn close_upload_dialog_keeping_draft(&mut self, cx: &mut Context<Self>) {
-        if let Some(dialog) = self.upload_dialog.take() {
+        if let Some(dialog) = self.dialogs.upload_dialog.take() {
             self.upload_comment_draft = dialog.read(cx).draft_comment(cx);
             self.upload_source_draft = Some(dialog.read(cx).draft_source(cx));
         }
@@ -5353,7 +5244,7 @@ impl MapViewer {
                 } else {
                     tr!("dialog.upload.conflict.fetching")
                 };
-                if let Some(dialog) = &self.upload_dialog {
+                if let Some(dialog) = &self.dialogs.upload_dialog {
                     dialog.update(cx, |dialog, cx| dialog.begin_resolving(label, cx));
                 }
                 cx.notify();
@@ -5397,14 +5288,14 @@ impl MapViewer {
     ) {
         match result {
             Ok(notice) => {
-                if let Some(dialog) = &self.upload_dialog {
+                if let Some(dialog) = &self.dialogs.upload_dialog {
                     dialog.update(cx, |dialog, cx| dialog.resolved(notice.clone(), cx));
                 }
                 self.set_status(notice);
             }
             Err(error) => {
                 let view = self.conflict_view(conflict);
-                if let Some(dialog) = &self.upload_dialog {
+                if let Some(dialog) = &self.dialogs.upload_dialog {
                     dialog.update(cx, |dialog, cx| {
                         dialog.resolve_failed(view, error.clone(), cx)
                     });
@@ -5487,7 +5378,7 @@ impl MapViewer {
 
         let cleared = self.undo_stack.remove_touching(&tainted);
         self.data_generation += 1;
-        self.hovered = None;
+        self.pointer.hovered = None;
         // Drop anything selected that is no longer in the data.
         let still_there: Vec<osm_gpui::selection::FeatureRef> = self
             .selected
@@ -5578,7 +5469,7 @@ impl MapViewer {
                     osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries)
                 });
                 dialog.update(cx, |dialog, cx| dialog.begin_transfer(handle.clone(), cx));
-                self.upload_dialog = Some(dialog);
+                self.dialogs.upload_dialog = Some(dialog);
                 self.transfer = Some(handle);
             }
             "conflict" => {
@@ -5600,7 +5491,7 @@ impl MapViewer {
                     osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries)
                 });
                 dialog.update(cx, |dialog, cx| dialog.fail_with_conflict(view, cx));
-                self.upload_dialog = Some(dialog);
+                self.dialogs.upload_dialog = Some(dialog);
             }
             "download" | "download-total" => {
                 let handle =
@@ -5628,7 +5519,7 @@ impl MapViewer {
                     .as_ref()
                     .is_some_and(|current| current.is_same(&progress));
                 if running {
-                    if let Some(dialog) = &this.upload_dialog {
+                    if let Some(dialog) = &this.dialogs.upload_dialog {
                         dialog.update(cx, |_, cx| cx.notify());
                     }
                     cx.notify();
@@ -5878,7 +5769,7 @@ impl Render for MapViewer {
                     .track_focus(&self.focus_handle)
                     .cursor(match &self.offset_adjust {
                         // Imagery is dragged with the left button: a hand.
-                        Some(adjust) if !self.viewport.is_dragging && !self.space_held => {
+                        Some(adjust) if !self.viewport.is_dragging && !self.pointer.space_held => {
                             if adjust.dragging() {
                                 gpui::CursorStyle::ClosedHand
                             } else {
@@ -5893,8 +5784,8 @@ impl Render for MapViewer {
                                 self.mode()
                             },
                             self.viewport.is_dragging,
-                            self.space_held,
-                            self.hovered.is_some(),
+                            self.pointer.space_held,
+                            self.pointer.hovered.is_some(),
                         ),
                     })
                     // When the pointer leaves the map, drop everything that
@@ -5902,10 +5793,10 @@ impl Render for MapViewer {
                     // coordinates, and the drawing modes' rubber bands.
                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                         if !*hovered {
-                            this.hovered = None;
+                            this.pointer.hovered = None;
                             this.clear_vertex_preview();
-                            this.snap_preview = None;
-                            this.last_mouse_pos = None;
+                            this.pointer.snap_preview = None;
+                            this.pointer.last_mouse_pos = None;
                             cx.notify();
                         }
                     }))
@@ -5920,7 +5811,7 @@ impl Render for MapViewer {
                                     button,
                                     cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                                         if is_right {
-                                            this.right_press = Some(ev.position);
+                                            this.pointer.right_press = Some(ev.position);
                                         }
                                         let position = this.window_to_map(ev.position);
                                         this.start_pan_drag(position, cx);
@@ -5939,7 +5830,7 @@ impl Render for MapViewer {
                                     button,
                                     cx.listener(move |this, _ev: &MouseUpEvent, _, cx| {
                                         if is_right {
-                                            this.right_press = None;
+                                            this.pointer.right_press = None;
                                         }
                                         this.end_pan_drag(cx);
                                     }),
@@ -5965,8 +5856,8 @@ impl Render for MapViewer {
                         }),
                     )
                     .on_key_up(cx.listener(|this, ev: &gpui::KeyUpEvent, _, cx| {
-                        if ev.keystroke.key == "space" && this.space_held {
-                            this.space_held = false;
+                        if ev.keystroke.key == "space" && this.pointer.space_held {
+                            this.pointer.space_held = false;
                             cx.notify();
                         }
                     }))
@@ -6017,7 +5908,7 @@ impl Render for MapViewer {
                                     // An already-selected feature keeps its
                                     // selection highlight under the cursor.
                                     let hovered =
-                                        self.hovered.filter(|h| !self.selected.contains(h));
+                                        self.pointer.hovered.filter(|h| !self.selected.contains(h));
                                     let fs_frame = osm_gpui::frame_stats::start();
                                     move |bounds, _, window, cx| {
                                         let fs_paint = osm_gpui::frame_stats::start();
@@ -6122,7 +6013,7 @@ impl Render for MapViewer {
                         }
                     })
                     .child({
-                        if let Some((start, current)) = self.interaction.box_select_rect() {
+                        if let Some((start, current)) = self.pointer.interaction.box_select_rect() {
                             let rect = normalize_rect(from_pt(start), from_pt(current));
                             div()
                                 .absolute()
@@ -6222,7 +6113,7 @@ impl Render for MapViewer {
             // Seen in the capture phase, before the open menu dismisses
             // itself on this same press.
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, _| {
-                this.menu_swallow_press =
+                this.pointer.menu_swallow_press =
                     ev.button == gpui::MouseButton::Left && menu::in_window_menu_open(window);
             }))
             // Windows/Linux (or macOS with OSM_GPUI_IN_WINDOW_MENU=1): the

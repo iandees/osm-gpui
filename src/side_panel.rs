@@ -433,7 +433,7 @@ impl MapViewer {
                     .into_any_element(),
             ));
         }
-        let shown = if self.members_show_all {
+        let shown = if self.tag_edit.members_show_all {
             total
         } else {
             total.min(Self::MEMBERS_INITIAL_ROWS)
@@ -556,7 +556,7 @@ impl MapViewer {
                 // means the opposite: "inside a focused element".)
                 let group_name = SharedString::from(format!("member-row-{i}"));
                 let controls_focus = {
-                    let mut handles = self.member_controls_focus.borrow_mut();
+                    let mut handles = self.tag_edit.member_controls_focus.borrow_mut();
                     while handles.len() <= i {
                         handles.push(cx.focus_handle());
                     }
@@ -604,7 +604,12 @@ impl MapViewer {
                     );
 
                 let role = member.role.clone();
-                let role_line = match self.role_edit.as_ref().filter(|e| e.member == member_ref) {
+                let role_line = match self
+                    .tag_edit
+                    .role_edit
+                    .as_ref()
+                    .filter(|e| e.member == member_ref)
+                {
                     Some(edit) => {
                         let sizing = if role.is_empty() {
                             tr!("panel.members.role")
@@ -632,7 +637,8 @@ impl MapViewer {
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
-                                    this.pending_role_edit_open = Some((member_ref, role.clone()));
+                                    this.tag_edit.pending_role_edit_open =
+                                        Some((member_ref, role.clone()));
                                     cx.notify();
                                 }),
                             )
@@ -697,7 +703,7 @@ impl MapViewer {
                         .ghost()
                         .small()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.members_show_all = true;
+                            this.tag_edit.members_show_all = true;
                             cx.notify();
                         })),
                 ),
@@ -1175,10 +1181,10 @@ impl MapViewer {
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _ev: &MouseDownEvent, _, cx| {
                                 this.selected = vec![row_feat];
-                                this.fields_text_inputs.clear();
-                                this.fields_text_subscribed.clear();
-                                this.fields_open_combo = None;
-                                this.fields_promoted_more_fields.clear();
+                                this.fields_panel.fields_text_inputs.clear();
+                                this.fields_panel.fields_text_subscribed.clear();
+                                this.fields_panel.fields_open_combo = None;
+                                this.fields_panel.fields_promoted_more_fields.clear();
                                 cx.notify();
                             }),
                         )
@@ -1540,10 +1546,15 @@ impl MapViewer {
         // The row (by key) and cell being edited in place, if any; the add
         // row is handled separately below.
         let editing = self
+            .tag_edit
             .tag_inline_edit
             .as_ref()
             .filter(|edit| !edit.ctx.is_add);
-        let adding = self.tag_inline_edit.as_ref().filter(|edit| edit.ctx.is_add);
+        let adding = self
+            .tag_edit
+            .tag_inline_edit
+            .as_ref()
+            .filter(|edit| edit.ctx.is_add);
 
         // Keys get about a third of the panel, within sensible bounds.
         let key_width = px((self.side_panel_width * 0.34).clamp(90.0, 190.0));
@@ -1587,7 +1598,7 @@ impl MapViewer {
                           _ev: &MouseDownEvent,
                           _window: &mut gpui::Window,
                           cx: &mut Context<Self>| {
-                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                        this.tag_edit.pending_tag_edit_open = Some(PendingTagEditOpen {
                             features: features.clone(),
                             original_key: original_key.clone(),
                             original_value: original_value.clone(),
@@ -1715,7 +1726,7 @@ impl MapViewer {
                     .ghost()
                     .small()
                     .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.pending_tag_edit_open = Some(PendingTagEditOpen {
+                        this.tag_edit.pending_tag_edit_open = Some(PendingTagEditOpen {
                             features: add_selection.clone(),
                             original_key: String::new(),
                             original_value: String::new(),

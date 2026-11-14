@@ -51,7 +51,7 @@ fn a_plain_click_moves_the_nearest_node_to_the_cursor(cx: &mut TestAppContext) {
 fn the_add_modifier_inserts_a_node_on_the_way(cx: &mut TestAppContext) {
     with_osm(cx, data(), EditMode::Improve, |view, w, cx, layer| {
         select_way(view, layer);
-        view.last_modifiers = gpui::Modifiers {
+        view.pointer.last_modifiers = gpui::Modifiers {
             control: true,
             ..Default::default()
         };
@@ -76,7 +76,7 @@ fn the_add_modifier_inserts_a_node_on_the_way(cx: &mut TestAppContext) {
 fn shift_deletes_the_nearest_node(cx: &mut TestAppContext) {
     with_osm(cx, data(), EditMode::Improve, |view, w, cx, layer| {
         select_way(view, layer);
-        view.last_modifiers = gpui::Modifiers {
+        view.pointer.last_modifiers = gpui::Modifiers {
             shift: true,
             ..Default::default()
         };

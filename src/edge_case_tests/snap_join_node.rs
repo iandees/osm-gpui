@@ -306,7 +306,7 @@ fn a_node_does_not_snap_onto_a_stretch_of_a_way_that_is_not_loaded(cx: &mut Test
         let to = screen(s, 40.0, -74.0);
         drag_node_three(s, point(to.x, to.y + gpui::px(2.0)), Modifiers::none());
         assert_eq!(s.way_nodes(10), Some(vec![1, 99, 2, 4]));
-        assert!(s.view.snap_preview.is_none());
+        assert!(s.view.pointer.snap_preview.is_none());
         assert_ne!(s.snap(), before, "the node was just moved");
         assert_eq!(s.steps(), 1, "just the plain move");
     });
@@ -360,7 +360,7 @@ fn a_node_does_not_snap_onto_a_way_of_an_incompatible_kind(cx: &mut TestAppConte
             let to = screen(s, 40.0, -74.0);
             drag_node_three(s, point(to.x, to.y + gpui::px(2.0)), Modifiers::none());
             assert_eq!(s.way_nodes(10), Some(vec![1, 2]));
-            assert!(s.view.snap_preview.is_none());
+            assert!(s.view.pointer.snap_preview.is_none());
         },
     );
 }
@@ -383,7 +383,7 @@ fn the_snap_target_is_highlighted_while_dragging_and_cleared_after(cx: &mut Test
         );
         assert!(
             matches!(
-                s.view.snap_preview,
+                s.view.pointer.snap_preview,
                 Some(crate::SnapTarget::Way {
                     way_id: 10,
                     index: 0,
@@ -391,7 +391,7 @@ fn the_snap_target_is_highlighted_while_dragging_and_cleared_after(cx: &mut Test
                 })
             ),
             "{:?}",
-            s.view.snap_preview
+            s.view.pointer.snap_preview
         );
         // Alt turns the highlight off.
         s.view.handle_mouse_move(
@@ -405,7 +405,7 @@ fn the_snap_target_is_highlighted_while_dragging_and_cleared_after(cx: &mut Test
             },
             cx,
         );
-        assert!(s.view.snap_preview.is_none());
+        assert!(s.view.pointer.snap_preview.is_none());
     });
 }
 
