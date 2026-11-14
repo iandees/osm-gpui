@@ -24,7 +24,7 @@ use crate::ui::modal::field_row;
 use crate::{tr, tr_count};
 
 /// Login UI state for the currently-selected API server.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 enum LoginState {
     LoggedOut,
     LoggingIn,
@@ -42,6 +42,38 @@ pub enum SettingsEvent {
     /// The active MapCSS style changed (`style::custom::set_active` has
     /// already run); open layers must be restyled.
     MapStyleChanged,
+}
+
+/// The server sign-in, sign-out and client ids act on.
+#[derive(Debug, PartialEq, Eq)]
+struct ActingServer {
+    api_base_url: String,
+    /// Where tokens and client ids are keyed; differs from the API URL for the
+    /// production server.
+    oauth_base_url: String,
+}
+
+/// The run override (`--api-server`) wins over the saved choice; a custom
+/// URL is used as saved.
+fn acting_server(saved: &AppSettings, run_override: Option<&str>) -> ActingServer {
+    let api_base_url = settings_store::effective_base_url(saved, run_override);
+    let oauth_base_url = auth::oauth_base_for(&api_base_url);
+    ActingServer {
+        api_base_url,
+        oauth_base_url,
+    }
+}
+
+/// Signed in when `stored` has a login for the acting server's OAuth base.
+/// A login saved for another server does not count.
+fn login_state_for(
+    server: &ActingServer,
+    stored: impl FnOnce(&str) -> Option<StoredToken>,
+) -> LoginState {
+    match stored(&server.oauth_base_url) {
+        Some(token) => LoginState::LoggedIn(token),
+        None => LoginState::LoggedOut,
+    }
 }
 
 /// What was typed into the custom API server field.
@@ -175,7 +207,7 @@ impl SettingsWindow {
                 .placeholder("https://example.com")
                 .default_value(app_settings.custom_api_url.clone())
         });
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&app_settings));
+        let oauth_base = Self::acting_server(&app_settings).oauth_base_url;
         let client_id_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(tr!("settings.account.client_id_placeholder"))
@@ -248,8 +280,8 @@ impl SettingsWindow {
     /// The server this window signs in to and keeps client IDs for: the one in
     /// use this run (`--api-server` wins over the saved choice), not the one
     /// the picker shows.
-    fn acting_base_url(saved: &AppSettings) -> String {
-        settings_store::effective_base_url(saved, settings_store::run_override().as_deref())
+    fn acting_server(saved: &AppSettings) -> ActingServer {
+        acting_server(saved, settings_store::run_override().as_deref())
     }
 
     /// Write the changes `f` makes to the store, then take the store's value
@@ -261,19 +293,15 @@ impl SettingsWindow {
     }
 
     fn current_login_state(settings: &AppSettings) -> LoginState {
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(settings));
         // Only the display name is shown, so use the metadata-only lookup: it never
         // touches the keychain (this runs on the UI thread).
-        match auth::stored_login(&oauth_base) {
-            Some(token) => LoginState::LoggedIn(token),
-            None => LoginState::LoggedOut,
-        }
+        login_state_for(&Self::acting_server(settings), auth::stored_login)
     }
 
     /// Refresh `client_id_input`'s displayed value to match the currently-selected
     /// server's configured override (or blank, if using the default client_id).
     fn refresh_client_id_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
+        let oauth_base = Self::acting_server(&self.app_settings).oauth_base_url;
         let value = self
             .app_settings
             .client_ids
@@ -432,7 +460,7 @@ impl SettingsWindow {
     }
 
     fn save_client_id(&mut self, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
+        let oauth_base = Self::acting_server(&self.app_settings).oauth_base_url;
         let edit = parse_client_id(&self.client_id_input.read(cx).value());
         self.commit(|s| match edit {
             ClientIdEdit::Clear => {
@@ -582,7 +610,7 @@ impl SettingsWindow {
         self.login_state = LoginState::LoggingIn;
         cx.notify();
 
-        let api_base_url = Self::acting_base_url(&self.app_settings);
+        let api_base_url = Self::acting_server(&self.app_settings).api_base_url;
         let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -606,8 +634,7 @@ impl SettingsWindow {
     }
 
     fn logout(&mut self, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
-        auth::logout(&oauth_base);
+        auth::logout(&Self::acting_server(&self.app_settings).oauth_base_url);
         self.login_state = LoginState::LoggedOut;
         cx.notify();
     }
@@ -1920,10 +1947,129 @@ impl Render for SettingsWindow {
 mod tests {
     // Not `super::*`: it carries `gpui::*`, whose `test` macro shadows `#[test]`.
     use super::{
-        keybindings, parse_cache_budget, parse_client_id, parse_custom_api_url,
-        parse_map_style_location, rejection_message, CacheBudget, ClientIdEdit, CustomApiUrl,
-        MapStyleLocation, MIN_CACHE_BUDGET_MB,
+        acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
+        parse_custom_api_url, parse_map_style_location, rejection_message, CacheBudget,
+        ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, MIN_CACHE_BUDGET_MB,
     };
+    use crate::auth::StoredToken;
+    use crate::settings_store::{ApiServerChoice, AppSettings, DEV_API_URL, PRIMARY_API_URL};
+
+    fn saved(choice: ApiServerChoice, custom: &str) -> AppSettings {
+        AppSettings {
+            api_server: choice,
+            custom_api_url: custom.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn token(name: &str) -> StoredToken {
+        StoredToken {
+            access_token: String::new(),
+            display_name: name.to_string(),
+            user_id: 1,
+            refresh_token: None,
+            expires_at: None,
+        }
+    }
+
+    /// A token store holding one login, keyed by OAuth base URL.
+    fn store_with(oauth_base: &'static str) -> impl Fn(&str) -> Option<StoredToken> {
+        move |base| (base == oauth_base).then(|| token("mapper"))
+    }
+
+    #[test]
+    fn saved_choice_is_the_acting_server_without_an_override() {
+        let primary = acting_server(&saved(ApiServerChoice::Primary, ""), None);
+        assert_eq!(primary.api_base_url, PRIMARY_API_URL);
+        // The production API signs in at the website, not the API host.
+        assert_eq!(primary.oauth_base_url, "https://www.openstreetmap.org");
+
+        let dev = acting_server(&saved(ApiServerChoice::Dev, ""), None);
+        assert_eq!(dev.api_base_url, DEV_API_URL);
+        assert_eq!(dev.oauth_base_url, DEV_API_URL);
+    }
+
+    #[test]
+    fn custom_url_is_the_acting_server_as_saved() {
+        let custom = acting_server(
+            &saved(ApiServerChoice::Custom, "https://osm.example.org/"),
+            None,
+        );
+        assert_eq!(custom.api_base_url, "https://osm.example.org");
+        assert_eq!(custom.oauth_base_url, "https://osm.example.org");
+        // The saved custom URL is ignored while another choice is selected.
+        let primary = acting_server(
+            &saved(ApiServerChoice::Primary, "https://osm.example.org"),
+            None,
+        );
+        assert_eq!(primary.api_base_url, PRIMARY_API_URL);
+    }
+
+    #[test]
+    fn run_override_wins_over_the_saved_choice() {
+        let settings = saved(ApiServerChoice::Primary, "");
+        let over = acting_server(&settings, Some("http://localhost:3000/"));
+        assert_eq!(over.api_base_url, "http://localhost:3000");
+        assert_eq!(over.oauth_base_url, "http://localhost:3000");
+
+        // An override naming the production API still maps to the website.
+        let over_primary = acting_server(
+            &saved(ApiServerChoice::Dev, ""),
+            Some("https://api.openstreetmap.org"),
+        );
+        assert_eq!(over_primary.oauth_base_url, "https://www.openstreetmap.org");
+    }
+
+    #[test]
+    fn login_state_follows_the_acting_server_only() {
+        let settings = saved(ApiServerChoice::Primary, "");
+        let www = "https://www.openstreetmap.org";
+
+        // Signed in on the saved server, no override: signed in.
+        let server = acting_server(&settings, None);
+        assert_eq!(
+            login_state_for(&server, store_with(www)),
+            LoginState::LoggedIn(token("mapper"))
+        );
+
+        // Same login, but the run override points elsewhere: signed out.
+        let server = acting_server(&settings, Some("https://master.apis.dev.openstreetmap.org"));
+        assert_eq!(
+            login_state_for(&server, store_with(www)),
+            LoginState::LoggedOut
+        );
+
+        // Signed in on the override server only: signed in.
+        assert_eq!(
+            login_state_for(&server, store_with(DEV_API_URL)),
+            LoginState::LoggedIn(token("mapper"))
+        );
+    }
+
+    #[test]
+    fn login_state_for_a_custom_server_uses_its_url() {
+        let settings = saved(ApiServerChoice::Custom, "https://osm.example.org/");
+        let server = acting_server(&settings, None);
+        assert_eq!(
+            login_state_for(&server, store_with("https://osm.example.org")),
+            LoginState::LoggedIn(token("mapper"))
+        );
+        assert_eq!(
+            login_state_for(&server, store_with(DEV_API_URL)),
+            LoginState::LoggedOut
+        );
+    }
+
+    #[test]
+    fn the_token_lookup_is_given_the_oauth_base_not_the_api_url() {
+        let server = acting_server(&saved(ApiServerChoice::Primary, ""), None);
+        let mut asked = None;
+        let _ = login_state_for(&server, |base| {
+            asked = Some(base.to_string());
+            None
+        });
+        assert_eq!(asked.as_deref(), Some("https://www.openstreetmap.org"));
+    }
 
     #[test]
     fn custom_api_url_accepts_http_and_https_and_trims() {
