@@ -45,7 +45,6 @@ pub fn lat_lon_to_mercator(lat: f64, lon: f64) -> (f64, f64) {
     // Clamp latitude to avoid projection issues at poles
     let clamped_lat = lat.clamp(-85.051128779807, 85.051128779807);
 
-    // Standard Web Mercator projection (EPSG:3857)
     let x = lon * MERCATOR_HALF_WORLD_M / 180.0;
     let y = ((PI / 4.0) + (clamped_lat * PI / 360.0)).tan().ln() * MERCATOR_HALF_WORLD_M / PI;
 
@@ -61,7 +60,7 @@ pub const MERCATOR_HALF_WORLD_M: f64 = 20037508.34;
 
 /// Equatorial circumference in metres, as the zoom-to-scale maths uses it.
 /// Slightly different from `2 * MERCATOR_HALF_WORLD_M`; both are kept because
-/// each is what its callers have always been calibrated against.
+/// each is the value its callers are calibrated against.
 pub const WORLD_WIDTH_M: f64 = 40075016.686;
 
 /// Latitude where Web Mercator ends: the projection is undefined beyond it.
@@ -179,9 +178,8 @@ impl CoordinateTransform {
     }
 
     /// Project a point given in Mercator (EPSG:3857) meters directly to
-    /// screen pixels. This is the trig-free fast path used by layers that
-    /// cache mercator coordinates up front; it avoids re-running
-    /// `lat_lon_to_mercator` per vertex every frame.
+    /// screen pixels: the trig-free path for layers that cache Mercator
+    /// coordinates.
     #[inline]
     pub fn mercator_to_screen(&self, mx: f64, my: f64) -> GpuiPoint<Pixels> {
         let half_w = self.screen_size.width * 0.5;
@@ -271,7 +269,6 @@ impl CoordinateTransform {
 
     /// Update the transform for a new center point (for panning)
     pub fn pan_to(&mut self, new_center_lat: f64, new_center_lon: f64) {
-        // Validate inputs before updating
         let lat = if new_center_lat.is_finite() {
             new_center_lat.clamp(-85.0, 85.0)
         } else {
@@ -288,7 +285,6 @@ impl CoordinateTransform {
 
     /// Update the transform for a new zoom level
     pub fn zoom_to(&mut self, new_zoom_level: f64) {
-        // Validate zoom level
         let zoom = if new_zoom_level.is_finite() {
             new_zoom_level.clamp(1.0, MAX_MAP_ZOOM)
         } else {
@@ -304,7 +300,6 @@ impl CoordinateTransform {
             return;
         }
 
-        // Step 1: Convert screen point to Mercator coordinates at current zoom
         let (center_merc_x, center_merc_y) = lat_lon_to_mercator(self.center_lat, self.center_lon);
         let dx = (screen_point.x - self.screen_size.width * 0.5).to_f64() / self.pixels_per_meter_x;
         let dy =
@@ -312,11 +307,10 @@ impl CoordinateTransform {
         let mouse_merc_x = center_merc_x + dx;
         let mouse_merc_y = center_merc_y + dy;
 
-        // Step 2: Update zoom level
         let new_zoom = (self.zoom_level + zoom_delta).clamp(1.0, MAX_MAP_ZOOM);
         let new_transform = Self::new(self.center_lat, self.center_lon, new_zoom, self.screen_size);
 
-        // Step 3: Calculate new center so mouse_merc_x/y stays under the same screen pixel
+        // The new center keeps mouse_merc_x/y under the same screen pixel.
         let new_dx = (screen_point.x - self.screen_size.width * 0.5).to_f64()
             / new_transform.pixels_per_meter_x;
         let new_dy = -(screen_point.y - self.screen_size.height * 0.5).to_f64()
@@ -331,7 +325,6 @@ impl CoordinateTransform {
 
     /// Pan by a screen pixel offset
     pub fn pan_by_pixels(&mut self, dx: Pixels, dy: Pixels) {
-        // Validate inputs
         if !dx.as_f32().is_finite() || !dy.as_f32().is_finite() {
             return;
         }
@@ -401,10 +394,10 @@ pub fn fit_bounds_to_viewport(
     let mut center_lat = (min_lat + max_lat) / 2.0;
     let mut center_lon = (min_lon + max_lon) / 2.0;
 
-    // An axis with no extent does not constrain the zoom. (Padding it, say by
-    // 0.005 degrees, about a kilometre, would zoom a point or a perfectly
-    // horizontal or vertical way out to about z16.) Both axes
-    // without extent is a single point: centre on it at an editing zoom.
+    // An axis with no extent does not constrain the zoom: padding it (say by
+    // 0.005 degrees, about a kilometre) would zoom a point or a perfectly
+    // horizontal or vertical way out to about z16. Both axes without extent
+    // is a single point: centre on it at an editing zoom.
     let flat_lat = (max_lat - min_lat).abs() < 1e-6;
     let flat_lon = (max_lon - min_lon).abs() < 1e-6;
     if flat_lat && flat_lon {
@@ -436,7 +429,7 @@ pub fn fit_bounds_to_viewport(
     } else {
         ((screen_height * world_width_meters) / (bbox_height * tile_size * margin)).log2()
     };
-    let zoom_level = zoom_x.min(zoom_y).clamp(1.0, 18.0); // Clamp zoom to [1, 18]
+    let zoom_level = zoom_x.min(zoom_y).clamp(1.0, 18.0);
 
     (center_lat, center_lon, zoom_level)
 }
@@ -477,7 +470,7 @@ pub fn is_point_valid(point: GpuiPoint<Pixels>) -> bool {
     point.x.as_f32().is_finite() && point.y.as_f32().is_finite()
 }
 
-/// Validates coordinates before using them in Lyon paths
+/// `Some((lat, lon))` when both are finite and within [-90, 90] / [-180, 180].
 pub fn validate_coords(lat: f64, lon: f64) -> Option<(f64, f64)> {
     if lat.is_finite()
         && lon.is_finite()
@@ -577,12 +570,10 @@ mod tests {
         let screen_size = size(px(800.0), px(600.0));
         let transform = CoordinateTransform::new(40.7128, -74.0060, 10.0, screen_size);
 
-        // Test center point conversion
         let screen_center = transform.geo_to_screen(40.7128, -74.0060);
         assert!((screen_center.x.as_f32() - 400.0).abs() < 1.0);
         assert!((screen_center.y.as_f32() - 300.0).abs() < 1.0);
 
-        // Test round trip conversion
         let original_lat = 40.7500;
         let original_lon = -73.9000;
         let screen_point = transform.geo_to_screen(original_lat, original_lon);
@@ -664,7 +655,8 @@ mod tests {
 
     #[test]
     fn fit_bounds_degenerate_zero_height_only() {
-        // Same latitude, distinct longitudes: only the lat axis is padded.
+        // Same latitude, distinct longitudes: only the longitude axis sets
+        // the zoom.
         let (center_lat, center_lon, zoom) =
             fit_bounds_to_viewport(40.0, 40.0, -75.0, -73.0, 800.0, 600.0);
         assert!((center_lat - 40.0).abs() < 1e-9);

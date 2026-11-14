@@ -5724,6 +5724,13 @@ impl MapViewer {
         let dialog =
             cx.new(|cx| osm_gpui::ui::upload_dialog::UploadDialog::new(window, cx, summaries));
         dialog.update(cx, |dialog, cx| dialog.set_changesets(changesets, cx));
+        // Layers restored from a run that died mid-upload: the same "may have
+        // gone through" stop as after a lost response.
+        if let Some(warning) = self.restored_upload_warning() {
+            dialog.update(cx, |dialog, cx| {
+                dialog.fail_outcome_unknown(warning.into(), cx)
+            });
+        }
         // Validated once, before the first changeset is opened.
         let report = self.validation_report();
         dialog.update(cx, |dialog, cx| dialog.set_validation(report, cx));
@@ -5848,7 +5855,7 @@ impl MapViewer {
                 this.sign_in_dialog = None;
                 if matches!(event, DialogEvent::OpenSettings) {
                     let page = (purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary)
-                        .then_some(osm_gpui::ui::settings_window::IMAGERY_PAGE);
+                        .then_some(osm_gpui::ui::settings_window::SettingsPage::Imagery);
                     // Deferred so the window is opened outside this entity update.
                     cx.defer(move |cx| crate::menu::open_settings_page(page, cx));
                 }
@@ -5975,6 +5982,19 @@ impl MapViewer {
                 let Some(request) = driver.next_request() else {
                     break None;
                 };
+                // Durable before the first request of the chunk leaves: if the
+                // app dies from here until the result is applied and
+                // autosaved, the next start must know the server may have it.
+                let marker_write = this
+                    .update(cx, |this, _| {
+                        this.upload_marker_prepare(osm_gpui::autosave::UploadMarker::for_request(
+                            &base_url,
+                            &request,
+                            crate::autosave_driver::now_unix(),
+                        ))
+                    })
+                    .ok()
+                    .flatten();
                 let (oauth_base, base_url, progress, http) = (
                     oauth_base.clone(),
                     base_url.clone(),
@@ -5984,6 +6004,9 @@ impl MapViewer {
                 let outcome = cx
                     .background_executor()
                     .spawn(async move {
+                        if let Some(write) = marker_write {
+                            write.run();
+                        }
                         osm_gpui::upload_chunks::send(
                             request,
                             http.as_ref(),
@@ -6010,7 +6033,9 @@ impl MapViewer {
                         )
                     })
                     .await;
-                match driver.record(outcome) {
+                let step = driver.record(outcome);
+                let marker_after = osm_gpui::upload_chunks::marker_after(&step);
+                match step {
                     osm_gpui::upload_chunks::Step::Apply(done) => {
                         let layer_ids = layer_ids.clone();
                         let applied = this.update(cx, |this, cx| {
@@ -6029,6 +6054,7 @@ impl MapViewer {
                             // applied, now: a crash from here on must not
                             // offer the accepted objects for upload again.
                             this.autosave_now(cx);
+                            this.upload_marker_after(marker_after, cx);
                             cx.notify();
                         });
                         if applied.is_err() {
@@ -6036,7 +6062,11 @@ impl MapViewer {
                             return;
                         }
                     }
-                    osm_gpui::upload_chunks::Step::Stop(stopped) => break Some(stopped.reason),
+                    osm_gpui::upload_chunks::Step::Stop(stopped) => {
+                        let _ =
+                            this.update(cx, |this, cx| this.upload_marker_after(marker_after, cx));
+                        break Some(stopped.reason);
+                    }
                 }
             };
             let (total, accepted, last_changeset) =

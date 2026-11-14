@@ -61,9 +61,6 @@ fn is_way_member(member: &OsmMember, way_id: i64) -> bool {
     member.member_type == MemberType::Way && member.reference == way_id
 }
 
-// ---------------------------------------------------------------------------
-// Members as map features
-
 /// The nodes and ways a relation stands for on the map, in member order
 /// without repeats: its own node and way members, plus those of the relations
 /// among its members (one level of nesting; a nested relation's own relation
@@ -148,9 +145,6 @@ pub fn members_bounds(
     }
     bounds
 }
-
-// ---------------------------------------------------------------------------
-// Split Way
 
 /// One way being split, as the relation rules need to see it.
 #[derive(Debug, Clone, Copy)]
@@ -308,9 +302,6 @@ pub fn split_members(
     Ok(Some(members))
 }
 
-// ---------------------------------------------------------------------------
-// Merge Nodes
-
 /// The member list after the nodes in `removed` are replaced by `keep`, or
 /// `None` if none of them is a member. A replacement that leaves two equal
 /// members (same type, ref and role) next to each other drops the second.
@@ -346,9 +337,6 @@ pub fn merge_node_members(
     }
     Some(out)
 }
-
-// ---------------------------------------------------------------------------
-// Join Ways
 
 /// Why joining ways would break a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,14 +462,10 @@ fn roles_of_members(members: &[OsmMember], way_id: i64) -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Delete
-
 /// Why a node or way can't be deleted without breaking a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeleteError {
-    /// It is all that is left of the relation, and relations can't be
-    /// deleted yet.
+    /// It is all that is left of the relation.
     WouldEmpty { relation_id: i64 },
     /// It is the turn restriction's only member with this role.
     RestrictionRole {
@@ -576,9 +560,6 @@ impl DeleteError {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Editing a relation's member list
 
 /// The member list with the member at `index` removed, or `None` if there is
 /// none at `index`. Refused (like `delete_member`) if that would leave the

@@ -565,20 +565,12 @@ impl UndoableAction {
                         failures,
                     );
                 } else {
-                    // Detach `node_id` from the way: if this click created
-                    // the way, the whole way goes away (no need to also
-                    // remove the node from a way that's being deleted);
-                    // otherwise just pull it out of the existing way's node
-                    // list.
                     if *way_created {
                         keep_going(failures, editable.remove_way(*way_id));
                     } else {
                         detach_end_node(editable, *way_id, *node_id, *at_start, failures);
                     }
-                    // Only delete the node itself if this click created it —
-                    // a pre-existing node the user connected to may be
-                    // shared with other ways or carry its own tags, so undo
-                    // must leave it alone.
+                    // A pre-existing node may be shared or tagged: leave it.
                     if *node_created {
                         keep_going(failures, editable.remove_node(*node_id));
                     }
@@ -1432,9 +1424,6 @@ mod undo_stack_tests {
 
     #[test]
     fn extend_way_description() {
-        // `description()` doesn't distinguish the four (way_created,
-        // node_created) combinations — it's the same human-readable label
-        // regardless.
         for way_created in [false, true] {
             for node_created in [false, true] {
                 let action = extend_way(-1, -2, way_created, node_created);
@@ -1461,10 +1450,8 @@ mod undo_stack_tests {
 
     #[test]
     fn extend_way_undo_redo_round_trips_existing_way_existing_node() {
-        // Extending an already-existing way by connecting to a pre-existing
-        // node (way_created: false, node_created: false) — the case the
-        // data-integrity fix targets: undo must detach the node from the
-        // way but never delete it.
+        // way_created: false, node_created: false: undo must detach the
+        // node from the way but never delete it.
         let mut stack = UndoStack::default();
         stack.push(extend_way(10, 5, false, false));
 

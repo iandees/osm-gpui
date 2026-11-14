@@ -4,8 +4,7 @@
 //! at most [`PER_PAGE`] points; the box may be at most [`MAX_SPAN_DEG`] wide
 //! and tall. An area is cut into cells under that span and each cell is paged
 //! until a page comes back short or its share of the point budget runs out.
-//! Reading is
-//! anonymous. The pages are turned into a [`ReferenceData`] by
+//! Reading works anonymously. The pages are turned into a [`ReferenceData`] by
 //! `gpx::parse_trackpoints`.
 //!
 //! Like notes, nothing here touches the window; the HTTP client is injected

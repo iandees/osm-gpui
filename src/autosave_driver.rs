@@ -11,13 +11,16 @@ use std::time::Instant;
 use gpui::{AppContext as _, Context, Window};
 
 use osm_gpui::autosave::{
-    self, CrashedSession, RecoverError, RecoverableLayer, Session, Snapshot, Tracker,
+    self, CrashedSession, RecoverError, RecoverableLayer, Session, Snapshot, Tracker, UploadMarker,
 };
 use osm_gpui::layers::{osm_layer::OsmLayer, LayerId, MapLayer};
 use osm_gpui::osm::{FileEdits, OsmData};
 use osm_gpui::script::AutosaveCmd;
 use osm_gpui::settings_store;
-use osm_gpui::ui::restore_dialog::{DialogEvent, RestoreDialog, RestoreItem};
+use osm_gpui::ui::restore_dialog::{
+    interrupted_upload_lines, DialogEvent, RestoreDialog, RestoreItem,
+};
+use osm_gpui::upload_chunks::MarkerAfter;
 use osm_gpui::{tr, tr_count};
 
 use crate::MapViewer;
@@ -68,11 +71,42 @@ pub(crate) struct AutosaveState {
     offer_shown: bool,
     /// Background restores or discards running.
     busy: usize,
+    /// The upload marker this run last made durable (see `UploadMarker`).
+    marker: Option<UploadMarker>,
+    /// The marker may go as soon as every layer's autosave is on disk.
+    marker_release_pending: bool,
+    /// Layers restored from a session that died mid-upload, until the user
+    /// uploads again.
+    restored_upload: Option<RestoredUpload>,
+}
+
+/// A restored session's upload marker and the layers it applies to.
+pub(crate) struct RestoredUpload {
+    pub(crate) marker: UploadMarker,
+    pub(crate) layers: Vec<LayerId>,
+}
+
+/// A marker to make durable, to be run on a background thread before the
+/// request it describes is sent.
+pub(crate) struct MarkerWrite {
+    session: Arc<Session>,
+    marker: UploadMarker,
+}
+
+impl MarkerWrite {
+    pub(crate) fn run(self) {
+        if let Err(e) = self.session.write_upload_marker(&self.marker) {
+            eprintln!("autosave: could not record the upload in progress: {e}");
+        }
+    }
 }
 
 impl AutosaveState {
     pub(crate) fn new(root: PathBuf) -> Self {
         Self {
+            marker: None,
+            marker_release_pending: false,
+            restored_upload: None,
             root,
             session: None,
             tracker: Tracker::default(),
@@ -92,6 +126,17 @@ impl AutosaveState {
     pub(crate) fn origin_of(&self, id: LayerId) -> LayerOrigin {
         self.origins.get(&id).cloned().unwrap_or_default()
     }
+
+    /// This run's session directory, once it exists.
+    pub(crate) fn session_dir(&self) -> Option<PathBuf> {
+        self.session.as_ref().map(|s| s.dir().to_path_buf())
+    }
+}
+
+pub(crate) fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn same_server(a: &str, b: &str) -> bool {
@@ -264,6 +309,97 @@ impl MapViewer {
         }
     }
 
+    /// Record, durably and before the first request of a changeset is sent,
+    /// that an upload is in flight. Returns the write for the caller to run
+    /// on a background thread ahead of the request; `None` where autosave is
+    /// off (scripted runs and tests without a directory, or switched off in
+    /// Settings). Starting an upload is also the user acting on a restored
+    /// session's warning, so that warning ends here.
+    pub(crate) fn upload_marker_prepare(&mut self, marker: UploadMarker) -> Option<MarkerWrite> {
+        let state = self.autosave.as_mut()?;
+        if state.broken || !settings_store::snapshot().autosave {
+            return None;
+        }
+        state.restored_upload = None;
+        state.marker_release_pending = false;
+        state.marker = Some(marker.clone());
+        let session = self.autosave_session()?;
+        Some(MarkerWrite { session, marker })
+    }
+
+    /// The driver has an answer for the request the marker was written for
+    /// (see `upload_chunks::marker_after`).
+    pub(crate) fn upload_marker_after(&mut self, after: MarkerAfter, cx: &mut Context<Self>) {
+        let Some(state) = self.autosave.as_mut() else {
+            return;
+        };
+        match after {
+            MarkerAfter::Release => {
+                state.marker_release_pending = state.marker.is_some();
+                self.release_upload_marker_if_settled();
+            }
+            MarkerAfter::Keep { changeset_id } => {
+                state.marker_release_pending = false;
+                let (Some(id), Some(marker)) = (changeset_id, state.marker.take()) else {
+                    return;
+                };
+                let marker = marker.with_changeset(id);
+                state.marker = Some(marker.clone());
+                if let Some(session) = state.session.clone() {
+                    cx.background_executor()
+                        .spawn(async move { MarkerWrite { session, marker }.run() })
+                        .detach();
+                }
+            }
+        }
+    }
+
+    /// Remove the marker once nothing the server accepted is still listed as
+    /// pending in an autosave on disk: every layer's write has landed.
+    fn release_upload_marker_if_settled(&mut self) {
+        let Some(state) = self.autosave.as_mut() else {
+            return;
+        };
+        if !state.marker_release_pending {
+            return;
+        }
+        let settled = self
+            .layer_manager
+            .layers()
+            .iter()
+            .filter_map(|l| l.as_osm())
+            .all(|l| {
+                state
+                    .tracker
+                    .is_settled(l.id().0, l.edit_revision(), l.is_modified())
+            });
+        if !settled {
+            return;
+        }
+        state.marker_release_pending = false;
+        state.marker = None;
+        if let Some(session) = &state.session {
+            session.clear_upload_marker();
+        }
+    }
+
+    /// The warning to put in front of the upload dialog: the session these
+    /// layers were restored from died mid-upload and none of them has been
+    /// uploaded since.
+    pub(crate) fn restored_upload_warning(&self) -> Option<String> {
+        let restored = self.autosave.as_ref()?.restored_upload.as_ref()?;
+        let still_pending = restored.layers.iter().any(|id| {
+            self.layer_manager
+                .find_layer(*id)
+                .and_then(|l| l.as_osm())
+                .is_some_and(|l| l.is_modified())
+        });
+        still_pending.then(|| {
+            osm_gpui::ui::restore_dialog::interrupted_upload_lines(&restored.marker, now_unix())
+                .join("\n")
+        })
+    }
+
     fn autosave_finished(
         &mut self,
         id: u64,
@@ -289,6 +425,7 @@ impl MapViewer {
                     .detach();
             }
         }
+        self.release_upload_marker_if_settled();
     }
 
     /// Write every layer's autosave at the next opportunity (now), whatever
@@ -359,7 +496,16 @@ impl MapViewer {
             })
             .collect();
 
+        let now = now_unix();
+        let notices: Vec<Vec<String>> = sessions
+            .iter()
+            .filter_map(|s| s.upload_marker.as_ref())
+            .map(|marker| interrupted_upload_lines(marker, now))
+            .collect();
         let dialog = cx.new(|cx| RestoreDialog::new(items, window, cx));
+        if !notices.is_empty() {
+            dialog.update(cx, |dialog, cx| dialog.set_upload_notices(notices, cx));
+        }
         cx.subscribe(&dialog, |this, _entity, event: &DialogEvent, cx| {
             this.restore_dialog = None;
             let sessions = this
@@ -444,7 +590,17 @@ impl MapViewer {
         let mut restored = 0usize;
         let mut fit: Option<Arc<OsmData>> = None;
 
+        let mut interrupted: Option<RestoredUpload> = None;
+
         for (crashed, layers) in loaded {
+            // The warning travels with the layers: written into this run's
+            // session before any layer is moved, so that at every moment the
+            // files that list the edits also say an upload may have taken them.
+            let carried = match (&crashed.upload_marker, &session) {
+                (Some(marker), Some(session)) => session.write_upload_marker(marker).is_ok(),
+                _ => true,
+            };
+            let mut from_this_session: Vec<LayerId> = Vec::new();
             for (rec, result) in layers {
                 let (data, edits) = match result {
                     Ok(loaded) => loaded,
@@ -480,7 +636,8 @@ impl MapViewer {
                         }
                     },
                     None => !keep,
-                };
+                } && carried;
+                from_this_session.push(id);
                 if let Some(state) = self.autosave.as_mut() {
                     state.origins.insert(
                         id,
@@ -499,7 +656,26 @@ impl MapViewer {
                 fit.get_or_insert(data);
                 restored += 1;
             }
+            if let Some(marker) = crashed.upload_marker.clone() {
+                if !from_this_session.is_empty()
+                    && interrupted
+                        .as_ref()
+                        .is_none_or(|have| have.marker.started_at <= marker.started_at)
+                {
+                    interrupted = Some(RestoredUpload {
+                        marker,
+                        layers: from_this_session,
+                    });
+                }
+            }
             crashed.discard_if_empty();
+        }
+        let warn_upload = interrupted.is_some();
+        if let Some(restored) = interrupted {
+            if let Some(state) = self.autosave.as_mut() {
+                state.marker = Some(restored.marker.clone());
+                state.restored_upload = Some(restored);
+            }
         }
 
         if let Some(data) = fit {
@@ -508,7 +684,11 @@ impl MapViewer {
         }
         if restored > 0 {
             self.data_generation += 1;
-            self.set_status(tr_count!("status.restored_autosave", restored));
+            if warn_upload {
+                self.set_status(tr!("status.restored_upload_interrupted"));
+            } else {
+                self.set_status(tr_count!("status.restored_autosave", restored));
+            }
         }
         if let Some(state) = self.autosave.as_mut() {
             state.busy = state.busy.saturating_sub(1);

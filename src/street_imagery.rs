@@ -64,7 +64,7 @@ impl Provider {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreetPhoto {
     pub provider: Provider,
-    /// The provider's own id (a string for both).
+    /// The provider's own id, as a string (Mapillary serves numeric ids too).
     pub id: String,
     pub lat: f64,
     pub lon: f64,

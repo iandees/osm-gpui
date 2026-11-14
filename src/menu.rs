@@ -11,6 +11,7 @@ use osm_gpui::custom_imagery_store::{self, CustomImageryEntry};
 use osm_gpui::imagery;
 use osm_gpui::osm::OsmParser;
 use osm_gpui::tr;
+use osm_gpui::ui::settings_window::SettingsPage;
 
 use crate::gps_traces_ui::DownloadGpsTraces;
 use crate::history_actions::ShowObjectHistory;
@@ -41,17 +42,23 @@ impl gpui::Global for SettingsWindowSlot {}
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SettingsOpen {
     /// Open a window, on `page` when one was asked for.
-    New { page: Option<usize> },
+    New { page: Option<SettingsPage> },
     /// There is one already: bring it to the front.
     Focus,
+    /// There is one already and a page was asked for: bring it to the front
+    /// on that page.
+    FocusAndShow { page: SettingsPage },
 }
 
 /// Settings is a single window: open it, or focus the one that exists.
-pub(crate) fn settings_open_decision(already_open: bool, page: Option<usize>) -> SettingsOpen {
-    if already_open {
-        SettingsOpen::Focus
-    } else {
-        SettingsOpen::New { page }
+pub(crate) fn settings_open_decision(
+    already_open: bool,
+    page: Option<SettingsPage>,
+) -> SettingsOpen {
+    match (already_open, page) {
+        (false, page) => SettingsOpen::New { page },
+        (true, Some(page)) => SettingsOpen::FocusAndShow { page },
+        (true, None) => SettingsOpen::Focus,
     }
 }
 
@@ -173,8 +180,8 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
 }
 
 /// Open the Settings window on `page` (the first when `None`), or focus it if
-/// it is already open.
-pub(crate) fn open_settings_page(page: Option<usize>, cx: &mut App) {
+/// it is already open, switching it to `page` when one is given.
+pub(crate) fn open_settings_page(page: Option<SettingsPage>, cx: &mut App) {
     let existing = cx
         .try_global::<SettingsWindowSlot>()
         .and_then(|slot| slot.0)
@@ -183,6 +190,15 @@ pub(crate) fn open_settings_page(page: Option<usize>, cx: &mut App) {
         SettingsOpen::Focus => {
             if let Some(handle) = existing {
                 let _ = handle.update(cx, |_, window, _| window.activate_window());
+            }
+            return;
+        }
+        SettingsOpen::FocusAndShow { page } => {
+            if let Some(handle) = existing {
+                let _ = handle.update(cx, |root, window, cx| {
+                    window.activate_window();
+                    show_settings_page(root, page, cx);
+                });
             }
             return;
         }
@@ -225,6 +241,17 @@ pub(crate) fn open_settings_page(page: Option<usize>, cx: &mut App) {
         )
         .unwrap();
     cx.set_global(SettingsWindowSlot(Some(settings_window.into())));
+}
+
+/// Switch the open Settings window (whose root view is `root`) to `page`.
+fn show_settings_page(root: gpui::AnyView, page: SettingsPage, cx: &mut App) {
+    let Ok(root) = root.downcast::<gpui_component::Root>() else {
+        return;
+    };
+    let content = root.read(cx).view().clone();
+    if let Ok(settings) = content.downcast::<osm_gpui::ui::settings_window::SettingsWindow>() {
+        settings.update(cx, |settings, cx| settings.show_page(page, cx));
+    }
 }
 
 // Handle the File > Download from OSM menu action
@@ -1181,11 +1208,18 @@ mod tests {
             SettingsOpen::New { page: None }
         );
         assert_eq!(
-            settings_open_decision(false, Some(3)),
-            SettingsOpen::New { page: Some(3) }
+            settings_open_decision(false, Some(SettingsPage::Imagery)),
+            SettingsOpen::New {
+                page: Some(SettingsPage::Imagery)
+            }
         );
         assert_eq!(settings_open_decision(true, None), SettingsOpen::Focus);
-        assert_eq!(settings_open_decision(true, Some(3)), SettingsOpen::Focus);
+        assert_eq!(
+            settings_open_decision(true, Some(SettingsPage::Imagery)),
+            SettingsOpen::FocusAndShow {
+                page: SettingsPage::Imagery
+            }
+        );
     }
 
     /// No menu is over the limit unless it is a leaf without submenus.

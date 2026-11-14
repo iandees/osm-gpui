@@ -211,11 +211,8 @@ impl OsmParser {
         Ok(ElementAction::None)
     }
 
-    /// Handle the tag-dispatch children (`tag`/`nd`/`member`) shared between
-    /// `Event::Start` and `Event::Empty` — everything a `node`/`way`/
-    /// `relation` open tag can contain that isn't itself a nested
-    /// node/way/relation. Previously this ~50-line match was duplicated
-    /// verbatim between the two event arms; both now call this one copy.
+    /// Handle the children (`tag`/`nd`/`member`) of a `node`/`way`/`relation`,
+    /// shared between `Event::Start` and `Event::Empty`.
     fn parse_child_element(
         &self,
         e: &BytesStart,

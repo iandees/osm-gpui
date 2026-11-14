@@ -1,8 +1,8 @@
 //! OSM API 0.6 changeset lifecycle (create/upload/close) and osmChange XML
 //! (de)serialization. See https://wiki.openstreetmap.org/wiki/API_v0.6#Changesets.
 //!
-//! Every network call here is synchronous (`ureq`) and must be run from a
-//! background executor, never the UI thread — mirrors `osm_api::fetch_bbox`.
+//! Every network call here is synchronous and must be run from a background
+//! executor, never the UI thread.
 
 use std::collections::HashMap;
 
@@ -253,18 +253,14 @@ pub struct UploadFailure {
 }
 
 /// Per-changeset result of a successful `upload_changes_with` call: for every
-/// node/way/relation the server accepted, maps its LOCAL id (the id we sent — a
-/// possibly-negative placeholder for a create, or the real id for a
-/// modify) to its new `(id, version)`. For a modify, `new_id == old local
-/// id`. For a create, `new_id` is the real server-assigned id. Deleted
-/// elements are confirmed by the server but need no remap, so they're not
-/// represented here.
+/// node/way/relation the server accepted, maps its LOCAL id (the id we sent: a
+/// possibly-negative placeholder for a create, the real id for a modify) to its
+/// new `(id, version)`. A modify maps to the same id; a create maps to the
+/// server-assigned id. Deleted elements need no remap and are not represented.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UploadResult {
     pub node_id_remap: HashMap<i64, (i64, i32)>,
     pub way_id_remap: HashMap<i64, (i64, i32)>,
-    /// Same for relations: a modify maps an id to itself with its new
-    /// version, a create maps the placeholder to the server-assigned id.
     pub relation_id_remap: HashMap<i64, (i64, i32)>,
 }
 

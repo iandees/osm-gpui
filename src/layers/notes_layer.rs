@@ -95,7 +95,7 @@ fn paint_polygon(window: &mut Window, pts: &[(f32, f32)], color: u32, stroke: Op
 }
 
 /// The id of the note whose pin is under `pos` (map-local pixels), the
-/// topmost one when pins overlap. Hidden/closed notes count: they are shown.
+/// topmost one when pins overlap. Closed notes count: they are drawn too.
 pub fn hit_test(store: &NoteStore, viewport: &Viewport, pos: Point<Pixels>) -> Option<i64> {
     let (mx, my) = (pos.x.as_f32(), pos.y.as_f32());
     store.with(|s| {

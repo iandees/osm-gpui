@@ -730,8 +730,8 @@ mod tests {
 
     #[test]
     fn a_short_segment_between_bends_falls_back_without_flipping() {
-        // The inner corners of a 2 px wide stroke would pass each other on a
-        // 0.5 px long segment: flat ends and bevels instead.
+        // The inner corners of a stroke of half-width 2 would pass each other
+        // on a 0.5 px long segment: flat ends and bevels instead.
         let pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 0.5), (20.0, 0.5)];
         let t = tris(&pts, 2.0, true);
         assert_sound(&t);

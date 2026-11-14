@@ -3,12 +3,14 @@
 #
 # Coordinates (window 1200x800, default 280px side panel, map centre at
 # (488, 388), viewport as in relations.osmscript; fixtures/relation-editor.osm
-# is laid out for it): way 8202 is clicked at (520, 200). With it selected,
-# the Relations row ("Bus 7B") is at y=595. Once the relation is selected the
-# Fields and Tags headers (y=172 and, after Fields collapses, y=201) are
-# clicked to collapse them, which puts the Members list at a fixed place:
-# member i has its name row centred at y=263+47.5*i and its role line at
-# y=285+47.5*i; the move-down button is at x=1157 and remove at x=1177.
+# is laid out for it): way 8202 is clicked at (520, 200). The way's preset Fields
+# fill the panel and push the Relations row off screen, so the Fields header
+# (y=210) and then the Tags header (y=243, once Fields has collapsed) are
+# clicked to collapse them; that puts the Relations row ("Bus 7B") at y=306
+# however many preset fields the way has. The collapsed state is kept when the
+# relation is selected, so its Members list is already at a fixed place:
+# member i has its name row centred at y=332+47.5*i and its role line at
+# y=354+47.5*i; the move-down button is at x=1150 and remove at x=1170.
 # (The `key m a i n` lines type into the role input.)
 
 window 1200 800
@@ -22,20 +24,22 @@ wait_idle 2s
 assert_selected way 8202
 capture out/relation-editor-02-member-way.png
 
-# Clicking the Relations row selects the relation; its members are highlighted.
-click 1000,595
+# Collapse Fields and Tags so the Relations row is at a fixed place, then click
+# it: that selects the relation and highlights its members.
+click 1000,210
+wait_idle 1s
+click 1000,243
+wait_idle 1s
+click 1000,306
 wait_idle 2s
 assert_selected relation 9101
 capture out/relation-editor-03-relation-selected.png
 
-click 1000,172
-wait_idle 1s
-click 1000,201
 wait_idle 2s
 capture out/relation-editor-04-members.png
 
 # Edit the second member's role in place: type "main", Enter.
-click 1000,329
+click 1000,402
 wait_idle 2s
 capture out/relation-editor-05-role-editing.png
 key m
@@ -47,7 +51,7 @@ wait_idle 2s
 capture out/relation-editor-06-role-edited.png
 
 # Move the first member down one place.
-click 1155,262
+click 1150,332
 wait_idle 2s
 capture out/relation-editor-07-moved.png
 

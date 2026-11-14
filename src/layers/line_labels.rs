@@ -8,16 +8,17 @@
 //! onto the way and appends them to a raw-triangle batch, the same way the way
 //! pass batches strokes. A halo is a stroked copy of the outline, also cached.
 //!
-//! Three caches keep per-frame work small:
+//! Two caches keep per-frame work small:
 //! - glyph meshes, keyed by (glyph id, size), in pixel units with the origin
 //!   on the glyph's baseline-left;
 //! - per-label layouts, keyed by way id (and checked against the label text
 //!   and the way's geometry), stored relative to the way's first vertex's
 //!   screen position at one zoom level. At a fixed zoom, panning is a pure
 //!   translation, so a pan frame never re-lays-out anything. The cache is
-//!   dropped when the zoom changes;
-//! - nothing else: collision against already-placed labels is redone per
-//!   frame, it is a handful of rectangle tests.
+//!   dropped when the zoom changes.
+//!
+//! Collision against already-placed labels is redone per frame; it is a
+//! handful of rectangle tests.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -116,7 +117,7 @@ impl Default for Tuning {
 pub enum HaloMode {
     /// Fully joined stroke around every contour.
     Stroke,
-    /// Unjoined stroke segments around a coarser outline: 28% fewer
+    /// Unjoined stroke segments around a coarser outline: noticeably fewer
     /// vertices than `Stroke`. The default.
     #[default]
     StrokeCoarse,
@@ -1784,7 +1785,7 @@ mod tests {
 
     #[test]
     fn a_ring_gets_windows_across_its_seam() {
-        // Square-ish ring built as 24 points of a circle (radius 100 px).
+        // A ring of 24 points on a circle (radius 100 px).
         let r = 100.0f32;
         let ring: Vec<Pt> = (0..=24)
             .map(|i| {

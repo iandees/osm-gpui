@@ -165,9 +165,7 @@ impl TileStore {
         summary
     }
 
-    /// Record the tile URLs a layer of `source_key` needs right now (replacing
-    /// its previous set), and return the previously cancelled tiles among them,
-    /// which the caller must evict from gpui's asset cache so they refetch.
+    /// See [`set_wanted_tiles`].
     fn set_wanted(&self, source_key: &str, urls: HashSet<String>) -> Vec<TileAssetKey> {
         let revived: Vec<TileAssetKey> = {
             let mut cancelled = self.cancelled.lock().unwrap();
@@ -257,10 +255,8 @@ pub fn set_budget_mb(mb: u64) {
     shared_store().set_budget_mb(mb);
 }
 
-/// Returns the on-disk tile cache directory: a real, user-visible cache
-/// location (via the `dirs` crate) rather than the OS temp dir, which can be
-/// wiped at any time and isn't where users expect persistent cache data to
-/// live.
+/// The on-disk tile cache directory: the user cache location rather than the
+/// OS temp dir, which can be wiped at any time.
 fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -268,11 +264,9 @@ fn cache_dir() -> PathBuf {
         .join("tiles")
 }
 
-/// Derive a cache filename for `url` from a SHA-256 hash of the full URL.
-/// Using a strong, unseeded-collision-resistant hash (rather than
-/// `DefaultHasher`, which is unseeded and not designed to be collision
-/// resistant) ensures two different tile servers/templates can never
-/// collide on the same cache file.
+/// Cache filename for `url`: a SHA-256 of the full URL. A collision-resistant
+/// hash (unlike `DefaultHasher`) keeps two tile servers or templates from ever
+/// sharing a cache file.
 fn cache_filename(url: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
@@ -333,18 +327,14 @@ pub(crate) fn source_key_for_template(template: &str) -> String {
     }
 }
 
-/// Atomically write `bytes` to `file_path`: write to a unique sibling temp
-/// file first, then `rename` into place. `rename` is atomic on POSIX
-/// filesystems (macOS/Linux), so concurrent fetches for the same cache path
-/// can never produce a torn/truncated file that a concurrent reader might
-/// load. See `crate::persist::write_atomic` for the shared implementation.
+/// Atomically write `bytes` to `file_path` (temp file, then rename), so
+/// concurrent fetches for the same cache path never leave a torn file for a
+/// reader to load. See `crate::persist::write_atomic`.
 fn write_atomic(file_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     crate::persist::write_atomic(file_path, bytes, crate::persist::WriteOpts::default())
 }
 
-/// Recursively collect every cache file under `dir` — one level of
-/// source-key subdirectories, plus any loose top-level files left over
-/// from before per-source directories existed — appending
+/// Recursively collect every cache file under `dir`, appending
 /// `(path, size, mtime)` tuples and accumulating `total`.
 fn collect_cache_files(dir: &Path, files: &mut Vec<(PathBuf, u64, SystemTime)>, total: &mut u64) {
     let entries = match fs::read_dir(dir) {
@@ -380,7 +370,6 @@ fn evict_if_over_budget(dir: &Path, max_bytes: u64) {
         return;
     }
 
-    // Oldest first.
     files.sort_by_key(|(_, _, mtime)| *mtime);
 
     for (path, size, _) in files {
@@ -565,8 +554,6 @@ fn load_tile(
         Err(e) => return Err(fail_tile(store, url, e.to_string())),
     };
 
-    // Atomic (temp file + rename) so a concurrent fetch for the same cache
-    // path can never observe a torn/truncated file.
     if let Err(e) = write_atomic(&file_path, &bytes) {
         let reason = TileFetchError::Io(format!("write: {}", e)).to_string();
         return Err(fail_tile(store, url, reason));
@@ -618,7 +605,7 @@ enum SniffedImage {
 }
 
 fn sniff_image(bytes: &[u8]) -> SniffedImage {
-    // PNG starts 0x89 "PNG\r\n\x1a\n"; the 0x89 is not checked, as before.
+    // PNG starts 0x89 "PNG\r\n\x1a\n"; the 0x89 is not checked.
     if bytes.len() >= 8 && &bytes[1..4] == b"PNG" {
         SniffedImage::Png
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
@@ -651,12 +638,9 @@ fn fetch(
 /// Max number of tile downloads allowed to be in flight at once, process-wide.
 ///
 /// The OSM tile usage policy asks clients to keep to ~2 concurrent connections
-/// per host. Tracking connections *per host* would require threading a host
-/// key through the whole asset-loading path (URLs for custom imagery sources
-/// can point anywhere), so as a simpler and still effective approximation we
-/// cap total concurrent tile downloads process-wide. In practice almost all
-/// traffic goes to a single tile host at a time, so this behaves close to a
-/// per-host cap while being much simpler to reason about.
+/// per host. Custom imagery URLs can point anywhere, so rather than track
+/// hosts this caps total downloads process-wide; nearly all traffic goes to
+/// one tile host at a time, so it behaves close to a per-host cap.
 const MAX_CONCURRENT_TILE_DOWNLOADS: usize = 4;
 
 /// A simple blocking counting semaphore built on `Mutex` + `Condvar`, used to
@@ -837,13 +821,11 @@ pub struct CacheSummary {
     pub sources: Vec<CacheSourceUsage>,
 }
 
-/// Bucket for cache files that aren't inside any source-key subdirectory —
-/// e.g. leftovers from before per-source directories existed.
+/// Bucket for cache files that aren't inside any source-key subdirectory.
 const UNCATEGORIZED_KEY: &str = "(uncategorized)";
 
-/// `pub(crate)` accessor so callers outside this module (e.g. the settings
-/// UI) can compare against the uncategorized bucket key without duplicating
-/// the literal string.
+/// The uncategorized bucket key, for callers outside this module (the
+/// settings UI).
 pub(crate) fn uncategorized_key() -> &'static str {
     UNCATEGORIZED_KEY
 }
@@ -932,11 +914,10 @@ fn clear_source_at(dir: &Path, key: &str) -> std::io::Result<()> {
         return Ok(());
     }
 
-    // Defense-in-depth: every real caller passes a key harvested from
-    // `cache_summary()`'s output, itself derived from sanitized on-disk
-    // directory names (see `source_key_for_template`), so this isn't
-    // exploitable today. Still, refuse to join a path-separator or
-    // traversal sequence onto the cache directory before `remove_dir_all`.
+    // Defense in depth: keys normally come from `cache_summary()` (sanitized
+    // directory names, see `source_key_for_template`), but never join a path
+    // separator or traversal sequence onto the cache directory before
+    // `remove_dir_all`.
     if key.contains('/') || key.contains('\\') || key.contains("..") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1253,8 +1234,7 @@ mod tests {
     }
 
     /// Two different tile-server URLs must never produce the same cache
-    /// filename, unlike the old unseeded-DefaultHasher scheme which could
-    /// theoretically collide.
+    /// filename.
     #[test]
     fn cache_filename_no_collision_across_many_urls() {
         use std::collections::HashSet;

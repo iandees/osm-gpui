@@ -630,7 +630,8 @@ pub fn parse_response(
     Ok(history)
 }
 
-/// The label of a gap row: `v3` or `v3-v5`, with a plural-aware sentence.
+/// The label of a gap row: a plural-aware sentence naming the version or the
+/// `from–to` range.
 pub fn redacted_text(from: u32, to: u32) -> String {
     let range = if from == to {
         from.to_string()

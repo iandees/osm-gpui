@@ -76,7 +76,7 @@ pub enum NodeForm {
     /// target.
     Preview,
     /// The stylesheet's own marker (`symbol-shape: square | cross`): drawn
-    /// from `VERTEX_MIN_ZOOM` for every node it matches, vertices included.
+    /// from `STYLED_MIN_ZOOM` for every node it matches, vertices included.
     Styled(NodeVisual),
 }
 

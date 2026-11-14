@@ -247,6 +247,7 @@ status:
       one: "%{count} lokale Änderung behalten"
       other: "%{count} lokale Änderungen behalten"
     separator: ", "
+  restored_upload_interrupted: "Beim Beenden der App lief gerade ein Upload. Einige der wiederhergestellten Änderungen sind möglicherweise schon auf dem Server: Prüfe deine letzten Changesets, bevor du erneut hochlädst."
 
 # Größenlimits des OSM-Servers (Knoten pro Weg, Mitglieder pro Relation,
 # Elemente pro Änderungssatz). Zahlen kommen bereits mit Tausendertrennung an.
@@ -930,6 +931,14 @@ dialog:
     restore: "Wiederherstellen"
     discard: "Verwerfen"
     later: "Beim nächsten Mal fragen"
+    upload_interrupted: "Beim Beenden der App lief gerade ein Upload. Einige dieser Änderungen sind möglicherweise schon auf dem Server. Prüfe auf der OpenStreetMap-Website deine letzten Changesets, bevor du erneut hochlädst; das Wiederherstellen lädt nichts hoch."
+    upload_detail: "Gesendet wurden %{objects} an %{server}, %{when}."
+    upload_detail_part: "Gesendet wurde Changeset %{part} von %{total} (%{objects}) an %{server}, %{when}."
+    upload_objects:
+      one: "%{count} Änderung"
+      other: "%{count} Änderungen"
+    upload_comment: "Changeset-Kommentar: \"%{comment}\""
+    upload_changeset: "Changeset %{id}: %{url}"
   age:
     just_now: "gerade eben"
     minutes:

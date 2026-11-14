@@ -212,7 +212,6 @@ pub fn rectangle_from_edge(
     if len < f64::EPSILON {
         return (a, b);
     }
-    // Unit vector perpendicular to a-b.
     let nx = -dy / len;
     let ny = dx / len;
 

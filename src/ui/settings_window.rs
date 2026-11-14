@@ -24,7 +24,7 @@ use crate::ui::modal::field_row;
 use crate::{tr, tr_count};
 
 /// Login UI state for the currently-selected API server.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 enum LoginState {
     LoggedOut,
     LoggingIn,
@@ -44,15 +44,202 @@ pub enum SettingsEvent {
     MapStyleChanged,
 }
 
-/// Index of the Imagery page, where the street-imagery token lives.
-pub const IMAGERY_PAGE: usize = 3;
+/// The server sign-in, sign-out and client ids act on.
+#[derive(Debug, PartialEq, Eq)]
+struct ActingServer {
+    api_base_url: String,
+    /// Where tokens and client ids are keyed; differs from the API URL for the
+    /// production server.
+    oauth_base_url: String,
+}
+
+/// The run override (`--api-server`) wins over the saved choice; a custom
+/// URL is used as saved.
+fn acting_server(saved: &AppSettings, run_override: Option<&str>) -> ActingServer {
+    let api_base_url = settings_store::effective_base_url(saved, run_override);
+    let oauth_base_url = auth::oauth_base_for(&api_base_url);
+    ActingServer {
+        api_base_url,
+        oauth_base_url,
+    }
+}
+
+/// Signed in when `stored` has a login for the acting server's OAuth base.
+/// A login saved for another server does not count.
+fn login_state_for(
+    server: &ActingServer,
+    stored: impl FnOnce(&str) -> Option<StoredToken>,
+) -> LoginState {
+    match stored(&server.oauth_base_url) {
+        Some(token) => LoginState::LoggedIn(token),
+        None => LoginState::LoggedOut,
+    }
+}
+
+/// What was typed into the custom API server field.
+#[derive(Debug, PartialEq, Eq)]
+enum CustomApiUrl {
+    /// An `http(s)://` URL, trimmed, without trailing slashes.
+    Valid(String),
+    Empty,
+    /// Not `http://` or `https://` (case-sensitive, as the API client is).
+    NotHttp,
+}
+
+fn parse_custom_api_url(raw: &str) -> CustomApiUrl {
+    let url = raw.trim();
+    if url.is_empty() {
+        CustomApiUrl::Empty
+    } else if !url.starts_with("http://") && !url.starts_with("https://") {
+        CustomApiUrl::NotHttp
+    } else {
+        CustomApiUrl::Valid(url.trim_end_matches('/').to_string())
+    }
+}
+
+/// The smallest tile-cache budget the field accepts.
+const MIN_CACHE_BUDGET_MB: u64 = 10;
+
+/// What was typed into the tile-cache budget field.
+#[derive(Debug, PartialEq, Eq)]
+enum CacheBudget {
+    Megabytes(u64),
+    TooSmall,
+    /// Anything but a whole number, including units ("500 MB") and negatives.
+    NotANumber,
+}
+
+fn parse_cache_budget(raw: &str) -> CacheBudget {
+    match raw.trim().parse::<u64>() {
+        Ok(mb) if mb >= MIN_CACHE_BUDGET_MB => CacheBudget::Megabytes(mb),
+        Ok(_) => CacheBudget::TooSmall,
+        Err(_) => CacheBudget::NotANumber,
+    }
+}
+
+/// What saving the OAuth client-id field does for the acting server.
+#[derive(Debug, PartialEq, Eq)]
+enum ClientIdEdit {
+    /// Blank: fall back to the built-in client id.
+    Clear,
+    Set(String),
+}
+
+fn parse_client_id(raw: &str) -> ClientIdEdit {
+    match raw.trim() {
+        "" => ClientIdEdit::Clear,
+        id => ClientIdEdit::Set(id.to_string()),
+    }
+}
+
+/// What was typed into the add-map-style field.
+#[derive(Debug, PartialEq, Eq)]
+enum MapStyleLocation {
+    /// Nothing to add; the button does nothing.
+    Empty,
+    /// A file path or URL, trimmed; whether it loads is decided by loading it.
+    Location(String),
+}
+
+fn parse_map_style_location(raw: &str) -> MapStyleLocation {
+    match raw.trim() {
+        "" => MapStyleLocation::Empty,
+        location => MapStyleLocation::Location(location.to_string()),
+    }
+}
+
+fn rejection_message(rejection: &keybindings::Rejection) -> SharedString {
+    match rejection {
+        keybindings::Rejection::Reserved => tr!("settings.shortcuts.error.reserved"),
+        keybindings::Rejection::NeedsBareKey => tr!("settings.shortcuts.error.mode_modifier"),
+        keybindings::Rejection::InUse(other) => {
+            tr!("settings.shortcuts.error.in_use", other = other)
+        }
+    }
+}
+
+/// A page of the Settings window. [`SettingsPage::ALL`] is the one list that
+/// orders the pages: `setting_pages` builds them by walking it, and
+/// [`SettingsPage::index`] reads positions from it, so a page's index cannot
+/// drift from where it is built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsPage {
+    Account,
+    Appearance,
+    Editing,
+    /// Custom imagery sources, the street-imagery tokens and the tile cache.
+    Imagery,
+    Shortcuts,
+}
+
+impl SettingsPage {
+    pub const ALL: [SettingsPage; 5] = [
+        Self::Account,
+        Self::Appearance,
+        Self::Editing,
+        Self::Imagery,
+        Self::Shortcuts,
+    ];
+
+    /// Position of this page in the window's page list.
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|p| *p == self)
+            .expect("every page is in ALL")
+    }
+
+    fn title_key(self) -> &'static str {
+        match self {
+            Self::Account => "settings.account.title",
+            Self::Appearance => "settings.appearance.title",
+            Self::Editing => "settings.editing.title",
+            Self::Imagery => "settings.imagery.title",
+            Self::Shortcuts => "settings.shortcuts.title",
+        }
+    }
+
+    fn title(self) -> SharedString {
+        crate::i18n::tr_dynamic(self.title_key())
+    }
+}
+
+/// Which page the window shows when `Settings` first renders.
+///
+/// gpui-component's `Settings` keeps its selected page in state keyed by its
+/// element id and reads `default_selected_index` only when that state is
+/// created. So showing another page later means a new id: each `show` bumps
+/// `generation`, which is part of the id, and the fresh state starts on the
+/// requested page (the search box and scroll position reset with it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PageSelection {
+    start: Option<SettingsPage>,
+    generation: u32,
+}
+
+impl PageSelection {
+    fn new(start: Option<SettingsPage>) -> Self {
+        Self {
+            start,
+            generation: 0,
+        }
+    }
+
+    fn show(&mut self, page: SettingsPage) {
+        self.start = Some(page);
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn element_id(&self) -> (&'static str, u32) {
+        ("app-settings", self.generation)
+    }
+}
 
 pub struct SettingsWindow {
     /// Used for sign-in and for fetching a custom map style; the window is
     /// opened from a global action, so it takes the installed default client.
     http: Arc<dyn crate::http::HttpClient>,
-    /// The page the window opened on, when one was requested.
-    start_page: Option<usize>,
+    page: PageSelection,
     focus_handle: FocusHandle,
     entries: Vec<CustomImageryEntry>,
     editing_index: Option<usize>,
@@ -86,14 +273,18 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     /// A window opened on page `start_page` (the first when `None`).
-    pub fn new(start_page: Option<usize>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        start_page: Option<SettingsPage>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let app_settings = settings_store::snapshot();
         let custom_api_url_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("https://example.com")
                 .default_value(app_settings.custom_api_url.clone())
         });
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&app_settings));
+        let oauth_base = Self::acting_server(&app_settings).oauth_base_url;
         let client_id_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(tr!("settings.account.client_id_placeholder"))
@@ -130,7 +321,7 @@ impl SettingsWindow {
 
         Self {
             http: crate::http::default_client(),
-            start_page,
+            page: PageSelection::new(start_page),
             focus_handle: cx.focus_handle(),
             entries: custom_imagery_store::load(),
             editing_index: None,
@@ -163,11 +354,17 @@ impl SettingsWindow {
         }
     }
 
+    /// Switch the open window to `page`.
+    pub fn show_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        self.page.show(page);
+        cx.notify();
+    }
+
     /// The server this window signs in to and keeps client IDs for: the one in
     /// use this run (`--api-server` wins over the saved choice), not the one
     /// the picker shows.
-    fn acting_base_url(saved: &AppSettings) -> String {
-        settings_store::effective_base_url(saved, settings_store::run_override().as_deref())
+    fn acting_server(saved: &AppSettings) -> ActingServer {
+        acting_server(saved, settings_store::run_override().as_deref())
     }
 
     /// Write the changes `f` makes to the store, then take the store's value
@@ -179,19 +376,15 @@ impl SettingsWindow {
     }
 
     fn current_login_state(settings: &AppSettings) -> LoginState {
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(settings));
         // Only the display name is shown, so use the metadata-only lookup: it never
         // touches the keychain (this runs on the UI thread).
-        match auth::stored_login(&oauth_base) {
-            Some(token) => LoginState::LoggedIn(token),
-            None => LoginState::LoggedOut,
-        }
+        login_state_for(&Self::acting_server(settings), auth::stored_login)
     }
 
     /// Refresh `client_id_input`'s displayed value to match the currently-selected
     /// server's configured override (or blank, if using the default client_id).
     fn refresh_client_id_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
+        let oauth_base = Self::acting_server(&self.app_settings).oauth_base_url;
         let value = self
             .app_settings
             .client_ids
@@ -215,15 +408,16 @@ impl SettingsWindow {
     }
 
     fn save_custom_api_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let url = self.custom_api_url_input.read(cx).value().to_string();
-        let url = url.trim();
-        if url.is_empty() || (!url.starts_with("http://") && !url.starts_with("https://")) {
-            self.custom_url_error = Some(tr!("settings.account.error.invalid_url"));
-            cx.notify();
-            return;
-        }
+        let raw = self.custom_api_url_input.read(cx).value().to_string();
+        let url = match parse_custom_api_url(&raw) {
+            CustomApiUrl::Valid(url) => url,
+            CustomApiUrl::Empty | CustomApiUrl::NotHttp => {
+                self.custom_url_error = Some(tr!("settings.account.error.invalid_url"));
+                cx.notify();
+                return;
+            }
+        };
         self.custom_url_error = None;
-        let url = url.trim_end_matches('/').to_string();
         self.commit(|s| s.custom_api_url = url);
         self.login_state = Self::current_login_state(&self.app_settings);
         self.refresh_client_id_input(window, cx);
@@ -299,11 +493,12 @@ impl SettingsWindow {
     }
 
     fn add_map_style(&mut self, cx: &mut Context<Self>) {
-        let location = self.map_style_input.read(cx).value().trim().to_string();
-        if location.is_empty() {
-            return;
+        match parse_map_style_location(&self.map_style_input.read(cx).value()) {
+            MapStyleLocation::Empty => {}
+            MapStyleLocation::Location(location) => {
+                self.activate_map_style(Some(location), true, cx);
+            }
         }
-        self.activate_map_style(Some(location), true, cx);
     }
 
     /// Forget the active custom style and go back to the built-in one.
@@ -348,12 +543,13 @@ impl SettingsWindow {
     }
 
     fn save_client_id(&mut self, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
-        let client_id = self.client_id_input.read(cx).value().trim().to_string();
-        self.commit(|s| {
-            if client_id.is_empty() {
+        let oauth_base = Self::acting_server(&self.app_settings).oauth_base_url;
+        let edit = parse_client_id(&self.client_id_input.read(cx).value());
+        self.commit(|s| match edit {
+            ClientIdEdit::Clear => {
                 s.client_ids.remove(&oauth_base);
-            } else {
+            }
+            ClientIdEdit::Set(client_id) => {
                 s.client_ids.insert(oauth_base, client_id);
             }
         });
@@ -400,17 +596,17 @@ impl SettingsWindow {
     }
 
     fn save_cache_budget(&mut self, cx: &mut Context<Self>) {
-        let raw = self.edit_cache_budget.read(cx).value().trim().to_string();
-        match raw.parse::<u64>() {
-            Ok(mb) if mb >= 10 => {
+        let raw = self.edit_cache_budget.read(cx).value().to_string();
+        match parse_cache_budget(&raw) {
+            CacheBudget::Megabytes(mb) => {
                 self.cache_budget_error = None;
                 self.commit(|s| s.cache_budget_mb = mb);
                 crate::tile_cache::set_budget_mb(mb);
             }
-            Ok(_) => {
+            CacheBudget::TooSmall => {
                 self.cache_budget_error = Some(tr!("settings.cache.error.too_small"));
             }
-            Err(_) => {
+            CacheBudget::NotANumber => {
                 self.cache_budget_error = Some(tr!("settings.cache.error.not_a_number"));
             }
         }
@@ -442,12 +638,8 @@ impl SettingsWindow {
     /// Remove `id`'s override, falling back to its default, and propagate
     /// the change to the live keymap and native menu.
     fn reset_shortcut(&mut self, id: &'static str, cx: &mut Context<Self>) {
-        let candidate = keybindings::def(id).default_spec;
-        if let Some(other_label) = keybindings::conflict(&self.app_settings, id, candidate) {
-            self.shortcut_error = Some((
-                id,
-                tr!("settings.shortcuts.error.in_use", other = other_label),
-            ));
+        if let Err(rejection) = keybindings::validate_reset(&self.app_settings, id) {
+            self.shortcut_error = Some((id, rejection_message(&rejection)));
             cx.notify();
             return;
         }
@@ -458,9 +650,9 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Clear every shortcut override, restoring all ten defaults.
+    /// Clear every shortcut override.
     fn reset_all_shortcuts(&mut self, cx: &mut Context<Self>) {
-        self.commit(|s| s.keybindings.clear());
+        self.commit(keybindings::reset_all);
         cx.emit(SettingsEvent::KeybindingsChanged);
         cx.notify();
     }
@@ -482,22 +674,8 @@ impl SettingsWindow {
     /// sets `shortcut_error` and leaves `recording` active so the user can
     /// try another combo.
     fn apply_shortcut(&mut self, id: &'static str, spec: String, cx: &mut Context<Self>) {
-        if keybindings::is_reserved(&spec) {
-            self.shortcut_error = Some((id, tr!("settings.shortcuts.error.reserved")));
-            cx.notify();
-            return;
-        }
-        if keybindings::def(id).category.is_bare_key_category() && !keybindings::is_bare_key(&spec)
-        {
-            self.shortcut_error = Some((id, tr!("settings.shortcuts.error.mode_modifier")));
-            cx.notify();
-            return;
-        }
-        if let Some(other_label) = keybindings::conflict(&self.app_settings, id, &spec) {
-            self.shortcut_error = Some((
-                id,
-                tr!("settings.shortcuts.error.in_use", other = other_label),
-            ));
+        if let Err(rejection) = keybindings::validate(&self.app_settings, id, &spec) {
+            self.shortcut_error = Some((id, rejection_message(&rejection)));
             cx.notify();
             return;
         }
@@ -515,7 +693,7 @@ impl SettingsWindow {
         self.login_state = LoginState::LoggingIn;
         cx.notify();
 
-        let api_base_url = Self::acting_base_url(&self.app_settings);
+        let api_base_url = Self::acting_server(&self.app_settings).api_base_url;
         let http = self.http.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -539,8 +717,7 @@ impl SettingsWindow {
     }
 
     fn logout(&mut self, cx: &mut Context<Self>) {
-        let oauth_base = auth::oauth_base_for(&Self::acting_base_url(&self.app_settings));
-        auth::logout(&oauth_base);
+        auth::logout(&Self::acting_server(&self.app_settings).oauth_base_url);
         self.login_state = LoginState::LoggedOut;
         cx.notify();
     }
@@ -668,13 +845,16 @@ impl SettingsWindow {
 
     fn setting_pages(&self, cx: &mut Context<Self>) -> Vec<SettingPage> {
         let view = cx.entity();
-        vec![
-            self.account_page(view.clone()),
-            self.appearance_page(view.clone()),
-            self.editing_page(view.clone()),
-            self.imagery_page(view.clone()),
-            self.shortcuts_page(view),
-        ]
+        SettingsPage::ALL
+            .into_iter()
+            .map(|page| match page {
+                SettingsPage::Account => self.account_page(view.clone()),
+                SettingsPage::Appearance => self.appearance_page(view.clone()),
+                SettingsPage::Editing => self.editing_page(view.clone()),
+                SettingsPage::Imagery => self.imagery_page(view.clone()),
+                SettingsPage::Shortcuts => self.shortcuts_page(view.clone()),
+            })
+            .collect()
     }
 
     /// The Language dropdown: "System default" plus every compiled-in
@@ -856,7 +1036,7 @@ impl SettingsWindow {
         )
         .description(tr!("settings.appearance.text_size_description"));
 
-        SettingPage::new(tr!("settings.appearance.title"))
+        SettingPage::new(SettingsPage::Appearance.title())
             .icon(Icon::new(IconName::Palette))
             .groups(vec![
                 SettingGroup::new()
@@ -917,7 +1097,7 @@ impl SettingsWindow {
             ),
         )
         .description(tr!("settings.editing.autosave_description"));
-        SettingPage::new(tr!("settings.editing.title"))
+        SettingPage::new(SettingsPage::Editing.title())
             .icon(Icon::new(IconName::Settings2))
             .groups(vec![
                 SettingGroup::new()
@@ -991,7 +1171,7 @@ impl SettingsWindow {
         .description(tr!("settings.account.account_description"))
         .layout(Axis::Vertical);
 
-        SettingPage::new(tr!("settings.account.title"))
+        SettingPage::new(SettingsPage::Account.title())
             .icon(Icon::new(IconName::User))
             .default_open(true)
             .groups(vec![
@@ -1088,7 +1268,7 @@ impl SettingsWindow {
                 })
         }));
 
-        SettingPage::new(tr!("settings.imagery.title"))
+        SettingPage::new(SettingsPage::Imagery.title())
             .icon(Icon::new(IconName::Map))
             .groups(vec![
                 SettingGroup::new()
@@ -1263,14 +1443,7 @@ impl SettingsWindow {
 
     fn shortcuts_page(&self, view: Entity<Self>) -> SettingPage {
         let mut groups = Vec::new();
-        for category in [
-            ShortcutCategory::General,
-            ShortcutCategory::File,
-            ShortcutCategory::Edit,
-            ShortcutCategory::View,
-            ShortcutCategory::Modes,
-            ShortcutCategory::Actions,
-        ] {
+        for category in ShortcutCategory::ALL {
             let items: Vec<SettingItem> = SHORTCUTS
                 .iter()
                 .filter(|d| d.category == category)
@@ -1322,7 +1495,7 @@ impl SettingsWindow {
             },
         )));
 
-        SettingPage::new(tr!("settings.shortcuts.title")).groups(groups)
+        SettingPage::new(SettingsPage::Shortcuts.title()).groups(groups)
     }
 }
 
@@ -1691,31 +1864,31 @@ fn render_shortcut_row(
     if recording {
         let capture_view = view.clone();
 
-        let mut row = v_flex().gap_1().child(
-            div()
-                .track_focus(&focus_handle)
-                .on_key_down({
-                    let capture_view = capture_view.clone();
-                    move |ev: &gpui::KeyDownEvent, _window, cx| {
-                        if ev.keystroke.key.is_empty() {
-                            // Modifier-only keydown (e.g. bare Cmd) — keep
-                            // waiting for a real key.
-                            return;
+        let mut row =
+            v_flex().gap_1().child(
+                div()
+                    .track_focus(&focus_handle)
+                    .on_key_down({
+                        let capture_view = capture_view.clone();
+                        move |ev: &gpui::KeyDownEvent, _window, cx| {
+                            match keybindings::classify_recorded(&ev.keystroke) {
+                                keybindings::Recorded::ModifierOnly => {}
+                                keybindings::Recorded::Cancel => {
+                                    capture_view.update(cx, |this, cx| this.cancel_recording(cx));
+                                }
+                                keybindings::Recorded::Spec(spec) => {
+                                    capture_view
+                                        .update(cx, |this, cx| this.apply_shortcut(id, spec, cx));
+                                }
+                            }
                         }
-                        if ev.keystroke.key == "escape" {
-                            capture_view.update(cx, |this, cx| this.cancel_recording(cx));
-                            return;
-                        }
-                        let spec = ev.keystroke.unparse();
-                        capture_view.update(cx, |this, cx| this.apply_shortcut(id, spec, cx));
-                    }
-                })
-                .child(
-                    Label::new(tr!("settings.shortcuts.recording"))
-                        .text_sm()
-                        .text_color(muted),
-                ),
-        );
+                    })
+                    .child(
+                        Label::new(tr!("settings.shortcuts.recording"))
+                            .text_sm()
+                            .text_color(muted),
+                    ),
+            );
         if let Some(msg) = error {
             row = row.child(Label::new(msg).text_xs().text_color(danger));
         }
@@ -1844,14 +2017,319 @@ impl Render for SettingsWindow {
             .bg(cx.theme().background)
             .text_size(crate::ui::style::current_text_scale().body)
             .child({
-                let mut settings = Settings::new("app-settings").pages(self.setting_pages(cx));
-                if let Some(page_ix) = self.start_page {
+                let mut settings =
+                    Settings::new(self.page.element_id()).pages(self.setting_pages(cx));
+                if let Some(page) = self.page.start {
                     settings = settings.default_selected_index(SelectIndex {
-                        page_ix,
+                        page_ix: page.index(),
                         group_ix: None,
                     });
                 }
                 settings
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: it carries `gpui::*`, whose `test` macro shadows `#[test]`.
+    use super::{
+        acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
+        parse_custom_api_url, parse_map_style_location, rejection_message, CacheBudget,
+        ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, PageSelection, SettingsPage,
+        MIN_CACHE_BUDGET_MB,
+    };
+    use crate::auth::StoredToken;
+    use crate::settings_store::{ApiServerChoice, AppSettings, DEV_API_URL, PRIMARY_API_URL};
+
+    fn saved(choice: ApiServerChoice, custom: &str) -> AppSettings {
+        AppSettings {
+            api_server: choice,
+            custom_api_url: custom.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn token(name: &str) -> StoredToken {
+        StoredToken {
+            access_token: String::new(),
+            display_name: name.to_string(),
+            user_id: 1,
+            refresh_token: None,
+            expires_at: None,
+        }
+    }
+
+    /// A token store holding one login, keyed by OAuth base URL.
+    fn store_with(oauth_base: &'static str) -> impl Fn(&str) -> Option<StoredToken> {
+        move |base| (base == oauth_base).then(|| token("mapper"))
+    }
+
+    #[test]
+    fn saved_choice_is_the_acting_server_without_an_override() {
+        let primary = acting_server(&saved(ApiServerChoice::Primary, ""), None);
+        assert_eq!(primary.api_base_url, PRIMARY_API_URL);
+        // The production API signs in at the website, not the API host.
+        assert_eq!(primary.oauth_base_url, "https://www.openstreetmap.org");
+
+        let dev = acting_server(&saved(ApiServerChoice::Dev, ""), None);
+        assert_eq!(dev.api_base_url, DEV_API_URL);
+        assert_eq!(dev.oauth_base_url, DEV_API_URL);
+    }
+
+    #[test]
+    fn custom_url_is_the_acting_server_as_saved() {
+        let custom = acting_server(
+            &saved(ApiServerChoice::Custom, "https://osm.example.org/"),
+            None,
+        );
+        assert_eq!(custom.api_base_url, "https://osm.example.org");
+        assert_eq!(custom.oauth_base_url, "https://osm.example.org");
+        // The saved custom URL is ignored while another choice is selected.
+        let primary = acting_server(
+            &saved(ApiServerChoice::Primary, "https://osm.example.org"),
+            None,
+        );
+        assert_eq!(primary.api_base_url, PRIMARY_API_URL);
+    }
+
+    #[test]
+    fn run_override_wins_over_the_saved_choice() {
+        let settings = saved(ApiServerChoice::Primary, "");
+        let over = acting_server(&settings, Some("http://localhost:3000/"));
+        assert_eq!(over.api_base_url, "http://localhost:3000");
+        assert_eq!(over.oauth_base_url, "http://localhost:3000");
+
+        // An override naming the production API still maps to the website.
+        let over_primary = acting_server(
+            &saved(ApiServerChoice::Dev, ""),
+            Some("https://api.openstreetmap.org"),
+        );
+        assert_eq!(over_primary.oauth_base_url, "https://www.openstreetmap.org");
+    }
+
+    #[test]
+    fn login_state_follows_the_acting_server_only() {
+        let settings = saved(ApiServerChoice::Primary, "");
+        let www = "https://www.openstreetmap.org";
+
+        // Signed in on the saved server, no override: signed in.
+        let server = acting_server(&settings, None);
+        assert_eq!(
+            login_state_for(&server, store_with(www)),
+            LoginState::LoggedIn(token("mapper"))
+        );
+
+        // Same login, but the run override points elsewhere: signed out.
+        let server = acting_server(&settings, Some("https://master.apis.dev.openstreetmap.org"));
+        assert_eq!(
+            login_state_for(&server, store_with(www)),
+            LoginState::LoggedOut
+        );
+
+        // Signed in on the override server only: signed in.
+        assert_eq!(
+            login_state_for(&server, store_with(DEV_API_URL)),
+            LoginState::LoggedIn(token("mapper"))
+        );
+    }
+
+    #[test]
+    fn login_state_for_a_custom_server_uses_its_url() {
+        let settings = saved(ApiServerChoice::Custom, "https://osm.example.org/");
+        let server = acting_server(&settings, None);
+        assert_eq!(
+            login_state_for(&server, store_with("https://osm.example.org")),
+            LoginState::LoggedIn(token("mapper"))
+        );
+        assert_eq!(
+            login_state_for(&server, store_with(DEV_API_URL)),
+            LoginState::LoggedOut
+        );
+    }
+
+    #[test]
+    fn the_token_lookup_is_given_the_oauth_base_not_the_api_url() {
+        let server = acting_server(&saved(ApiServerChoice::Primary, ""), None);
+        let mut asked = None;
+        let _ = login_state_for(&server, |base| {
+            asked = Some(base.to_string());
+            None
+        });
+        assert_eq!(asked.as_deref(), Some("https://www.openstreetmap.org"));
+    }
+
+    #[test]
+    fn page_indices_are_positions_in_the_page_list() {
+        for (position, page) in SettingsPage::ALL.into_iter().enumerate() {
+            assert_eq!(page.index(), position, "{page:?}");
+        }
+    }
+
+    #[test]
+    fn every_page_has_its_own_title() {
+        let titles: Vec<_> = SettingsPage::ALL.into_iter().map(|p| p.title()).collect();
+        for (page, title) in SettingsPage::ALL.into_iter().zip(&titles) {
+            assert!(!title.starts_with("en."), "{page:?}: {title}");
+        }
+        for (i, a) in titles.iter().enumerate() {
+            assert!(!titles[i + 1..].contains(a), "duplicate title {a}");
+        }
+    }
+
+    #[test]
+    fn showing_a_page_selects_it_under_a_new_element_id() {
+        let mut selection = PageSelection::new(None);
+        assert_eq!(selection.start, None);
+        let first_id = selection.element_id();
+
+        selection.show(SettingsPage::Imagery);
+        assert_eq!(selection.start, Some(SettingsPage::Imagery));
+        assert_ne!(selection.element_id(), first_id);
+
+        // Asking for the page already shown still rebuilds the state, so a
+        // page the user has since navigated away from is selected again.
+        let second_id = selection.element_id();
+        selection.show(SettingsPage::Imagery);
+        assert_eq!(selection.start, Some(SettingsPage::Imagery));
+        assert_ne!(selection.element_id(), second_id);
+    }
+
+    #[test]
+    fn a_window_opened_on_a_page_starts_there_with_the_original_id() {
+        let selection = PageSelection::new(Some(SettingsPage::Shortcuts));
+        assert_eq!(selection.start, Some(SettingsPage::Shortcuts));
+        assert_eq!(
+            selection.element_id(),
+            PageSelection::new(None).element_id()
+        );
+    }
+
+    #[test]
+    fn the_imagery_page_is_named_by_title() {
+        let page = SettingsPage::Imagery;
+        assert_eq!(page.title(), crate::tr!("settings.imagery.title"));
+        assert_eq!(SettingsPage::ALL[page.index()], page);
+    }
+
+    #[test]
+    fn custom_api_url_accepts_http_and_https_and_trims() {
+        assert_eq!(
+            parse_custom_api_url("https://osm.example.org"),
+            CustomApiUrl::Valid("https://osm.example.org".into())
+        );
+        assert_eq!(
+            parse_custom_api_url("http://localhost:3000/api"),
+            CustomApiUrl::Valid("http://localhost:3000/api".into())
+        );
+        assert_eq!(
+            parse_custom_api_url("  https://osm.example.org \n"),
+            CustomApiUrl::Valid("https://osm.example.org".into())
+        );
+    }
+
+    #[test]
+    fn custom_api_url_drops_every_trailing_slash() {
+        assert_eq!(
+            parse_custom_api_url("https://osm.example.org/"),
+            CustomApiUrl::Valid("https://osm.example.org".into())
+        );
+        assert_eq!(
+            parse_custom_api_url("https://osm.example.org///"),
+            CustomApiUrl::Valid("https://osm.example.org".into())
+        );
+    }
+
+    #[test]
+    fn custom_api_url_rejects_blank_input() {
+        assert_eq!(parse_custom_api_url(""), CustomApiUrl::Empty);
+        assert_eq!(parse_custom_api_url("   \t"), CustomApiUrl::Empty);
+    }
+
+    #[test]
+    fn custom_api_url_rejects_other_schemes_and_bare_hosts() {
+        for raw in [
+            "osm.example.org",
+            "ftp://osm.example.org",
+            "file:///tmp/x",
+            "//osm.example.org",
+            "HTTPS://osm.example.org",
+            "xhttps://osm.example.org",
+        ] {
+            assert_eq!(parse_custom_api_url(raw), CustomApiUrl::NotHttp, "{raw}");
+        }
+    }
+
+    #[test]
+    fn cache_budget_accepts_whole_megabytes_from_the_minimum() {
+        assert_eq!(MIN_CACHE_BUDGET_MB, 10);
+        assert_eq!(parse_cache_budget("10"), CacheBudget::Megabytes(10));
+        assert_eq!(parse_cache_budget("500"), CacheBudget::Megabytes(500));
+        assert_eq!(
+            parse_cache_budget("18446744073709551615"),
+            CacheBudget::Megabytes(u64::MAX)
+        );
+        assert_eq!(parse_cache_budget("  250\n"), CacheBudget::Megabytes(250));
+        assert_eq!(parse_cache_budget("+50"), CacheBudget::Megabytes(50));
+    }
+
+    #[test]
+    fn cache_budget_below_the_minimum_is_too_small() {
+        assert_eq!(parse_cache_budget("9"), CacheBudget::TooSmall);
+        assert_eq!(parse_cache_budget("0"), CacheBudget::TooSmall);
+        assert_eq!(parse_cache_budget("007"), CacheBudget::TooSmall);
+    }
+
+    #[test]
+    fn cache_budget_rejects_anything_but_a_whole_number() {
+        for raw in [
+            "",
+            "   ",
+            "abc",
+            "-5",
+            "1.5",
+            "500 MB",
+            "500MB",
+            "5 00",
+            "18446744073709551616",
+        ] {
+            assert_eq!(parse_cache_budget(raw), CacheBudget::NotANumber, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn client_id_blank_clears_and_anything_else_is_trimmed() {
+        assert_eq!(parse_client_id(""), ClientIdEdit::Clear);
+        assert_eq!(parse_client_id("  \t"), ClientIdEdit::Clear);
+        assert_eq!(
+            parse_client_id("  abc-123 "),
+            ClientIdEdit::Set("abc-123".into())
+        );
+    }
+
+    #[test]
+    fn map_style_location_ignores_blank_and_trims_the_rest() {
+        assert_eq!(parse_map_style_location(" "), MapStyleLocation::Empty);
+        assert_eq!(
+            parse_map_style_location("  /tmp/style.mapcss "),
+            MapStyleLocation::Location("/tmp/style.mapcss".into())
+        );
+        assert_eq!(
+            parse_map_style_location("https://example.org/s.mapcss"),
+            MapStyleLocation::Location("https://example.org/s.mapcss".into())
+        );
+    }
+
+    #[test]
+    fn every_rejection_has_a_message() {
+        for rejection in [
+            keybindings::Rejection::Reserved,
+            keybindings::Rejection::NeedsBareKey,
+            keybindings::Rejection::InUse("Undo".into()),
+        ] {
+            let message = rejection_message(&rejection);
+            assert!(!message.starts_with("en."), "{rejection:?}: {message}");
+        }
+        assert!(rejection_message(&keybindings::Rejection::InUse("Undo".into())).contains("Undo"));
     }
 }

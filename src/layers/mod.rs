@@ -40,17 +40,12 @@ const DOWNLOAD_EDGE_WIDTH: f32 = 2.0;
 const DOWNLOAD_HALO_RGBA: u32 = 0xf1f5f9f2;
 const DOWNLOAD_HALO_WIDTH: f32 = 5.0;
 
-/// Stable identity for a layer, independent of its (user-visible, possibly
-/// renamed-for-uniqueness) display name. Allocated monotonically by
-/// `LayerManager::alloc_id`; every layer stores the id it was allocated at
-/// construction time and returns it from `MapLayer::id`.
+/// Stable identity for a layer, independent of its display name (which may be
+/// renamed for uniqueness). Allocated monotonically by
+/// `LayerManager::alloc_id`.
 ///
-/// The inner value is crate-visible (not private) so call sites across the
-/// `osm_gpui` lib/bin split (e.g. `undo.rs`, tests) can construct one
-/// directly when needed (tests, or reconstructing a value round-tripped
-/// through undo state) without a real `LayerManager` — the only thing that
-/// actually matters for correctness is that *production* ids always come
-/// from `LayerManager::alloc_id`'s monotonic counter.
+/// The field is public so the binary crate (`undo.rs`) and tests can build one
+/// without a `LayerManager`; production ids must always come from `alloc_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LayerId(pub u64);
 
@@ -61,19 +56,16 @@ pub struct LayerId(pub u64);
 /// (GPX/GeoJSON traces) and `as_editable` (the vector-editing surface; see
 /// `EditableLayer`). A new layer type decides which of these it answers.
 pub trait MapLayer: Send + Sync {
-    /// Get the name of this layer for debugging/UI purposes
     fn name(&self) -> &str;
 
     /// This layer's stable identity. See `LayerId`.
     fn id(&self) -> LayerId;
 
-    /// Check if this layer is currently visible
     fn is_visible(&self) -> bool;
 
-    /// Set visibility of this layer
     fn set_visible(&mut self, visible: bool);
 
-    /// Render this layer as GPUI elements (for raster/image content)
+    /// Render this layer as GPUI elements (for raster/image content).
     ///
     /// `window` and `cx` let raster layers read the display scale factor and
     /// probe their image assets while building elements.
@@ -123,14 +115,12 @@ pub trait MapLayer: Send + Sync {
         None
     }
 
-    /// This layer's vector-editing surface, if it has one. Default: `None`.
-    /// `OsmLayer` is the only implementation today; `TileLayer`/`GridLayer`
-    /// have no features to hit-test, tag, move, or delete.
+    /// This layer's vector-editing surface, if it has one.
     fn as_editable(&self) -> Option<&dyn EditableLayer> {
         None
     }
 
-    /// Mutable counterpart to `as_editable`. Default: `None`.
+    /// Mutable counterpart to `as_editable`.
     fn as_editable_mut(&mut self) -> Option<&mut dyn EditableLayer> {
         None
     }
@@ -599,7 +589,6 @@ impl LayerManager {
         id
     }
 
-    /// Add a new layer to the manager
     pub fn add_layer(&mut self, layer: Box<dyn MapLayer>) {
         self.layers.push(layer);
     }
@@ -647,17 +636,14 @@ impl LayerManager {
         self.layers.insert(to, layer);
     }
 
-    /// Get all layers
     pub fn layers(&self) -> &[Box<dyn MapLayer>] {
         &self.layers
     }
 
-    /// Get all mutable layers
     pub fn layers_mut(&mut self) -> &mut [Box<dyn MapLayer>] {
         &mut self.layers
     }
 
-    /// Find a layer by id (immutable)
     pub fn find_layer(&self, id: LayerId) -> Option<&dyn MapLayer> {
         self.layers
             .iter()
@@ -665,7 +651,6 @@ impl LayerManager {
             .map(|b| b.as_ref())
     }
 
-    /// Find a layer by id (mutable)
     pub fn find_layer_mut(&mut self, id: LayerId) -> Option<&mut (dyn MapLayer + '_)> {
         match self.layers.iter_mut().find(|layer| layer.id() == id) {
             Some(b) => Some(b.as_mut()),
@@ -673,10 +658,9 @@ impl LayerManager {
         }
     }
 
-    /// Find a layer by its exact display name. Used only for the "does a
-    /// singleton layer like the built-in OSM Carto/Coordinate Grid already
-    /// exist" checks at creation time, where there's no id yet to look up by
-    /// — everywhere else, identity flows through `LayerId`.
+    /// Find a layer by its exact display name. Only for the "does a singleton
+    /// layer like OSM Carto or the Coordinate Grid exist" checks at creation
+    /// time, when there is no id yet; everything else goes through `LayerId`.
     pub fn layer_named(&self, name: &str) -> Option<&dyn MapLayer> {
         self.layers
             .iter()
@@ -801,8 +785,8 @@ impl LayerManager {
                 window.paint_path(path, rgba(DOWNLOAD_HATCH_RGBA));
             }
         }
-        // A near-white halo under the dark blue line (a two-tone edge) keeps the edge visible over dark
-        // imagery, where blue alone vanishes.
+        // A near-white halo under the dark blue line keeps the edge visible
+        // over dark imagery, where blue alone vanishes.
         for (width, color) in [
             (DOWNLOAD_HALO_WIDTH, DOWNLOAD_HALO_RGBA),
             (DOWNLOAD_EDGE_WIDTH, DOWNLOAD_EDGE_RGBA),
@@ -828,7 +812,6 @@ impl LayerManager {
         crate::frame_stats::lap("wash.total", fs_wash);
     }
 
-    /// Render all visible layers using canvas drawing
     pub fn render_all_canvas(
         &self,
         viewport: &Viewport,
@@ -866,7 +849,6 @@ impl LayerManager {
         compute_layer_stats(&self.layers)
     }
 
-    /// Get statistics from all layers
     pub fn get_all_stats(&self) -> Vec<(String, Vec<(String, String)>)> {
         self.layers
             .iter()
@@ -1023,14 +1005,10 @@ mod tests {
     // back to the real one explicitly.
     use std::prelude::v1::test;
 
-    /// Build a `LayerManager` populated with one empty-data `OsmLayer` per
-    /// name in `names`, in order — a lightweight stand-in "dummy" layer that
-    /// reuses `OsmLayer` (already a real, well-exercised `MapLayer` impl)
-    /// rather than adding a new from-scratch one purely for these tests: an
-    /// extra `impl MapLayer for ...` living alongside this `mod tests`'s
-    /// `use super::*` was found, while writing this, to trip a rustc
-    /// recursion-limit bug during `#[test]` expansion. Reusing `OsmLayer`
-    /// sidesteps that entirely.
+    /// A `LayerManager` with one empty-data `OsmLayer` per name, in order.
+    /// It reuses `OsmLayer` instead of a test-only `impl MapLayer`: an extra
+    /// impl next to this module's `use super::*` trips a rustc
+    /// recursion-limit bug during `#[test]` expansion.
     fn manager_with(names: &[&str]) -> LayerManager {
         use crate::osm::OsmData;
         use std::collections::HashMap;

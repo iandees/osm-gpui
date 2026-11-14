@@ -11,7 +11,7 @@ use crate::layers::{LayerId, MapLayer};
 use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
 use crate::viewport::Viewport;
 
-/// Mapillary's green and Fotoshi's blue, so the two read apart on the map.
+/// One colour per provider, so layers read apart on the map.
 const MAPILLARY_RGBA: u32 = 0x05cb63ff;
 const FOTOSHI_RGBA: u32 = 0x2563ebff;
 const PANORAMAX_RGBA: u32 = 0x9333eaff;

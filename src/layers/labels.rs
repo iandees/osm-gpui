@@ -1195,7 +1195,7 @@ mod tests {
 
     #[test]
     fn higher_priority_wins_a_contested_spot_and_ties_break_by_id() {
-        // Two labels whose every anchor overlaps: pinned in a corridor.
+        // Two labels that both want the right-hand spot.
         let mut a = item(1, 100.0, 100.0, 80.0, 400);
         let mut b = item(2, 101.0, 100.0, 80.0, 900);
         a.marker_r = 0.0;

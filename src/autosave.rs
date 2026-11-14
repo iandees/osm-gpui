@@ -15,6 +15,7 @@
 //!     heartbeat                         touched every few seconds (fallback)
 //!     <layer-id>.osm                    the layer, JOSM-style, edits marked
 //!     <layer-id>.json                   manifest: name, server, edits, ...
+//!     upload-in-progress                present while a changeset is being sent
 //! ```
 //!
 //! `<data_local_dir>` is `~/Library/Application Support` on macOS,
@@ -91,6 +92,11 @@ const FORMAT: u32 = 1;
 
 const LOCK_FILE: &str = "session.lock";
 const HEARTBEAT_FILE: &str = "heartbeat";
+/// No `.json` extension: `list_manifests` takes every `.json` in a session
+/// directory for a layer manifest.
+const UPLOAD_MARKER_FILE: &str = "upload-in-progress";
+/// Bumped if the marker's meaning changes incompatibly.
+const MARKER_FORMAT: u32 = 1;
 
 /// The directory autosaves live in by default, or `None` where the platform
 /// has no per-user data directory. `None` unless the persistence policy is
@@ -144,6 +150,92 @@ pub struct Manifest {
     /// Pending created + modified + deleted objects.
     pub edit_count: usize,
     pub app_version: String,
+}
+
+/// A changeset was about to be sent, or is being sent, from this session.
+///
+/// Kept in a file of its own beside the layers rather than in their
+/// manifests: an upload spans layers, and the manifests are rewritten by
+/// concurrent background writes that would have to carry it and could drop it.
+/// Builds without this file ignore it (they neither delete nor misread it;
+/// `FORMAT` is unchanged). Every field has a default so a marker written by a
+/// build with more or fewer fields still reads; one that does not parse at all
+/// still counts as a marker (see [`read_upload_marker`]).
+///
+/// While it is present, the server may hold some of the edits that the
+/// layers' autosaves still list as pending.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UploadMarker {
+    #[serde(default)]
+    pub format: u32,
+    /// The API server the changeset was sent to.
+    #[serde(default)]
+    pub api_base: String,
+    #[serde(default)]
+    pub comment: String,
+    /// Seconds since the Unix epoch.
+    #[serde(default)]
+    pub started_at: u64,
+    /// Which changeset of how many (both 0 when nothing is known).
+    #[serde(default)]
+    pub part: usize,
+    #[serde(default)]
+    pub total: usize,
+    /// Objects in that changeset.
+    #[serde(default)]
+    pub objects: usize,
+    /// Known once the server opened the changeset and the app saw it.
+    #[serde(default)]
+    pub changeset_id: Option<u64>,
+}
+
+impl UploadMarker {
+    /// The marker to make durable before `request` is sent.
+    pub fn for_request(
+        api_base: &str,
+        request: &crate::upload_chunks::ChunkRequest,
+        now: u64,
+    ) -> Self {
+        let (created, modified, deleted) = request.chunk.counts();
+        let (part, total) = request.part.unwrap_or((1, 1));
+        UploadMarker {
+            format: MARKER_FORMAT,
+            api_base: api_base.to_string(),
+            comment: request.tags.get("comment").unwrap_or_default().to_string(),
+            started_at: now,
+            part,
+            total,
+            objects: created + modified + deleted,
+            changeset_id: None,
+        }
+    }
+
+    pub fn with_changeset(mut self, id: u64) -> Self {
+        self.changeset_id = Some(id);
+        self
+    }
+
+    /// The changeset's page on the server's website.
+    pub fn changeset_url(&self) -> Option<String> {
+        let id = self.changeset_id?;
+        Some(format!(
+            "{}/changeset/{id}",
+            crate::auth::oauth_base_for(&self.api_base)
+        ))
+    }
+}
+
+/// The marker in session directory `dir`, if there is one. A file that is
+/// there but cannot be read as a marker (a newer build's, or torn) still
+/// stands for an upload that may have gone through: it reads as a marker
+/// with nothing known.
+pub fn read_upload_marker(dir: &Path) -> Option<UploadMarker> {
+    let bytes = match std::fs::read(dir.join(UPLOAD_MARKER_FILE)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => return Some(UploadMarker::default()),
+    };
+    Some(serde_json::from_slice(&bytes).unwrap_or_default())
 }
 
 /// Everything the writer needs, taken on the UI thread without copying the
@@ -322,6 +414,24 @@ impl Session {
         Ok(WriteOutcome::Written(rendered.manifest.edit_count))
     }
 
+    /// Make `marker` durable (replacing any earlier one). Call it before the
+    /// request it describes is sent.
+    pub fn write_upload_marker(&self, marker: &UploadMarker) -> std::io::Result<()> {
+        let json = serde_json::to_vec_pretty(marker)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        write_durable(&self.dir.join(UPLOAD_MARKER_FILE), &json)
+    }
+
+    /// Remove the marker (best effort; a missing one is fine).
+    pub fn clear_upload_marker(&self) {
+        let _ = std::fs::remove_file(self.dir.join(UPLOAD_MARKER_FILE));
+    }
+
+    /// The marker on disk, if any.
+    pub fn upload_marker(&self) -> Option<UploadMarker> {
+        read_upload_marker(&self.dir)
+    }
+
     /// Delete one layer's autosave (best effort).
     pub fn remove_layer(&self, layer_id: u64) {
         // The manifest first, so a half-removed entry is not offered.
@@ -438,6 +548,9 @@ impl RecoverableLayer {
 pub struct CrashedSession {
     pub dir: PathBuf,
     pub layers: Vec<RecoverableLayer>,
+    /// Set when the session died with an upload in flight: the server may
+    /// already hold some of the layers' pending edits.
+    pub upload_marker: Option<UploadMarker>,
     lock: Option<File>,
 }
 
@@ -608,7 +721,13 @@ pub fn scan_crashed(root: &Path, own: Option<&str>) -> CrashScan {
             }
             continue;
         }
-        scan.sessions.push(CrashedSession { dir, layers, lock });
+        let upload_marker = read_upload_marker(&dir);
+        scan.sessions.push(CrashedSession {
+            dir,
+            layers,
+            upload_marker,
+            lock,
+        });
     }
     scan
 }
@@ -723,7 +842,9 @@ impl Tracker {
     pub fn is_settled(&self, id: u64, revision: u64, pending: bool) -> bool {
         match self.layers.get(&id) {
             None => !pending,
-            Some(s) => !s.in_flight && (s.saved == Some(revision) || (!pending && !s.has_file)),
+            Some(s) => {
+                !s.in_flight && !s.force && (s.saved == Some(revision) || (!pending && !s.has_file))
+            }
         }
     }
 
@@ -1428,6 +1549,148 @@ mod tests {
         // Still kept on the next start.
         assert!(find_crashed(&root, None).is_empty());
         assert!(newer_dir.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn request(part: crate::upload_chunks::Part) -> crate::upload_chunks::ChunkRequest {
+        crate::upload_chunks::ChunkRequest {
+            part,
+            tags: "Fix the bus stops".into(),
+            chunk: LayerDiff {
+                created_nodes: vec![node(-1, 1.0, 2.0, 0, &[]), node(-2, 1.0, 2.0, 0, &[])],
+                deleted_node_ids: vec![(5, 1)],
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn a_marker_describes_the_request_it_was_written_for() {
+        let marker = UploadMarker::for_request(
+            "https://api.openstreetmap.org/",
+            &request(Some((2, 3))),
+            1_000,
+        );
+        assert_eq!((marker.part, marker.total, marker.objects), (2, 3, 3));
+        assert_eq!(marker.comment, "Fix the bus stops");
+        assert_eq!(marker.started_at, 1_000);
+        assert_eq!(marker.changeset_id, None);
+        // A single-changeset upload is part 1 of 1.
+        let single = UploadMarker::for_request("https://x.test", &request(None), 0);
+        assert_eq!((single.part, single.total), (1, 1));
+        // The id, once known, links to the site the API base belongs to.
+        assert_eq!(
+            marker.clone().with_changeset(42).changeset_url().as_deref(),
+            Some("https://www.openstreetmap.org/changeset/42")
+        );
+        assert_eq!(marker.changeset_url(), None);
+    }
+
+    #[test]
+    fn a_marker_survives_a_crash_and_a_cleared_one_does_not() {
+        let layer = heavily_edited();
+        let root = tmp_root("marker");
+        let dead = Session::start(&root).unwrap();
+        dead.write(&snapshot_of(&layer, 1)).unwrap();
+        let marker = UploadMarker::for_request("https://x.test/api/0.6", &request(Some((2, 3))), 5)
+            .with_changeset(77);
+        dead.write_upload_marker(&marker).unwrap();
+        assert_eq!(dead.layer_count(), 1, "the marker is not a layer");
+        drop(dead);
+
+        let scan = scan_crashed(&root, None);
+        assert_eq!(scan.sessions.len(), 1);
+        assert_eq!(scan.sessions[0].layers.len(), 1);
+        assert_eq!(scan.sessions[0].upload_marker.as_ref(), Some(&marker));
+        let dir = scan.sessions[0].dir.clone();
+        drop(scan);
+
+        std::fs::remove_file(dir.join(UPLOAD_MARKER_FILE)).unwrap();
+        let scan = scan_crashed(&root, None);
+        assert_eq!(scan.sessions.len(), 1);
+        assert_eq!(scan.sessions[0].upload_marker, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn clearing_and_the_clean_exit_remove_the_marker() {
+        let root = tmp_root("marker-clear");
+        let session = Session::start(&root).unwrap();
+        let marker = UploadMarker::for_request("https://x.test", &request(None), 5);
+        session.write_upload_marker(&marker).unwrap();
+        assert_eq!(session.upload_marker(), Some(marker.clone()));
+        session.clear_upload_marker();
+        assert_eq!(session.upload_marker(), None);
+        // Clearing what is not there is fine.
+        session.clear_upload_marker();
+        session.write_upload_marker(&marker).unwrap();
+        session.clear();
+        assert_eq!(session.upload_marker(), None);
+        session.write_upload_marker(&marker).unwrap();
+        session.finish_clean();
+        assert!(!session.dir().exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn markers_of_other_builds_still_read_and_never_vanish() {
+        let root = tmp_root("marker-compat");
+        let session = Session::start(&root).unwrap();
+        let path = session.dir().join(UPLOAD_MARKER_FILE);
+
+        // A newer build with an extra field and a missing one.
+        std::fs::write(
+            &path,
+            br#"{"format":9,"api_base":"https://x.test","extra":[1]}"#,
+        )
+        .unwrap();
+        let read = session.upload_marker().unwrap();
+        assert_eq!(read.api_base, "https://x.test");
+        assert_eq!(read.total, 0);
+        // A marker this build wrote read by a build whose struct has fewer
+        // fields (an older marker type): unknown fields are ignored.
+        #[derive(Deserialize)]
+        struct Older {
+            api_base: String,
+        }
+        let mine = UploadMarker::for_request("https://y.test", &request(Some((1, 2))), 1);
+        let json = serde_json::to_vec(&mine).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Older>(&json).unwrap().api_base,
+            "https://y.test"
+        );
+
+        // Torn or unreadable: still a marker, with nothing known.
+        std::fs::write(&path, b"{ not json").unwrap();
+        assert_eq!(session.upload_marker(), Some(UploadMarker::default()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_build_without_markers_sees_an_ordinary_session() {
+        // What an older build does with a session that carries a marker: it
+        // only looks at `.json` manifests and the lock, so the layer is
+        // offered as before and the extra file is just removed with the rest.
+        let layer = heavily_edited();
+        let root = tmp_root("marker-old");
+        let dead = Session::start(&root).unwrap();
+        dead.write(&snapshot_of(&layer, 1)).unwrap();
+        dead.write_upload_marker(&UploadMarker::for_request(
+            "https://x.test",
+            &request(None),
+            1,
+        ))
+        .unwrap();
+        let dir = dead.dir().to_path_buf();
+        drop(dead);
+        assert_eq!(list_manifests(&dir).len(), 1);
+        let ManifestRead::Current(manifest) = read_manifest(&list_manifests(&dir)[0]) else {
+            panic!("the manifest still reads");
+        };
+        assert_eq!(manifest.format, FORMAT);
+        let mut crashed = find_crashed(&root, None);
+        crashed.remove(0).discard();
+        assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -268,10 +268,9 @@ mod tests {
 
     #[test]
     fn one_end_parallel_moves_it_and_inserts_the_other() {
-        // L-shaped corner: segment 5->6 where 5's previous segment 2->5 is
-        // perpendicular to 5-6 only at one end. Open way: 0(0,0) 1(0,5) 2(5,5)
-        // 3(9,5): drag segment 1->2 (horizontal) up. 1's neighbour 0-1 is
-        // vertical (along drag): move. 2's neighbour 2-3 is collinear: insert.
+        // Open way 10(0,0) 11(0,5) 12(5,5) 13(9,5): drag segment 11->12
+        // (horizontal) up. 11's neighbour 10-11 is vertical (along the drag):
+        // move. 12's neighbour 12-13 is collinear: insert.
         let way = vec![
             node(10, 0.0, 0.0),
             node(11, 0.0, 5.0),

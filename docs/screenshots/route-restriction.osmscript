@@ -30,7 +30,11 @@ wait_idle 2s
 assert_selected relation 8205
 capture out/route-restriction-03-only-straight-on-selected.png
 
-# The via node itself is still the node.
+# The via node itself is still the node. It is an untagged vertex, which is
+# only drawn and clickable once a way through it is hovered or selected, so
+# hover it first (a bare click would select the way).
+hover 500,300
+wait_idle 1s
 click 500,300
 wait_idle 2s
 assert_selected node 8003

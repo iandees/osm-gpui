@@ -5,7 +5,8 @@
 //!
 //! The limit values come from `capabilities` (the connected server's
 //! `/api/capabilities`, or the public-server defaults until that has been
-//! fetched). Everything below is pure so it can be tested without a network.
+//! fetched). The checks take a [`Limits`] value, so they are testable without a
+//! network.
 
 use crate::capabilities;
 use crate::layers::diff::LayerDiff;

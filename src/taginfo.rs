@@ -6,8 +6,8 @@
 //! parsing the answer, and `TaginfoState`, the debounce / stale-response /
 //! cache / back-off bookkeeping the UI drives.
 //!
-//! API (taginfo API v4, public, no key; confirmed against the API
-//! documentation at https://taginfo.openstreetmap.org/taginfo/apidoc):
+//! API (taginfo API v4, public, no key; documented at
+//! https://taginfo.openstreetmap.org/taginfo/apidoc):
 //!
 //! * keys:   `GET /api/4/keys/all?query=PREFIX&sortname=count_all&sortorder=desc&rp=20&page=1`
 //!   returning `data: [{"key": ..., "count_all": ...}]`
