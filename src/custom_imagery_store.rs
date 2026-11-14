@@ -21,7 +21,6 @@ pub fn update_store(entries: Vec<CustomImageryEntry>) {
     save(&entries);
 }
 
-/// Return a snapshot of the current in-memory entries.
 pub fn snapshot() -> Vec<CustomImageryEntry> {
     CUSTOM_IMAGERY_STORE.snapshot("custom_imagery_store")
 }
