@@ -206,7 +206,7 @@ fn a_styled_casing_adds_a_path_below_the_default_casing_zoom() {
 /// 10) and `highway=hi` (way 11).
 fn two_way_layer(css: &str) -> OsmLayer {
     let l = layer();
-    let mut data = (**l.osm_data.as_ref().unwrap()).clone();
+    let mut data = (**l.store.osm_data.as_ref().unwrap()).clone();
     let mut lo = way(10, vec![1, 2, 3, 4, 5]);
     lo.tags.insert("highway".into(), "lo".into());
     let mut hi = way(11, vec![1, 2, 3, 4, 5]);
@@ -300,11 +300,19 @@ fn zoom_gated_casing_follows_the_zoom_bucket() {
 /// The layer's cached geometry and its scene are what a layer freshly
 /// built from the same data would have, at every zoom tried.
 fn assert_same_as_fresh(layer: &OsmLayer) {
-    let data = layer.osm_data.clone().expect("data");
+    let data = layer.store.osm_data.clone().expect("data");
     let fresh = OsmLayer::new_with_data(LayerId(9), "fresh", data);
-    for (i, id) in layer.way_ids.iter().enumerate() {
-        let j = fresh.way_ids.iter().position(|x| x == id).expect("way");
-        assert_eq!(layer.way_vertices[i], fresh.way_vertices[j], "way {id}");
+    for (i, id) in layer.derived.way_ids.iter().enumerate() {
+        let j = fresh
+            .derived
+            .way_ids
+            .iter()
+            .position(|x| x == id)
+            .expect("way");
+        assert_eq!(
+            layer.derived.way_vertices[i], fresh.derived.way_vertices[j],
+            "way {id}"
+        );
     }
     for zoom in [12.0, 15.5, 16.0, 17.0, 19.0] {
         assert_eq!(

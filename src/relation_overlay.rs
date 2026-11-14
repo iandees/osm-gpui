@@ -2,7 +2,7 @@
 //!
 //! Pure data code: given a relation and a way to look up node positions, work
 //! out what to draw. The layer caches the results (see `MpCache` in
-//! `layers/osm_layer.rs`) so nothing here runs per frame.
+//! `layers/osm_layer/`) so nothing here runs per frame.
 //!
 //! * A route colours every member way with a translucent line under the
 //!   way's own stroke: the relation's `colour` tag when it parses, otherwise a

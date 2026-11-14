@@ -153,7 +153,7 @@ fn delete_feature_standalone_node_succeeds_directly() {
     assert!(layer.is_modified());
     assert_eq!(snapshot.node_lat_lon, Some((40.0, -74.0)));
     assert!(!layer.get_osm_data().unwrap().nodes.contains_key(&1));
-    assert!(!layer.node_cache.index_by_id.contains_key(&1));
+    assert!(!layer.derived.node_cache.index_by_id.contains_key(&1));
 
     let viewport = viewport_centered_on(40.0, -74.0);
     let hits = layer.hit_test(&viewport, point(px(400.0), px(300.0)));
@@ -324,7 +324,8 @@ fn restore_feature_round_trips_deleted_way() {
     // node-move on one of its members.
     layer.commit_node_moves(&[(1, 41.0, -75.0)]).unwrap();
     let (mx, my) = crate::coordinates::lat_lon_to_mercator(41.0, -75.0);
-    let verts = layer.way_vertices[*layer.way_id_to_index.get(&10).unwrap()].clone();
+    let verts =
+        layer.derived.way_vertices[*layer.derived.way_id_to_index.get(&10).unwrap()].clone();
     let &(_, vmx, vmy) = verts.iter().find(|&&(id, _, _)| id == 1).unwrap();
     assert!((vmx - mx).abs() < 1e-6);
     assert!((vmy - my).abs() < 1e-6);

@@ -138,18 +138,19 @@ fn layer() -> OsmLayer {
 /// Every derived table, normalised so that two layers holding the same data
 /// compare equal whatever order their parallel arrays happen to be in.
 fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
-    let data = l.osm_data.as_ref().expect("data");
-    let n = l.way_ids.len();
+    let data = l.store.osm_data.as_ref().expect("data");
+    let n = l.derived.way_ids.len();
     assert_eq!(n, data.ways.len(), "way_ids against the data's ways");
-    assert_eq!(l.way_bboxes.len(), n, "way_bboxes length");
-    assert_eq!(l.way_vertices.len(), n, "way_vertices length");
-    assert_eq!(l.way_styles.len(), n, "way_styles length");
-    assert_eq!(l.way_fill_tris.len(), n, "way_fill_tris length");
-    assert_eq!(l.way_id_to_index.len(), n, "way_id_to_index length");
-    for (id, &i) in &l.way_id_to_index {
-        assert_eq!(l.way_ids[i], *id, "way_id_to_index of way {id}");
+    assert_eq!(l.derived.way_bboxes.len(), n, "way_bboxes length");
+    assert_eq!(l.derived.way_vertices.len(), n, "way_vertices length");
+    assert_eq!(l.render.way_styles.len(), n, "way_styles length");
+    assert_eq!(l.render.way_fill_tris.len(), n, "way_fill_tris length");
+    assert_eq!(l.derived.way_id_to_index.len(), n, "way_id_to_index length");
+    for (id, &i) in &l.derived.way_id_to_index {
+        assert_eq!(l.derived.way_ids[i], *id, "way_id_to_index of way {id}");
     }
     let ways: BTreeMap<i64, _> = l
+        .derived
         .way_ids
         .iter()
         .enumerate()
@@ -157,17 +158,17 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
             (
                 *id,
                 (
-                    l.way_bboxes[i],
-                    &l.way_vertices[i],
-                    l.way_styles[i],
-                    &l.way_fill_tris[i],
+                    l.derived.way_bboxes[i],
+                    &l.derived.way_vertices[i],
+                    l.render.way_styles[i],
+                    &l.render.way_fill_tris[i],
                 ),
             )
         })
         .collect();
     assert_eq!(ways.len(), n, "a way id appears twice in way_ids");
 
-    let cache = &l.node_cache;
+    let cache = &l.derived.node_cache;
     assert_eq!(cache.flat.len(), cache.styles.len(), "node cache arrays");
     assert_eq!(
         cache.flat.len(),
@@ -185,12 +186,14 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
         .collect();
 
     let mut node_index: Vec<_> = l
+        .derived
         .node_index
         .iter()
         .map(|g| (g.data, g.geom()[0], g.geom()[1]))
         .collect();
     node_index.sort_by_key(|e| e.0);
     let mut way_index: Vec<_> = l
+        .derived
         .way_index
         .iter()
         .map(|g| (g.data, g.geom().lower(), g.geom().upper()))
@@ -198,15 +201,16 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
     way_index.sort_by_key(|e| e.0);
 
     let node_to_ways: BTreeMap<i64, BTreeSet<i64>> = l
+        .derived
         .node_to_ways
         .iter()
         .filter(|(_, idx)| !idx.is_empty())
-        .map(|(node, idx)| (*node, idx.iter().map(|&i| l.way_ids[i]).collect()))
+        .map(|(node, idx)| (*node, idx.iter().map(|&i| l.derived.way_ids[i]).collect()))
         .collect();
 
-    let member_ways: BTreeSet<i64> = l.member_ways.iter().copied().collect();
+    let member_ways: BTreeSet<i64> = l.render.member_ways.iter().copied().collect();
 
-    let mp = &l.mp;
+    let mp = &l.derived.mp;
     let entries: BTreeMap<i64, _> = mp
         .entries
         .iter()
@@ -238,7 +242,7 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
         ("way_index", format!("{way_index:?}")),
         ("node_to_ways", format!("{node_to_ways:?}")),
         ("member_ways", format!("{member_ways:?}")),
-        ("download_rects", format!("{:?}", l.download_rects)),
+        ("download_rects", format!("{:?}", l.render.download_rects)),
         ("multipolygons", format!("{entries:?}")),
         ("invalid multipolygons", format!("{:?}", mp.invalid)),
         (
@@ -265,17 +269,18 @@ fn tables(l: &OsmLayer) -> Vec<(&'static str, String)> {
 
 /// The layer's derived tables equal those of a layer rebuilt from its data.
 pub(super) fn assert_fresh(l: &OsmLayer, step: &str) {
-    let data = l.osm_data.clone().expect("data");
+    let data = l.store.osm_data.clone().expect("data");
     let mut fresh = OsmLayer::new_with_data(LayerId(99), "fresh", data);
-    fresh.set_stylesheet(l.stylesheet.clone());
+    fresh.set_stylesheet(l.store.stylesheet.clone());
     let (got, want) = (tables(l), tables(&fresh));
     for ((name, got), (_, want)) in got.iter().zip(&want) {
         assert_eq!(got, want, "{step}: {name} differs from a fresh rebuild");
     }
     // The layer's bounding box is only ever extended, so after edits it may
     // be larger than a fresh one, never smaller.
-    if let Some(f) = fresh.layer_bbox {
+    if let Some(f) = fresh.derived.layer_bbox {
         let b = l
+            .derived
             .layer_bbox
             .unwrap_or_else(|| panic!("{step}: layer_bbox is missing"));
         assert!(
@@ -289,7 +294,7 @@ pub(super) fn assert_fresh(l: &OsmLayer, step: &str) {
 #[should_panic(expected = "differs from a fresh rebuild")]
 fn the_comparison_notices_a_stale_table() {
     let mut l = layer();
-    l.way_bboxes[0] = None;
+    l.derived.way_bboxes[0] = None;
     assert_fresh(&l, "a table patched wrongly");
 }
 
@@ -718,4 +723,216 @@ fn merge_download_matches_a_fresh_rebuild() {
     });
     l.merge_download(incoming);
     assert_fresh(&l, "after merging a download over local edits");
+}
+
+const OTHER_CSS: &str = "way { width: 4; color: #204060; } \
+    way[highway] { width: 5; } \
+    way[building] { fill-color: #55aa55; fill-opacity: 0.3; } \
+    way:in-relation { color: #ff0000; } \
+    node { symbol-size: 5; } \
+    node:connection { symbol-shape: cross; }";
+
+fn same_tables(a: &OsmLayer, b: &OsmLayer, step: &str) {
+    for ((name, got), (_, want)) in tables(a).iter().zip(&tables(b)) {
+        assert_eq!(got, want, "{step}: {name} differs");
+    }
+}
+
+#[test]
+fn set_stylesheet_matches_a_full_rebuild_under_that_stylesheet() {
+    let sheet = Arc::new(crate::style::Stylesheet::parse(OTHER_CSS).unwrap());
+    let mut l = start();
+    l.create_node(40.002, -73.999, None).unwrap();
+    l.set_tag(FeatureKind::Way, 101, "building", "yes").unwrap();
+    l.delete_feature(FeatureKind::Way, 106).unwrap();
+    l.set_stylesheet(sheet.clone());
+
+    let mut rebuilt = OsmLayer::new_with_data(LayerId(98), "rebuilt", l.get_osm_data().unwrap());
+    rebuilt.store.stylesheet = sheet;
+    rebuilt.rebuild_caches(&l.get_osm_data().unwrap());
+    same_tables(&l, &rebuilt, "set_stylesheet against a full rebuild");
+    assert_fresh(&l, "after set_stylesheet on an edited layer");
+}
+
+mod apply_change {
+    use super::*;
+    use crate::layers::osm_layer::Change;
+
+    fn data_mut(l: &mut OsmLayer) -> &mut OsmData {
+        Arc::make_mut(l.store.osm_data.as_mut().unwrap())
+    }
+
+    #[test]
+    fn an_empty_change_bumps_nothing() {
+        let mut l = start();
+        let revision = l.edit_revision();
+        assert!(!l.is_modified());
+        l.apply_change(&Change::default());
+        assert_eq!(l.edit_revision(), revision);
+        assert!(!l.is_modified());
+    }
+
+    #[test]
+    fn a_change_bumps_the_revision_once_and_marks_modified() {
+        let mut l = start();
+        let revision = l.edit_revision();
+        data_mut(&mut l).nodes.insert(30, node(30, 5.0, 5.0, &[]));
+        l.apply_change(&Change {
+            nodes_added: vec![30],
+            ..Change::default()
+        });
+        assert_eq!(l.edit_revision(), revision + 1);
+        assert!(l.is_modified());
+    }
+
+    #[test]
+    fn nodes_added_and_restored() {
+        let mut l = start();
+        data_mut(&mut l).nodes.insert(30, node(30, 5.0, 5.0, &[]));
+        l.apply_change(&Change {
+            nodes_added: vec![30],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a node added");
+        data_mut(&mut l)
+            .nodes
+            .insert(31, node(31, 6.0, 5.0, &[("amenity", "cafe")]));
+        l.apply_change(&Change {
+            nodes_restored: vec![31],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a node restored");
+    }
+
+    #[test]
+    fn nodes_moved_with_and_without_their_ways() {
+        let mut l = start();
+        let moved = node(3, 0.5, 2.5, &[]);
+        data_mut(&mut l).nodes.insert(3, moved);
+        l.apply_change(&Change {
+            nodes_moved: vec![3],
+            ways_reprojected: vec![100, 101, 106],
+            ..Change::default()
+        });
+        assert_fresh(&l, "the junction moved");
+        data_mut(&mut l).nodes.insert(8, node(8, 1.5, 1.5, &[]));
+        l.apply_change(&Change {
+            nodes_moved: vec![8],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a loose node moved");
+    }
+
+    #[test]
+    fn nodes_removed() {
+        let mut l = start();
+        data_mut(&mut l).nodes.remove(&8);
+        l.apply_change(&Change {
+            nodes_removed: vec![8],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a loose node removed");
+    }
+
+    #[test]
+    fn ways_added_and_removed() {
+        let mut l = start();
+        data_mut(&mut l)
+            .ways
+            .insert(110, way(110, &[8, 9], &[("highway", "path")]));
+        l.apply_change(&Change {
+            ways_added: vec![110],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a way added");
+        data_mut(&mut l).ways.remove(&102);
+        l.apply_change(&Change {
+            ways_removed: vec![102],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a building removed");
+        data_mut(&mut l).ways.remove(&103);
+        l.apply_change(&Change {
+            ways_removed: vec![103],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a multipolygon's outer way removed");
+    }
+
+    #[test]
+    fn way_nodes_replaced() {
+        let mut l = start();
+        let old = vec![1, 2, 3, 4];
+        data_mut(&mut l).ways.get_mut(&100).unwrap().nodes = vec![1, 2, 8, 4];
+        l.apply_change(&Change {
+            way_nodes: vec![(100, old)],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a road's node list replaced");
+    }
+
+    #[test]
+    fn features_retagged() {
+        let mut l = start();
+        let d = data_mut(&mut l);
+        d.ways
+            .get_mut(&100)
+            .unwrap()
+            .tags
+            .insert("highway".to_string(), "primary".to_string());
+        d.nodes
+            .get_mut(&7)
+            .unwrap()
+            .tags
+            .insert("amenity".to_string(), "cafe".to_string());
+        d.relations
+            .iter_mut()
+            .find(|r| r.id == 201)
+            .unwrap()
+            .tags
+            .insert("route".to_string(), "bicycle".to_string());
+        l.apply_change(&Change {
+            retagged: vec![
+                (FeatureKind::Way, 100),
+                (FeatureKind::Node, 7),
+                (FeatureKind::Relation, 201),
+            ],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a way, a node and a relation retagged");
+    }
+
+    #[test]
+    fn relations_created_changed_and_deleted() {
+        let mut l = start();
+        data_mut(&mut l).relations.push(OsmRelation {
+            id: 203,
+            version: 0,
+            tags: tags(&[("type", "multipolygon"), ("building", "yes")]),
+            members: vec![member(MemberType::Way, 102, "outer")],
+        });
+        l.apply_change(&Change {
+            relations: vec![203],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a relation created");
+        data_mut(&mut l)
+            .relations
+            .iter_mut()
+            .find(|r| r.id == 200)
+            .unwrap()
+            .members
+            .pop();
+        l.apply_change(&Change {
+            relations: vec![200],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a relation's members replaced");
+        data_mut(&mut l).relations.retain(|r| r.id != 201);
+        l.apply_change(&Change {
+            relations: vec![201],
+            ..Change::default()
+        });
+        assert_fresh(&l, "a relation deleted");
+    }
 }
