@@ -1,4 +1,5 @@
-//! The right-hand side panel: Layers, Selection, Tags, and History sections.
+//! The right-hand side panel: Layers, the selection's sections (Fields, Tags,
+//! Relations, Members), Validation, and History.
 
 use gpui::{div, prelude::*, px, Context, MouseDownEvent, SharedString};
 use gpui_component::{
@@ -64,9 +65,8 @@ impl MapViewer {
     /// their tags (that work is repeated on every frame).
     const TAGS_AGGREGATE_LIMIT: usize = 5000;
 
-    /// The right pane: Layers, Selection, and Tags sections stacked
-    /// top-to-bottom, each collapsible and sized to its content (the whole
-    /// pane scrolls).
+    /// The right pane: Layers, the selection zone, Validation and History
+    /// stacked top-to-bottom (heights are planned in `side_panel_layout`).
     pub(crate) fn render_side_panel(
         &mut self,
         window: &mut gpui::Window,
@@ -1655,22 +1655,12 @@ impl MapViewer {
                     .w_full()
                     .child(value_cell)
                     .child(
-                        // Spec deviation: the design spec calls for a danger
-                        // hover treatment on this delete icon, but
-                        // gpui-component's Button doesn't support it cleanly
-                        // in combination with `.ghost()`. `ButtonVariant::Custom`
-                        // (via `ButtonCustomVariant`) fixes the foreground color
-                        // across all states rather than only on hover, and its
-                        // `.hover()` background color is actually unused by
-                        // `ButtonVariant::hovered()` for the non-outline case
-                        // (it re-derives the hover background from `color`
-                        // instead). Layering a second `.hover(...)` directly on
-                        // the `Button` via `Styled`/`InteractiveElement` would
-                        // also conflict with the `.hover()` call `Button::render`
-                        // already makes internally on the same `Interactivity`,
-                        // which panics in debug builds (`hover style already
-                        // set`). Keeping `.ghost()` until upstream exposes a
-                        // composable per-state foreground/hover API.
+                        // No danger hover colour on this delete icon:
+                        // `ButtonVariant::Custom` fixes the foreground in all
+                        // states and ignores its own hover background, and a
+                        // second `.hover(...)` on the Button panics in debug
+                        // builds (`hover style already set`) because
+                        // `Button::render` already sets one.
                         Button::new(SharedString::from(format!("tag-delete-{k}")))
                             .icon(IconName::Close)
                             .ghost()

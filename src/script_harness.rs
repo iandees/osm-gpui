@@ -33,9 +33,8 @@ pub(crate) fn script_mode() -> bool {
     SCRIPT_MODE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-// ---------------------------------------------------------------------------
-// Script command channel (background thread → gpui main thread)
-// ---------------------------------------------------------------------------
+// Script commands travel from the background runner thread to the gpui main
+// thread.
 //
 // The script runner runs on a background thread (so `std::thread::sleep` in
 // `wait_frame` does not block the gpui event loop). It cannot hold `AsyncApp`
@@ -110,9 +109,10 @@ pub(crate) enum ScriptCommand {
     Action {
         name: String,
     },
-    /// Compare `MapViewer.mode` against `want`.
+    /// Compare `MapViewer.mode` against this mode.
     AssertMode(crate::EditMode),
-    /// Compare `MapViewer.selected` against `want`.
+    /// Compare `MapViewer.selected` against this feature (`None`: not exactly
+    /// one selected).
     AssertSelected(Option<(osm_gpui::script::FeatureKind, i64)>),
     /// Set a tag on the selection (the side panel's Add tag path).
     SetTag {
@@ -170,8 +170,9 @@ pub(crate) struct ScriptBus {
     /// Result of the most recently processed `Capture` command.
     capture_result: Mutex<Option<Result<(), String>>>,
     /// Result of the most recently processed command that can fail (every
-    /// one but `Capture`, which has its own slot). One slot is enough: `submit` blocks until the
-    /// pending command is consumed, so only one command is ever in flight.
+    /// one but `Capture`, which has its own slot). One slot is enough:
+    /// `submit` blocks until the pending command is consumed, so only one
+    /// command is ever in flight.
     assert_result: Mutex<Option<Result<(), String>>>,
 }
 
@@ -1398,10 +1399,6 @@ impl MapViewer {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// LiveApp: AppHandle impl backed by ScriptBus (background-thread safe)
-// ---------------------------------------------------------------------------
 
 /// Why a scripted run may not upload to `server`, if it may not (the same
 /// rule as `script::runner::upload_guard`, applied where the upload starts).

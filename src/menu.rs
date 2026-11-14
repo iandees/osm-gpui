@@ -254,7 +254,6 @@ fn show_settings_page(root: gpui::AnyView, page: SettingsPage, cx: &mut App) {
     }
 }
 
-// Handle the File > Download from OSM menu action
 pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
     with_map_viewer(cx, |v, cx| v.request_download(cx));
 }
@@ -262,9 +261,9 @@ pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
 // Global fallback for the File > Upload to OSM menu action; the normal path
 // is `MapViewer::on_upload_to_osm`, a window-scoped listener. A global
 // handler runs while the map window is still checked out for the dispatch, so
-// looking it up via `with_map_viewer_in` right here silently did nothing (the
-// bug this fixes). Deferred like `quit` so the lookup succeeds when no
-// window-scoped listener was in the dispatch path (e.g. nothing focused).
+// looking it up via `with_map_viewer_in` right here would silently do nothing.
+// Deferred like `quit` so the lookup succeeds when no window-scoped listener
+// was in the dispatch path (e.g. nothing focused).
 pub(crate) fn upload_to_osm(_: &UploadToOsm, cx: &mut App) {
     cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_upload_dialog(window, cx)));
 }
@@ -275,15 +274,14 @@ pub(crate) fn validate(_: &Validate, cx: &mut App) {
     cx.defer(|cx| with_map_viewer_in(cx, |v, _window, cx| v.show_validation(cx)));
 }
 
-// Global fallback for the `Quit` action, registered once at app startup
-// alongside the other `cx.on_action` handlers above. `MapViewer::on_quit` is
-// only reachable via the window/entity-scoped `.on_action(cx.listener(...))`
-// listener installed during `MapViewer::render`, which doesn't exist until
-// the first render pass completes -- so at cold launch, before that first
-// paint, GPUI's `App::is_action_available` (which macOS's menu validation
-// queries directly) sees no listener at all for `Quit` and greys out the
-// menu item / disables Cmd+Q. Registering this global handler makes it
-// available immediately at startup, fixing that window.
+// Global fallback for the `Quit` action, registered at app startup.
+// `MapViewer::on_quit` is only reachable via the window/entity-scoped
+// `.on_action(cx.listener(...))` listener installed during `MapViewer::render`,
+// which doesn't exist until the first render pass completes -- so at cold
+// launch, before that first paint, GPUI's `App::is_action_available` (which
+// macOS's menu validation queries directly) sees no listener at all for `Quit`
+// and greys out the menu item / disables Cmd+Q. This global handler is
+// available immediately.
 //
 // This only actually runs pre-first-render (afterwards, `on_quit`'s
 // window-scoped listener handles the dispatch first and stops propagation
@@ -302,15 +300,12 @@ pub(crate) fn quit(_: &Quit, cx: &mut App) {
     });
 }
 
-// Handle the Imagery > OpenStreetMap Carto menu action
 pub(crate) fn add_osm_carto(_: &AddOsmCarto, cx: &mut App) {
     with_map_viewer(cx, |v, cx| {
         v.apply_layer_request(LayerRequest::OsmCarto, cx)
     });
 }
 
-// Handle an ELI imagery menu action. Looks up the entry in the loaded index
-// and applies it as a layer request directly to the live `MapViewer`.
 pub(crate) fn add_imagery_layer(action: &AddImageryLayer, cx: &mut App) {
     let id = action.id.to_string();
     let Some(index) = IMAGERY_INDEX.get() else {
@@ -339,18 +334,15 @@ pub(crate) fn add_imagery_layer(action: &AddImageryLayer, cx: &mut App) {
     });
 }
 
-// Handle the View > Toggle Debug Overlay menu action
 pub(crate) fn toggle_debug_overlay(_: &ToggleDebugOverlay, cx: &mut App) {
     with_map_viewer(cx, |v, cx| v.toggle_debug_overlay(cx));
 }
 
-// Handle the Imagery > Add Custom Imagery… menu action
-// (Global fallback, deferred; see `upload_to_osm`.)
+// Global fallback, deferred; see `upload_to_osm`.
 pub(crate) fn open_custom_imagery_dialog(_: &AddCustomImagery, cx: &mut App) {
     cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_custom_imagery_dialog(window, cx)));
 }
 
-// Handle the Imagery > Custom Imagery > <saved entry> menu action
 pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut App) {
     let entries = custom_imagery_snapshot();
     let Some(entry) = entries.get(action.index).cloned() else {
@@ -372,7 +364,6 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
     });
 }
 
-// Handle the Imagery > Coordinate Grid menu action
 pub(crate) fn add_coordinate_grid(_: &AddCoordinateGrid, cx: &mut App) {
     with_map_viewer(cx, |v, cx| {
         v.apply_layer_request(LayerRequest::CoordinateGrid, cx)
