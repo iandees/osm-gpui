@@ -12,6 +12,7 @@ use gpui_component::{
 };
 
 use crate::relations::{matching_choices, RelationChoice};
+use crate::ui::modal;
 use crate::ui::style::muted_text_size;
 use crate::{tr, tr_count};
 
@@ -63,21 +64,19 @@ impl RelationPickerDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            "escape" => cx.emit(DialogEvent::Cancelled),
-            "enter" => self.submit_selected(cx),
-            "down" => {
-                let count = self.matching_ids(cx).len();
-                if count > 0 {
-                    self.selected_index = (self.selected_index + 1).min(count - 1);
-                    cx.notify();
+        match modal::classify_key(ev) {
+            modal::ModalKey::Escape => cx.emit(DialogEvent::Cancelled),
+            modal::ModalKey::Enter => self.submit_selected(cx),
+            modal::ModalKey::Other => {
+                let key = ev.keystroke.key.as_str();
+                if matches!(key, "up" | "down") {
+                    let count = self.matching_ids(cx).len();
+                    if let Some(i) = modal::move_selection(self.selected_index, count, key) {
+                        self.selected_index = i;
+                        cx.notify();
+                    }
                 }
             }
-            "up" => {
-                self.selected_index = self.selected_index.saturating_sub(1);
-                cx.notify();
-            }
-            _ => {}
         }
     }
 }
@@ -154,36 +153,14 @@ impl Render for RelationPickerDialog {
 
         let body = v_flex().gap_3().child(Input::new(&self.query)).child(list);
 
-        let frame = v_flex()
-            .w(gpui::px(420.0))
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_lg()
-            .shadow_lg()
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_color(cx.theme().foreground)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(tr!("dialog.relation_picker.title")),
-            )
-            .child(div().p_4().child(body));
+        let frame = modal::card(
+            cx,
+            gpui::px(420.0),
+            tr!("dialog.relation_picker.title"),
+            body,
+        )
+        .build();
 
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .absolute()
-            .inset_0()
-            // Keeps clicks from reaching the map behind the modal.
-            .occlude()
-            .bg(crate::ui::style::scrim_color())
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(frame)
+        modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
     }
 }

@@ -3,14 +3,9 @@
 //! button asks the host to open Settings (where sign-in lives).
 
 use crate::tr;
-use gpui::{
-    div, prelude::*, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Window,
-};
-use gpui_component::{
-    button::{Button, ButtonVariants as _},
-    label::Label,
-    v_flex, ActiveTheme as _,
-};
+use crate::ui::modal;
+use gpui::{prelude::*, App, Context, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Window};
+use gpui_component::{label::Label, v_flex, ActiveTheme as _};
 
 /// Whether an upload attempt must be intercepted with the sign-in prompt,
 /// given the display name of the signed-in account (if any).
@@ -81,10 +76,10 @@ impl SignInDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" => self.open_settings(cx),
-            _ => {}
+        match modal::classify_key(ev) {
+            modal::ModalKey::Escape => self.cancel(cx),
+            modal::ModalKey::Enter => self.open_settings(cx),
+            modal::ModalKey::Other => {}
         }
     }
 }
@@ -102,61 +97,18 @@ impl Render for SignInDialog {
         let body =
             v_flex().child(Label::new(self.purpose.body()).text_color(cx.theme().foreground));
 
-        let footer = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                Button::new("sign-in-cancel")
-                    .label(tr!("dialog.cancel"))
-                    .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
-            )
-            .child(
-                Button::new("sign-in-open-settings")
-                    .primary()
-                    .label(tr!("dialog.sign_in.open_settings"))
-                    .on_click(cx.listener(|this, _, _w, cx| this.open_settings(cx))),
-            );
+        let footer = modal::footer_row(
+            "sign-in-cancel",
+            tr!("dialog.cancel"),
+            cx.listener(|this, _, _w, cx| this.cancel(cx)),
+            "sign-in-open-settings",
+            tr!("dialog.sign_in.open_settings"),
+            cx.listener(|this, _, _w, cx| this.open_settings(cx)),
+        );
 
-        let frame = v_flex()
-            .w(gpui::px(420.0))
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_lg()
-            .shadow_lg()
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_color(cx.theme().foreground)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(self.purpose.title()),
-            )
-            .child(div().p_4().child(body))
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(footer),
-            );
+        let frame = modal::dialog_frame(cx, gpui::px(420.0), self.purpose.title(), body, footer);
 
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(crate::ui::style::scrim_color())
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(frame)
+        modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
     }
 }
 
