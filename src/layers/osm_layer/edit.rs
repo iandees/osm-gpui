@@ -9,11 +9,9 @@ impl OsmLayer {
         way_id: i64,
         edit: impl FnOnce(&mut Vec<i64>) -> Result<R, EditError>,
     ) -> Result<R, EditError> {
-        let &way_idx = self
-            .derived
-            .way_id_to_index
-            .get(&way_id)
-            .ok_or(EditError::UnknownWay(way_id))?;
+        if !self.derived.way_id_to_index.contains_key(&way_id) {
+            return Err(EditError::UnknownWay(way_id));
+        }
         let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         let way = data
             .ways
@@ -21,11 +19,10 @@ impl OsmLayer {
             .ok_or(EditError::UnknownWay(way_id))?;
         let old = way.nodes.clone();
         let result = edit(&mut way.nodes)?;
-        let snapshot = way.clone();
-        self.index_way_nodes_changed(way_idx, &old, &snapshot.nodes);
-        self.reproject_way(way_idx, &snapshot);
-        self.mark_modified();
-        self.mp_refresh_ways(&[way_id]);
+        self.apply_change(&Change {
+            way_nodes: vec![(way_id, old)],
+            ..Change::default()
+        });
         Ok(result)
     }
 
@@ -63,25 +60,12 @@ impl OsmLayer {
         };
         let tags = tags.ok_or_else(|| EditError::unknown(kind, id))?;
         edit(tags);
-        self.store.modified = true;
-        self.store.revision += 1;
-        apply_style_refresh(
-            kind,
-            id,
-            data,
-            &mut self.derived.node_cache,
-            &self.derived.way_id_to_index,
-            &self.derived.way_vertices,
-            &mut self.render.way_styles,
-            &mut self.render.way_fill_tris,
-            &self.store.stylesheet,
-            &self.render.member_ways,
-        );
-        if kind == FeatureKind::Relation {
-            // The relation's style (or whether it is a multipolygon at all)
-            // follows its tags.
-            self.mp_refresh_relations(&[id]);
-        }
+        // A relation's style (or whether it is a multipolygon at all)
+        // follows its tags.
+        self.apply_change(&Change {
+            retagged: vec![(kind, id)],
+            ..Change::default()
+        });
         Ok(())
     }
 
@@ -95,6 +79,7 @@ impl OsmLayer {
         lon: f64,
         tags: HashMap<String, String>,
         version: i32,
+        restored: bool,
     ) {
         let node = OsmNode {
             id,
@@ -107,12 +92,17 @@ impl OsmLayer {
             .store
             .osm_data
             .get_or_insert_with(|| Arc::new(OsmData::default()));
-        Arc::make_mut(arc).nodes.insert(id, node.clone());
-        self.index_node_set(&node);
+        Arc::make_mut(arc).nodes.insert(id, node);
         if id <= self.store.next_new_id {
             self.store.next_new_id = id - 1;
         }
-        self.mark_modified();
+        let mut change = Change::default();
+        if restored {
+            change.nodes_restored.push(id);
+        } else {
+            change.nodes_added.push(id);
+        }
+        self.apply_change(&change);
     }
 
     /// Remove a node from the data and caches. Refuses (`None`, nothing
@@ -130,22 +120,26 @@ impl OsmLayer {
         let node = Arc::make_mut(self.store.osm_data.as_mut()?)
             .nodes
             .remove(&id)?;
-        self.index_node_removed(id);
-        self.mark_modified();
-        self.mp_refresh_nodes(&[id]);
+        self.apply_change(&Change {
+            nodes_removed: vec![id],
+            ..Change::default()
+        });
         Some(node)
     }
 
     /// Remove a way from the data and caches; its nodes stay. `None`
     /// (nothing changed) if the way is unknown.
     pub(super) fn take_way(&mut self, id: i64) -> Option<OsmWay> {
-        let way_idx = *self.derived.way_id_to_index.get(&id)?;
+        if !self.derived.way_id_to_index.contains_key(&id) {
+            return None;
+        }
         let way = Arc::make_mut(self.store.osm_data.as_mut()?)
             .ways
             .remove(&id)?;
-        self.index_way_removed(way_idx, id);
-        self.mark_modified();
-        self.mp_refresh_ways(&[id]);
+        self.apply_change(&Change {
+            ways_removed: vec![id],
+            ..Change::default()
+        });
         Some(way)
     }
 
@@ -154,14 +148,15 @@ impl OsmLayer {
     /// not yet restored) contribute no vertex, as in `compute_way_tables`.
     pub(super) fn insert_way(&mut self, way: OsmWay) {
         let id = way.id;
-        self.index_way_added(&way);
         let arc = self
             .store
             .osm_data
             .get_or_insert_with(|| Arc::new(OsmData::default()));
         Arc::make_mut(arc).ways.insert(id, way);
-        self.mark_modified();
-        self.mp_refresh_ways(&[id]);
+        self.apply_change(&Change {
+            ways_added: vec![id],
+            ..Change::default()
+        });
     }
 }
 
@@ -252,30 +247,15 @@ impl EditableLayer for OsmLayer {
                 touched_ways.extend(way_idxs.iter().copied());
             }
         }
-
-        // Snapshots, so the data borrow ends before the caches are patched.
-        let moved_nodes: Vec<OsmNode> = moved_ids
-            .iter()
-            .filter_map(|id| data.nodes.get(id).cloned())
-            .collect();
-        let touched: Vec<(usize, OsmWay)> = touched_ways
-            .iter()
-            .filter_map(|&i| Some((i, data.ways.get(&self.derived.way_ids[i])?.clone())))
-            .collect();
-        self.mark_modified();
-        for node in &moved_nodes {
-            self.index_node_set(node);
-        }
-        for (way_idx, way) in &touched {
-            self.reproject_way(*way_idx, way);
-        }
-
-        let touched_way_ids: Vec<i64> = touched_ways
+        let ways_reprojected: Vec<i64> = touched_ways
             .iter()
             .map(|&i| self.derived.way_ids[i])
             .collect();
-        self.mp_refresh_ways(&touched_way_ids);
-        self.mp_refresh_nodes(&moved_ids);
+        self.apply_change(&Change {
+            nodes_moved: moved_ids,
+            ways_reprojected,
+            ..Change::default()
+        });
         crate::frame_stats::lap("edit.commit_node_moves_total", fs_phase);
         Ok(())
     }
@@ -310,14 +290,14 @@ impl EditableLayer for OsmLayer {
         {
             return Err(EditError::IdInUse(FeatureKind::Node, id));
         }
-        self.insert_node(id, lat, lon, HashMap::new(), 0);
+        self.insert_node(id, lat, lon, HashMap::new(), 0, false);
         Ok(id)
     }
 
     fn add_node(&mut self, lat: f64, lon: f64) -> i64 {
         let id = self.store.next_new_id;
         self.store.next_new_id -= 1;
-        self.insert_node(id, lat, lon, HashMap::new(), 0);
+        self.insert_node(id, lat, lon, HashMap::new(), 0, false);
         id
     }
 
@@ -375,9 +355,8 @@ impl EditableLayer for OsmLayer {
                     lon,
                     snapshot.tags.into_iter().collect(),
                     snapshot.version,
+                    true,
                 );
-                // A restriction whose via this was draws again.
-                self.mp_refresh_nodes(&[id]);
                 Ok(())
             }
             FeatureKind::Way => {
@@ -527,9 +506,10 @@ impl EditableLayer for OsmLayer {
             .find(|r| r.id == relation_id)
             .ok_or(EditError::UnknownRelation(relation_id))?;
         let previous = std::mem::replace(&mut relation.members, members);
-        self.mark_modified();
-        self.mp_refresh_relations(&[relation_id]);
-        self.refresh_member_ways();
+        self.apply_change(&Change {
+            relations: vec![relation_id],
+            ..Change::default()
+        });
         Ok(previous)
     }
 
@@ -574,9 +554,10 @@ impl EditableLayer for OsmLayer {
             version: 0,
             tags: tags.into_iter().collect(),
         });
-        self.mark_modified();
-        self.mp_refresh_relations(&[id]);
-        self.refresh_member_ways();
+        self.apply_change(&Change {
+            relations: vec![id],
+            ..Change::default()
+        });
         Ok(id)
     }
 
@@ -597,9 +578,10 @@ impl EditableLayer for OsmLayer {
             .ok_or(EditError::UnknownRelation(relation_id))?;
         let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         let relation = data.relations.remove(index);
-        self.mark_modified();
-        self.mp_refresh_relations(&[relation_id]);
-        self.refresh_member_ways();
+        self.apply_change(&Change {
+            relations: vec![relation_id],
+            ..Change::default()
+        });
         Ok(DeletedRelationSnapshot { relation, index })
     }
 
@@ -621,9 +603,10 @@ impl EditableLayer for OsmLayer {
         if id <= self.store.next_placeholder_way_id {
             self.store.next_placeholder_way_id = id - 1;
         }
-        self.mark_modified();
-        self.mp_refresh_relations(&[id]);
-        self.refresh_member_ways();
+        self.apply_change(&Change {
+            relations: vec![id],
+            ..Change::default()
+        });
         Ok(())
     }
 

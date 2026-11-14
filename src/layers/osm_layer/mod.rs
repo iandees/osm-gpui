@@ -24,6 +24,7 @@ use rstar::{
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+mod change;
 mod derived;
 mod edit;
 mod fill;
@@ -35,6 +36,7 @@ mod multipolygon;
 mod scene;
 mod upload;
 
+use self::change::*;
 use self::derived::*;
 use self::hit_test::*;
 use self::markers::*;
@@ -360,13 +362,6 @@ impl OsmLayer {
         self.store.revision += 1;
     }
 
-    /// Record that the layer's data changed by a local edit (or the undo or
-    /// redo of one).
-    fn mark_modified(&mut self) {
-        self.store.modified = true;
-        self.store.revision += 1;
-    }
-
     /// The rectangles (Web Mercator meters) this layer's data was downloaded
     /// for; empty when that is not known. See `render_all_download_bounds`.
     pub fn download_rects(&self) -> &[crate::download_bounds::MercRect] {
@@ -405,7 +400,8 @@ impl OsmLayer {
     #[cfg(test)]
     pub(crate) fn set_osm_data_for_test(&mut self, data: Arc<OsmData>) {
         self.store.osm_data = Some(data);
-        self.mark_modified();
+        self.store.modified = true;
+        self.store.revision += 1;
     }
 
     /// The data as a snapshot: edits go through `Arc::make_mut`, so a held
