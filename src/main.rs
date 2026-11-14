@@ -35,6 +35,8 @@ mod history_actions;
 mod http_injection_tests;
 mod imagery_offset_ui;
 #[cfg(test)]
+mod imagery_state_tests;
+#[cfg(test)]
 mod improve_click_tests;
 mod menu;
 mod mode_panel;
@@ -43,6 +45,8 @@ mod notes_ui;
 mod reference_tests;
 mod script_harness;
 mod selection_actions;
+#[cfg(test)]
+mod selection_dispatch_tests;
 mod side_panel;
 mod side_panel_layout;
 mod status_bar;
@@ -614,12 +618,9 @@ enum LayerRequest {
     },
 }
 
-/// Stores the full ELI list once loaded (populated on the background executor).
+/// The full ELI list, filled by `MapViewer::imagery_index_loaded` once the
+/// background load finishes; the menus read it.
 static IMAGERY_INDEX: OnceLock<Arc<Mutex<Vec<ImageryEntry>>>> = OnceLock::new();
-
-/// Set to true when the imagery index is loaded (or failed) so the render loop
-/// knows to refresh the menu.
-static IMAGERY_LOAD_STATE: OnceLock<Arc<Mutex<ImageryLoadState>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ImageryLoadState {
@@ -633,7 +634,7 @@ enum ImageryLoadState {
 /// which only have `&mut App` (menu action handlers, and app-level window
 /// callbacks like the `on_window_should_close` hook) reach the *real* view
 /// and either query its live state or call ordinary `MapViewer` methods on
-/// it directly — no polling queues involved.
+/// it directly.
 ///
 /// Note: actions that fire via keybinding/menu while `MapViewer`'s own
 /// window is dispatching (e.g. `Quit`) should NOT be routed through this
@@ -677,8 +678,7 @@ pub(crate) fn has_unsaved_changes(cx: &App) -> bool {
 
 /// Run `f` against the live `MapViewer` (via `MAP_VIEWER_HANDLE`), if it
 /// still exists. This is the standard way for menu action handlers (which
-/// only have `&mut App`) to call an ordinary `MapViewer` method — replacing
-/// the old push-into-a-queue-and-wait-for-render-to-drain-it pattern.
+/// only have `&mut App`) to call an ordinary `MapViewer` method.
 pub(crate) fn with_map_viewer(
     cx: &mut App,
     f: impl FnOnce(&mut MapViewer, &mut Context<MapViewer>),
@@ -821,29 +821,7 @@ pub(crate) fn uploaded_taint(
         .collect()
 }
 
-/// Why a chunked upload stopped before the end.
-enum UploadStop {
-    /// The server refused the diff (409/410/412); the changeset is closed.
-    Refused(osm_upload::UploadConflict),
-    /// The server may have applied the diff (always an
-    /// `UploadError::OutcomeUnknown`); the upload must not be offered again
-    /// without the user checking the server first.
-    OutcomeUnknown(osm_upload::UploadError),
-    /// Any other failure, as a message.
-    Failed(String),
-}
-
-impl UploadStop {
-    fn from_error(error: osm_upload::UploadError) -> Self {
-        match error {
-            osm_upload::UploadError::Conflict(conflict) => UploadStop::Refused(conflict),
-            unknown @ osm_upload::UploadError::OutcomeUnknown { .. } => {
-                UploadStop::OutcomeUnknown(unknown)
-            }
-            other => UploadStop::Failed(other.to_string()),
-        }
-    }
-}
+use osm_gpui::upload_chunks::UploadStop;
 
 struct MapViewer {
     viewport: Viewport,
@@ -871,6 +849,8 @@ struct MapViewer {
     /// `(undo_stack.revision, data_generation)`.
     pending_edits: Option<((u64, u64), usize)>,
     selected: Vec<osm_gpui::selection::FeatureRef>,
+    /// What Copy and Copy Tags set aside, for Paste and Paste Tags.
+    clipboards: clipboard_actions::Clipboards,
     /// Current mouse interaction: idle, a pending press, an in-progress
     /// box-select, or an in-progress move-drag of the selection. See
     /// `osm_gpui::interaction` for the pure click/drag/box-select decision
@@ -879,7 +859,9 @@ struct MapViewer {
     frame_times: VecDeque<Instant>,
     /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
     last_menu_center: Option<(f64, f64)>,
-    /// Imagery load state observed on the previous frame; detect transitions.
+    /// Where the Editor Layer Index load stands.
+    imagery_load_state: ImageryLoadState,
+    /// The load state the Imagery menu was last rebuilt for.
     last_imagery_load_state: Option<ImageryLoadState>,
     /// Whether the debug info overlay is currently visible.
     show_debug_overlay: bool,
@@ -1255,9 +1237,11 @@ impl MapViewer {
             data_generation: 0,
             pending_edits: None,
             selected: Vec::new(),
+            clipboards: Default::default(),
             interaction: Interaction::Idle,
             frame_times: VecDeque::with_capacity(120),
             last_menu_center: None,
+            imagery_load_state: ImageryLoadState::Loading,
             last_imagery_load_state: None,
             show_debug_overlay: false,
             show_downloaded_area: true,
@@ -1347,11 +1331,7 @@ impl MapViewer {
     /// immediate menu rebuild without duplicating this lookup.
     pub(crate) fn imagery_menu_context(&self) -> (f64, f64, ImageryLoadState) {
         let (lat, lon) = self.viewport.center();
-        let state = IMAGERY_LOAD_STATE
-            .get()
-            .and_then(|s| s.lock().ok().map(|g| *g))
-            .unwrap_or(ImageryLoadState::Loading);
-        (lat, lon, state)
+        (lat, lon, self.imagery_load_state)
     }
 
     /// Whether View > Show Downloaded Area is on (drives its menu checkmark).
@@ -1359,15 +1339,54 @@ impl MapViewer {
         self.show_downloaded_area
     }
 
+    /// Load the Editor Layer Index in the background; the viewer is told when
+    /// it finishes.
+    fn load_imagery_index(&mut self, cx: &mut Context<Self>) {
+        let http = self.http.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    imagery::fetch_and_cache(http.as_ref())
+                        .map(|body| imagery::parse(&body))
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| this.imagery_index_loaded(result, cx));
+        })
+        .detach();
+    }
+
+    /// The Editor Layer Index load finished: keep the entries for the menus
+    /// and rebuild the Imagery menu.
+    fn imagery_index_loaded(
+        &mut self,
+        result: Result<Vec<ImageryEntry>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.imagery_load_state = match result {
+            Ok(entries) => {
+                eprintln!("imagery: loaded {} ELI entries", entries.len());
+                if let Some(index) = IMAGERY_INDEX.get() {
+                    if let Ok(mut guard) = index.lock() {
+                        *guard = entries;
+                    }
+                }
+                ImageryLoadState::Ready
+            }
+            Err(e) => {
+                eprintln!("imagery: failed to load ELI: {e}");
+                ImageryLoadState::Failed
+            }
+        };
+        self.maybe_rebuild_imagery_menu(cx);
+    }
+
     /// Rebuild the Imagery menu if needed (center moved or load state changed).
     fn maybe_rebuild_imagery_menu(&mut self, cx: &mut Context<Self>) {
         let (lat, lon) = self.viewport.center();
 
-        // Pull current load state.
-        let current_state = IMAGERY_LOAD_STATE
-            .get()
-            .and_then(|s| s.lock().ok().map(|g| *g))
-            .unwrap_or(ImageryLoadState::Loading);
+        let current_state = self.imagery_load_state;
 
         let state_changed = self.last_imagery_load_state != Some(current_state);
         let center_moved = match self.last_menu_center {
@@ -2487,13 +2506,18 @@ impl MapViewer {
         self.run_selection_action("delete", cx);
     }
 
-    /// Run the selection action `id` on the current selection: check it is
-    /// applicable (else show why in the status bar), apply it, and record the
-    /// result as a single undo step.
+    /// Run the selection action `id` on the current selection: refuse it
+    /// during an upload if it edits, check it is applicable (else show why in
+    /// the status bar), carry it out as its `Run` says, and record the result
+    /// as a single undo step. Every entry point (menus, shortcuts, the context
+    /// menu) ends here, so this is the one place the upload guard lives.
     fn run_selection_action(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(action) = selection_actions::find(id) else {
             return;
         };
+        if action.run.edits() && self.edits_blocked(cx) {
+            return;
+        }
         // A rotation in progress owns the selection until it is applied or
         // cancelled (Enter, click, Escape).
         if self.rotate_session.is_some() {
@@ -2503,6 +2527,7 @@ impl MapViewer {
             selection: &self.selected,
             active_layer: self.active_layer,
             layers: &self.layer_manager,
+            clipboards: &self.clipboards,
         };
         if !(action.is_applicable)(&env) {
             let why = action.why_not(&env);
@@ -2510,34 +2535,32 @@ impl MapViewer {
             cx.notify();
             return;
         }
-        if let Some(op) = clipboard_actions::op_for(action.id) {
-            self.run_clipboard_op(op, cx);
-            return;
-        }
-        if action.id == selection_actions::ADD_TO_RELATION {
-            // Which relation? Ask; `render` opens the picker (it needs the
-            // window), and the choice comes back through
-            // `add_selection_to_relation`.
-            self.pending_relation_picker = true;
-            cx.notify();
-            return;
-        }
-        if action.id == selection_actions::ROTATE {
-            self.start_rotate();
-            cx.notify();
-            return;
-        }
-        if action.id == selection_actions::PARALLEL {
-            // Same shape: ask for the offset first, then
-            // `create_parallel_ways` applies it.
-            if !self.refuse_edit_during_upload() {
-                self.pending_parallel_dialog = true;
+        match action.run {
+            selection_actions::Run::Apply(apply) => {
+                let result = apply(&mut self.layer_manager, &self.selected, self.active_layer);
+                self.finish_selection_action(result);
             }
-            cx.notify();
-            return;
+            selection_actions::Run::TagClipboard(apply) => {
+                let result = apply(
+                    &mut self.layer_manager,
+                    &self.selected,
+                    self.active_layer,
+                    &mut self.clipboards,
+                );
+                self.finish_selection_action(result);
+            }
+            selection_actions::Run::Clipboard(op) => self.run_clipboard_op(op, cx),
+            selection_actions::Run::Dialog(dialog) => match dialog {
+                // `render` opens the dialog (it needs the window); the answer
+                // comes back through `add_selection_to_relation` or
+                // `create_parallel_ways`.
+                selection_actions::Dialog::RelationPicker => self.pending_relation_picker = true,
+                selection_actions::Dialog::ParallelOffset => self.pending_parallel_dialog = true,
+            },
+            selection_actions::Run::Interactive(selection_actions::Interactive::Rotate) => {
+                self.start_rotate()
+            }
         }
-        let result = (action.apply)(&mut self.layer_manager, &self.selected, self.active_layer);
-        self.finish_selection_action(result);
         cx.notify();
     }
 
@@ -2546,9 +2569,6 @@ impl MapViewer {
     /// it (Shift snaps to 15 degrees). A click or Enter applies it as one
     /// undo step; Escape puts everything back.
     fn start_rotate(&mut self) {
-        if self.refuse_edit_during_upload() {
-            return;
-        }
         let Some(layer) = self.active_layer else {
             return;
         };
@@ -2839,11 +2859,6 @@ impl MapViewer {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Copy is not an edit; the other clipboard actions check for
-        // themselves (see `run_clipboard_op`).
-        if clipboard_actions::op_for(&action.id).is_none() && self.edits_blocked(cx) {
-            return;
-        }
         self.run_selection_action(&action.id, cx);
     }
 
@@ -4194,10 +4209,8 @@ impl MapViewer {
             EditMode::Arc => self.handle_arc_click(screen_pt, ctrl_held),
             EditMode::Improve => self.handle_improve_click(screen_pt, cx),
             EditMode::Extrude => {
-                // Extrude doesn't use the plain-click path (Task 8 hooks
-                // mouse-down/mouse-move/mouse-up directly); a stray click
-                // here (e.g. a zero-movement mouse-up while extruding) is a
-                // no-op.
+                // Extrude works from mouse-down/move/up directly; a stray
+                // click here (a zero-movement mouse-up) does nothing.
             }
         }
     }
@@ -5566,6 +5579,7 @@ impl MapViewer {
             selection: &self.selected,
             active_layer: self.active_layer,
             layers: &self.layer_manager,
+            clipboards: &self.clipboards,
         };
         let actions: Vec<&'static selection_actions::SelectionAction> =
             selection_actions::SelectionAction::applicable(&env).collect();
@@ -5581,7 +5595,7 @@ impl MapViewer {
             menu = menu.action_context(focus).min_w(px(190.0));
             for (i, action) in actions.iter().enumerate() {
                 // Keep the destructive action apart from the edits.
-                if i > 0 && action.id == "delete" {
+                if i > 0 && action.destructive {
                     menu = menu.separator();
                 }
                 let label = action.label();
@@ -5705,8 +5719,7 @@ impl MapViewer {
 
     /// Add a newly-loaded OSM dataset as a new layer. Called directly by
     /// `menu::open_osm_file` (once its background parse completes) and by
-    /// the script harness's `ScriptCommand::LoadOsm` — replaces the old
-    /// `SHARED_OSM_DATA` queue drained once per frame.
+    /// the script harness's `ScriptCommand::LoadOsm`.
     ///
     /// `edits` are the pending local edits the file recorded (empty for a
     /// plain server extract); they stay pending in the new layer.
@@ -5873,8 +5886,7 @@ impl MapViewer {
 
     /// Apply a `LayerRequest`, adding the corresponding layer. Called
     /// directly by menu handlers (via `with_map_viewer`) and by the custom
-    /// imagery dialog's `Submitted` event — replaces the old `LAYER_REQUESTS`
-    /// queue drained once per frame.
+    /// imagery dialog's `Submitted` event.
     fn apply_layer_request(&mut self, req: LayerRequest, cx: &mut Context<Self>) {
         match req {
             LayerRequest::OsmCarto => {
@@ -5996,9 +6008,7 @@ impl MapViewer {
     }
 
     /// Flip the debug overlay. Called directly from the `View > Toggle Debug
-    /// Overlay` menu handler (via `with_map_viewer`) — replaces the old
-    /// `TOGGLE_DEBUG_OVERLAY` queue (which used push-count parity to emulate
-    /// a single flip per click; a direct call needs no such trick).
+    /// Overlay` menu handler (via `with_map_viewer`).
     pub(crate) fn toggle_debug_overlay(&mut self, cx: &mut Context<Self>) {
         self.show_debug_overlay = !self.show_debug_overlay;
         cx.notify();
@@ -6045,8 +6055,8 @@ impl MapViewer {
     }
 
     /// Open the "Add Custom Imagery…" dialog, if one isn't already open.
-    /// Called directly from the menu handler (via `with_map_viewer_in`) —
-    /// replaces the old `OPEN_CUSTOM_IMAGERY_DIALOG` queue. Unlike an inline
+    /// Called directly from the menu handler (via `with_map_viewer_in`).
+    /// Unlike an inline
     /// tag edit, this dialog has no post-paint focus requirement, so
     /// it's safe to construct straight from the menu-triggered `update_in`
     /// call rather than deferring to the next render pass.
@@ -6137,7 +6147,7 @@ impl MapViewer {
     /// Open the "unsaved changes" quit-confirmation dialog, if one isn't
     /// already open. Called directly by `on_quit` and by the
     /// `on_window_should_close` hook (which already has a `Window` in
-    /// scope) — replaces the old `SHOW_QUIT_CONFIRM` queue. Like
+    /// scope). Like
     /// `open_custom_imagery_dialog`, this dialog has no post-paint focus
     /// requirement, so it's safe to construct directly rather than
     /// deferring to the next render pass.
@@ -6190,9 +6200,7 @@ impl MapViewer {
     /// Open the upload-review dialog, if one isn't already open — either
     /// showing the "nothing to upload" status or the dialog itself,
     /// depending on whether any layer has changes. Called directly by
-    /// `menu::upload_to_osm` (via `with_map_viewer_in`) — replaces the old
-    /// `SHOW_UPLOAD_DIALOG` queue, same as `show_quit_confirm_dialog`
-    /// replaced `SHOW_QUIT_CONFIRM`.
+    /// `menu::upload_to_osm` (via `with_map_viewer_in`).
     pub(crate) fn open_upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let signed_in_name =
             auth::stored_display_name(&auth::oauth_base_for(&settings_store::api_base_url()));
@@ -6507,13 +6515,10 @@ impl MapViewer {
                 use osm_gpui::ui::sign_in_dialog::DialogEvent;
                 this.sign_in_dialog = None;
                 if matches!(event, DialogEvent::OpenSettings) {
-                    if purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary {
-                        osm_gpui::ui::settings_window::request_page(
-                            osm_gpui::ui::settings_window::IMAGERY_PAGE,
-                        );
-                    }
+                    let page = (purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary)
+                        .then_some(osm_gpui::ui::settings_window::IMAGERY_PAGE);
                     // Deferred so the window is opened outside this entity update.
-                    cx.defer(|cx| crate::menu::open_settings(&OpenSettings, cx));
+                    cx.defer(move |cx| crate::menu::open_settings_page(page, cx));
                 }
                 cx.notify();
             },
@@ -6608,10 +6613,10 @@ impl MapViewer {
         let oauth_base = auth::oauth_base_for(&base_url);
         let layer_ids: Vec<LayerId> = modified.iter().map(|(id, _)| *id).collect();
         let max_elements = osm_gpui::limits::Limits::for_server(&base_url).changeset_elements;
-        let mut queue = {
+        let mut driver = {
             let refs: Vec<&osm_gpui::layers::diff::LayerDiff> = diffs.iter().collect();
-            match osm_gpui::upload_chunks::ChunkQueue::plan(&refs, max_elements) {
-                Ok(queue) => queue,
+            match osm_gpui::upload_chunks::UploadDriver::plan(&refs, max_elements, &tags) {
+                Ok(driver) => driver,
                 Err(e) => {
                     self.transfer = None;
                     if let Some(dialog) = &self.upload_dialog {
@@ -6634,53 +6639,47 @@ impl MapViewer {
         // exactly what the server has not got.
         let http = self.http.clone();
         cx.spawn(async move |this, cx| {
-            let total = queue.total();
-            let mut accepted = 0usize;
-            let mut last_changeset = 0u64;
             let stop: Option<UploadStop> = loop {
-                let Some((part, chunk)) = queue.next_chunk() else {
+                let Some(request) = driver.next_request() else {
                     break None;
                 };
-                let (oauth_base, base_url, tags, progress, http) = (
+                let (oauth_base, base_url, progress, http) = (
                     oauth_base.clone(),
                     base_url.clone(),
-                    tags.clone(),
                     progress.clone(),
                     http.clone(),
                 );
-                let sent = cx
+                let outcome = cx
                     .background_executor()
                     .spawn(async move {
-                        // May block on the system keychain's access prompt the
-                        // first time; say so while it does (and only then).
-                        // A refusal stops the upload with the edits and the
-                        // saved login untouched.
-                        let token = auth::ensure_fresh_token_notify(
-                            http.as_ref(),
-                            &oauth_base,
-                            &mut || {
-                                progress.set_upload_phase(None, TransferPhase::WaitingForKeychain)
-                            },
-                        )
-                        .map_err(|e| UploadStop::Failed(e.to_string()))?;
-                        osm_gpui::upload_chunks::upload_chunk(
+                        osm_gpui::upload_chunks::send(
+                            request,
                             http.as_ref(),
                             &base_url,
-                            &token.access_token,
-                            &tags,
-                            part,
-                            chunk,
+                            // May block on the system keychain's access prompt
+                            // the first time; say so while it does (and only
+                            // then). A refusal stops the upload with the edits
+                            // and the saved login untouched.
+                            &mut || {
+                                auth::ensure_fresh_token_notify(
+                                    http.as_ref(),
+                                    &oauth_base,
+                                    &mut || {
+                                        progress.set_upload_phase(
+                                            None,
+                                            TransferPhase::WaitingForKeychain,
+                                        )
+                                    },
+                                )
+                                .map(|token| token.access_token)
+                                .map_err(|e| e.to_string())
+                            },
                             &mut |part, phase| progress.set_upload_phase(part, phase),
                         )
-                        .map_err(|failure| UploadStop::from_error(failure.error))
                     })
                     .await;
-                match sent {
-                    Ok(mut done) => {
-                        done.last = queue.remaining() == 0;
-                        queue.accept(&done.result);
-                        accepted += 1;
-                        last_changeset = done.changeset_id;
+                match driver.record(outcome) {
+                    osm_gpui::upload_chunks::Step::Apply(done) => {
                         let layer_ids = layer_ids.clone();
                         let applied = this.update(cx, |this, cx| {
                             for id in &layer_ids {
@@ -6705,9 +6704,11 @@ impl MapViewer {
                             return;
                         }
                     }
-                    Err(why) => break Some(why),
+                    osm_gpui::upload_chunks::Step::Stop(stopped) => break Some(stopped.reason),
                 }
             };
+            let (total, accepted, last_changeset) =
+                (driver.total(), driver.accepted(), driver.last_changeset());
 
             let _ = this.update(cx, |this, cx| {
                 this.transfer = None;
@@ -6758,10 +6759,9 @@ impl MapViewer {
                                 }
                                 this.set_status(message);
                             }
-                            UploadStop::OutcomeUnknown(error) => {
+                            UploadStop::OutcomeUnknown(message) => {
                                 // The dialog says to check the server first
                                 // and does not offer a plain retry.
-                                let message = error.to_string();
                                 if let Some(dialog) = &this.upload_dialog {
                                     dialog.update(cx, |dialog, cx| {
                                         dialog.fail_outcome_unknown(message.clone().into(), cx)
@@ -7233,9 +7233,7 @@ impl MapViewer {
     /// Kick off a background fetch of the OSM data within the current
     /// viewport bounds, applying the result to `self` on completion. Called
     /// directly from the `File > Download from OSM` menu handler (via
-    /// `with_map_viewer`) — replaces the old `DOWNLOAD_REQUESTS` queue (the
-    /// queue only ever carried a trigger; the actual background-fetch and
-    /// apply-on-completion logic already used `cx.spawn` and is unchanged).
+    /// `with_map_viewer`).
     /// Restyle every open layer with the active MapCSS style (the built-in
     /// one when no custom style is active) and repaint.
     pub(crate) fn apply_map_style(&mut self, cx: &mut Context<Self>) {
@@ -7660,11 +7658,7 @@ impl Render for MapViewer {
                                 // Like the mode keys above, these only fire
                                 // while the map area has focus, so typing in
                                 // a text input never triggers them.
-                                // Every bare-key action edits, so none runs
-                                // while an upload is in flight.
-                                if !this.edits_blocked(cx) {
-                                    this.run_selection_action(action.id, cx);
-                                }
+                                this.run_selection_action(action.id, cx);
                             }
                         }
                     }))
@@ -8440,9 +8434,6 @@ fn main() {
     KEYSTROKE_QUEUE.set(Arc::new(Mutex::new(Vec::new()))).ok();
 
     IMAGERY_INDEX.set(Arc::new(Mutex::new(Vec::new()))).unwrap();
-    IMAGERY_LOAD_STATE
-        .set(Arc::new(Mutex::new(ImageryLoadState::Loading)))
-        .unwrap();
 
     // If there's a script, spawn it on a background OS thread before the app
     // starts. The thread blocks until the window is visible, then drives the
@@ -8607,37 +8598,7 @@ fn main() {
             false,
         );
 
-        // Kick off background download/parse of the Editor Layer Index.
         let startup_http = osm_gpui::http::default_client();
-        let imagery_http = startup_http.clone();
-        cx.background_executor()
-            .spawn(async move {
-                match imagery::fetch_and_cache(imagery_http.as_ref()) {
-                    Ok(body) => {
-                        let entries = imagery::parse(&body);
-                        eprintln!("imagery: loaded {} ELI entries", entries.len());
-                        if let Some(index) = IMAGERY_INDEX.get() {
-                            if let Ok(mut guard) = index.lock() {
-                                *guard = entries;
-                            }
-                        }
-                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
-                            if let Ok(mut g) = state.lock() {
-                                *g = ImageryLoadState::Ready;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("imagery: failed to load ELI: {}", e);
-                        if let Some(state) = IMAGERY_LOAD_STATE.get() {
-                            if let Ok(mut g) = state.lock() {
-                                *g = ImageryLoadState::Failed;
-                            }
-                        }
-                    }
-                }
-            })
-            .detach();
 
         // Kick off background fetch/parse of the Name Suggestion Index.
         osm_gpui::nsi::init_store();
@@ -8736,6 +8697,9 @@ fn main() {
                     });
                     #[cfg(debug_assertions)]
                     view.update(cx, |v, cx| v.debug_show_transfer_demo(window, cx));
+                    // Download and parse the Editor Layer Index in the
+                    // background; the viewer is told when it is done.
+                    view.update(cx, |v, cx| v.load_imagery_index(cx));
 
                     // Publish a weak handle to the live view so the
                     // `on_window_should_close` closure below (which only has

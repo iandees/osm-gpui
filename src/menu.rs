@@ -29,9 +29,31 @@ use crate::{
     ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
-/// Guard to prevent opening multiple settings windows simultaneously.
-static SETTINGS_WINDOW_OPEN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+/// The Settings window, once opened. Whether it is still open is read from
+/// the app's window list, not remembered, so closing it any way at all
+/// leaves nothing stale.
+#[derive(Default)]
+struct SettingsWindowSlot(Option<gpui::AnyWindowHandle>);
+
+impl gpui::Global for SettingsWindowSlot {}
+
+/// What asking for Settings does.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SettingsOpen {
+    /// Open a window, on `page` when one was asked for.
+    New { page: Option<usize> },
+    /// There is one already: bring it to the front.
+    Focus,
+}
+
+/// Settings is a single window: open it, or focus the one that exists.
+pub(crate) fn settings_open_decision(already_open: bool, page: Option<usize>) -> SettingsOpen {
+    if already_open {
+        SettingsOpen::Focus
+    } else {
+        SettingsOpen::New { page }
+    }
+}
 
 pub(crate) fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
     custom_imagery_store::snapshot()
@@ -147,10 +169,25 @@ async fn load_osm_path(path: std::path::PathBuf, cx: &mut gpui::AsyncApp) {
 }
 
 pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
-    if SETTINGS_WINDOW_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
-        return;
-    }
-    SETTINGS_WINDOW_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    open_settings_page(None, cx);
+}
+
+/// Open the Settings window on `page` (the first when `None`), or focus it if
+/// it is already open.
+pub(crate) fn open_settings_page(page: Option<usize>, cx: &mut App) {
+    let existing = cx
+        .try_global::<SettingsWindowSlot>()
+        .and_then(|slot| slot.0)
+        .filter(|handle| cx.windows().contains(handle));
+    let page = match settings_open_decision(existing.is_some(), page) {
+        SettingsOpen::Focus => {
+            if let Some(handle) = existing {
+                let _ = handle.update(cx, |_, window, _| window.activate_window());
+            }
+            return;
+        }
+        SettingsOpen::New { page } => page,
+    };
 
     let settings_window = cx
         .open_window(
@@ -168,8 +205,8 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
                 ..Default::default()
             },
             |window, cx| {
-                let view =
-                    cx.new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(window, cx));
+                let view = cx
+                    .new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(page, window, cx));
                 cx.subscribe(
                     &view,
                     |_entity, event: &osm_gpui::ui::settings_window::SettingsEvent, cx| match event
@@ -187,14 +224,7 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
             },
         )
         .unwrap();
-
-    let settings_window_id = settings_window.window_id();
-    cx.on_window_closed(move |_cx, window_id| {
-        if window_id == settings_window_id {
-            SETTINGS_WINDOW_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-    })
-    .detach();
+    cx.set_global(SettingsWindowSlot(Some(settings_window.into())));
 }
 
 // Handle the File > Download from OSM menu action
@@ -354,6 +384,12 @@ fn script_seed_custom_imagery(_: &ScriptSeedCustomImagery, cx: &mut App) {
         });
     }
     rebuild_menus_for_live_viewer(cx);
+}
+
+/// The Edit menu entries for the selection actions listed in `slot`.
+fn edit_action_items(slot: selection_actions::MenuSlot) -> impl Iterator<Item = MenuItem> {
+    selection_actions::in_menu(slot)
+        .map(|a| MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() }))
 }
 
 pub(crate) fn rebuild_menus_for_live_viewer(cx: &mut App) {
@@ -820,43 +856,13 @@ fn build_menus(
                     MenuItem::action(tr!("menu.edit.undo"), Undo),
                     MenuItem::action(tr!("menu.edit.redo"), Redo),
                     MenuItem::separator(),
-                    MenuItem::action(
-                        tr!("menu.edit.copy_features"),
-                        RunSelectionAction {
-                            id: "copy_features".into(),
-                        },
-                    ),
-                    MenuItem::action(
-                        tr!("menu.edit.paste_features"),
-                        RunSelectionAction {
-                            id: "paste_features".into(),
-                        },
-                    ),
-                    MenuItem::action(
-                        tr!("menu.edit.paste_features_source"),
-                        RunSelectionAction {
-                            id: "paste_features_source".into(),
-                        },
-                    ),
-                    MenuItem::action(
-                        tr!("menu.edit.duplicate_features"),
-                        RunSelectionAction {
-                            id: "duplicate_features".into(),
-                        },
-                    ),
-                    MenuItem::separator(),
-                    MenuItem::action(
-                        tr!("menu.edit.copy_tags"),
-                        RunSelectionAction {
-                            id: "copy_tags".into(),
-                        },
-                    ),
-                    MenuItem::action(
-                        tr!("menu.edit.paste_tags"),
-                        RunSelectionAction {
-                            id: "paste_tags".into(),
-                        },
-                    ),
+                ])
+                .chain(edit_action_items(
+                    selection_actions::MenuSlot::EditClipboard,
+                ))
+                .chain([MenuItem::separator()])
+                .chain(edit_action_items(selection_actions::MenuSlot::EditTags))
+                .chain(vec![
                     MenuItem::separator(),
                     MenuItem::action(tr!("menu.edit.delete"), DeleteSelection),
                     MenuItem::separator(),
@@ -878,14 +884,7 @@ fn build_menus(
             // doesn't fit the selection explains why in the status bar.
             items: std::iter::once(MenuItem::action(tr!("validator.menu"), Validate))
                 .chain(std::iter::once(MenuItem::separator()))
-                .chain(
-                    selection_actions::ACTIONS
-                        .iter()
-                        .filter(|a| a.in_tools_menu)
-                        .map(|a| {
-                            MenuItem::action(a.label(), RunSelectionAction { id: a.id.into() })
-                        }),
-                )
+                .chain(edit_action_items(selection_actions::MenuSlot::Tools))
                 .chain([
                     MenuItem::separator(),
                     MenuItem::action(tr!("notes.menu.new"), NewNote),
@@ -1173,6 +1172,20 @@ mod tests {
             .into_iter()
             .map(|m| fit_owned_menu(m.owned()))
             .collect()
+    }
+
+    #[test]
+    fn settings_opens_one_window_and_focuses_it_afterwards() {
+        assert_eq!(
+            settings_open_decision(false, None),
+            SettingsOpen::New { page: None }
+        );
+        assert_eq!(
+            settings_open_decision(false, Some(3)),
+            SettingsOpen::New { page: Some(3) }
+        );
+        assert_eq!(settings_open_decision(true, None), SettingsOpen::Focus);
+        assert_eq!(settings_open_decision(true, Some(3)), SettingsOpen::Focus);
     }
 
     /// No menu is over the limit unless it is a leaf without submenus.

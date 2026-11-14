@@ -49,7 +49,7 @@ The parser is `src/script/parser.rs` (plus `src/script/note_ops.rs` for the note
 | `mod_up NAME...` | Release modifiers pressed with `mod_down`. |
 | `key CHORD` | Press a key chord such as `cmd+shift+a`, `escape` or `cmd+z`. |
 | `type TEXT` | Type TEXT into the focused input, one character at a time (appends to what is there). |
-| `action NAME [JSON]` | Dispatch a named app action the way a native menu item does (for example `UploadToOsm`, or `AddImageryLayer {"id":"EsriWorldImagery"}`). |
+| `action NAME [JSON]` | Dispatch a named app action the way a native menu item does (for example `UploadToOsm`, or `AddImageryLayer {"id":"EsriWorldImagery"}`). A bare NAME is looked up in the `osm_gpui` namespace; use `namespace::NAME` for the others (the error names them). Fails when nothing handles the action where the window's focus is now. |
 
 ## Layers and files
 

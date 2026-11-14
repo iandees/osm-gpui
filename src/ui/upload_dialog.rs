@@ -1,6 +1,5 @@
 //! Modal dialog to review pending edits and provide a changeset comment
-//! before uploading to the OSM API. Mirrors `quit_confirm_dialog.rs`'s
-//! scrim/card/focus/Escape conventions, with a
+//! before uploading to the OSM API, with a
 //! `gpui_component::input::{Input, InputState}` for the comment field.
 
 use gpui::{
@@ -22,6 +21,7 @@ use crate::changeset_tags::{
 };
 use crate::osm_upload::{ConflictKind, UploadConflict};
 use crate::transfer::TransferHandle;
+use crate::ui::modal::{self, ModalKey};
 use crate::ui::style::muted_text_size;
 use crate::ui::validation_list::summary_text;
 use crate::validator::Report;
@@ -123,6 +123,25 @@ pub fn failure_kind_of(error: &crate::osm_upload::UploadError) -> FailureKind {
 /// after an unknown outcome: that needs a deliberate click on the button.
 pub fn enter_uploads(failure: Option<FailureKind>) -> bool {
     failure != Some(FailureKind::OutcomeUnknown)
+}
+
+/// What a key does in the dialog. `Cancel` and `Upload` still go through the
+/// dialog's own guards: a running upload cannot be dismissed, and an upload
+/// the button would refuse does not start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyAction {
+    Cancel,
+    Upload,
+    Ignore,
+}
+
+/// The action for `key` given how the last attempt failed (if it did).
+pub fn key_action(key: ModalKey, failure: Option<FailureKind>) -> KeyAction {
+    match key {
+        ModalKey::Escape => KeyAction::Cancel,
+        ModalKey::Enter if enter_uploads(failure) => KeyAction::Upload,
+        ModalKey::Enter | ModalKey::Other => KeyAction::Ignore,
+    }
 }
 
 /// The confirm button's label from how the last attempt failed (if it did)
@@ -728,10 +747,10 @@ impl UploadDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" if enter_uploads(self.failure_kind()) => self.upload(cx),
-            _ => {}
+        match key_action(modal::classify_key(ev), self.failure_kind()) {
+            KeyAction::Cancel => self.cancel(cx),
+            KeyAction::Upload => self.upload(cx),
+            KeyAction::Ignore => {}
         }
     }
 }
@@ -1138,72 +1157,29 @@ impl Render for UploadDialog {
             ConfirmKind::UploadAnyway => tr!("validator.upload_anyway"),
             ConfirmKind::Upload => tr!("dialog.upload.confirm"),
         };
-        let footer = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                Button::new("upload-cancel")
-                    .label(tr!("dialog.cancel"))
-                    .disabled(in_flight)
-                    .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
-            )
-            .child(
-                Button::new("upload-confirm")
-                    .primary()
-                    .label(confirm_label)
-                    .disabled(!self.can_upload(comment_empty, cx))
-                    .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
-            );
+        let footer = modal::footer_buttons(
+            Button::new("upload-cancel")
+                .label(tr!("dialog.cancel"))
+                .disabled(in_flight)
+                .on_click(cx.listener(|this, _, _w, cx| this.cancel(cx))),
+            Button::new("upload-confirm")
+                .primary()
+                .label(confirm_label)
+                .disabled(!self.can_upload(comment_empty, cx))
+                .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
+        );
 
-        let frame = v_flex()
-            .w(gpui::px(420.0))
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_lg()
-            .shadow_lg()
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_color(cx.theme().foreground)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(tr!("dialog.upload.title")),
+        // The body scrolls when the window is too short for it, so the title
+        // and the buttons stay on screen.
+        let frame = modal::card(cx, gpui::px(420.0), tr!("dialog.upload.title"), body)
+            .scroll_body(
+                "upload-body",
+                window.viewport_size().height - gpui::px(170.0),
             )
-            // The body scrolls when the window is too short for it, so the
-            // title and the buttons stay on screen.
-            .child(
-                div()
-                    .id("upload-body")
-                    .p_4()
-                    .max_h(window.viewport_size().height - gpui::px(170.0))
-                    .overflow_y_scroll()
-                    .child(body),
-            )
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(footer),
-            );
+            .footer(footer)
+            .build();
 
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(crate::ui::style::scrim_color())
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(frame)
+        modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
     }
 }
 
@@ -1230,6 +1206,33 @@ mod tests {
         assert_eq!(
             confirm_kind(Some(FailureKind::Refused), 0, 3),
             ConfirmKind::Retry
+        );
+    }
+
+    #[test]
+    fn keys_do_what_the_state_allows() {
+        for failure in [
+            None,
+            Some(FailureKind::Refused),
+            Some(FailureKind::Other),
+            Some(FailureKind::OutcomeUnknown),
+        ] {
+            assert_eq!(key_action(ModalKey::Escape, failure), KeyAction::Cancel);
+            assert_eq!(key_action(ModalKey::Other, failure), KeyAction::Ignore);
+        }
+        assert_eq!(key_action(ModalKey::Enter, None), KeyAction::Upload);
+        assert_eq!(
+            key_action(ModalKey::Enter, Some(FailureKind::Refused)),
+            KeyAction::Upload
+        );
+        assert_eq!(
+            key_action(ModalKey::Enter, Some(FailureKind::Other)),
+            KeyAction::Upload
+        );
+        assert_eq!(
+            key_action(ModalKey::Enter, Some(FailureKind::OutcomeUnknown)),
+            KeyAction::Ignore,
+            "Enter must not retry after an unknown outcome"
         );
     }
 

@@ -3,7 +3,7 @@
 //! error line when that fails, keeping the typed text.
 
 use gpui::{
-    div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
     SharedString, Window,
 };
 use gpui_component::{
@@ -103,7 +103,8 @@ impl NewNoteDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if ev.keystroke.key == "escape" {
+        // Enter belongs to the multi-line text field.
+        if modal::classify_key(ev) == modal::ModalKey::Escape {
             self.press_cancel(cx);
         }
     }
@@ -144,28 +145,21 @@ impl Render for NewNoteDialog {
                     .map(|e| Label::new(e).text_color(cx.theme().danger)),
             );
 
-        let footer = div()
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap_2()
-            .child(
-                Button::new("new-note-cancel")
-                    .label(tr!("dialog.cancel"))
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _w, cx| this.press_cancel(cx))),
-            )
-            .child(
-                Button::new("new-note-create")
-                    .primary()
-                    .label(if self.busy {
-                        tr!("notes.panel.working")
-                    } else {
-                        tr!("notes.new.create")
-                    })
-                    .disabled(!can_create)
-                    .on_click(cx.listener(|this, _, _w, cx| this.press_create(cx))),
-            );
+        let footer = modal::footer_buttons(
+            Button::new("new-note-cancel")
+                .label(tr!("dialog.cancel"))
+                .disabled(self.busy)
+                .on_click(cx.listener(|this, _, _w, cx| this.press_cancel(cx))),
+            Button::new("new-note-create")
+                .primary()
+                .label(if self.busy {
+                    tr!("notes.panel.working")
+                } else {
+                    tr!("notes.new.create")
+                })
+                .disabled(!can_create)
+                .on_click(cx.listener(|this, _, _w, cx| this.press_create(cx))),
+        );
 
         modal::scrim(
             &self.focus_handle,

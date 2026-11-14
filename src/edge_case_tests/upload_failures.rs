@@ -1243,9 +1243,9 @@ fn editing_then_undoing_an_element_the_server_changed_uploads_nothing_and_cannot
 fn after_an_unknown_outcome_the_dialog_asks_for_a_check_and_offers_no_plain_retry(
     cx: &mut TestAppContext,
 ) {
-    use crate::UploadStop;
     use gpui::AppContext as _;
     use osm_gpui::ui::upload_dialog::{ConfirmKind, FailureKind, UploadDialog};
+    use osm_gpui::upload_chunks::UploadStop;
 
     cx.update(gpui_component::init);
     let data = ways_net();
@@ -1270,11 +1270,12 @@ fn after_an_unknown_outcome_the_dialog_asks_for_a_check_and_offers_no_plain_retr
                 .failure
                 .expect("the upload failed")
                 .error;
-            let UploadStop::OutcomeUnknown(error) = UploadStop::from_error(error) else {
+            let UploadStop::OutcomeUnknown(message) = UploadStop::from_error(&error) else {
                 panic!("an unknown outcome must not be reported as a plain failure");
             };
+            assert_eq!(message, error.to_string());
             dialog.update(s.cx, |d, cx| {
-                d.fail_outcome_unknown(error.to_string().into(), cx)
+                d.fail_outcome_unknown(message.clone().into(), cx)
             });
             let dialog = dialog.read(s.cx);
             assert_eq!(dialog.failure_kind(), Some(FailureKind::OutcomeUnknown));
@@ -1289,24 +1290,24 @@ fn after_an_unknown_outcome_the_dialog_asks_for_a_check_and_offers_no_plain_retr
 
 #[test]
 fn only_a_refusal_and_an_unknown_outcome_get_their_own_stop() {
-    use crate::UploadStop;
+    use osm_gpui::upload_chunks::UploadStop;
     assert!(matches!(
-        UploadStop::from_error(UploadError::Network("x".into())),
+        UploadStop::from_error(&UploadError::Network("x".into())),
         UploadStop::Failed(_)
     ));
     assert!(matches!(
-        UploadStop::from_error(UploadError::Parse("x".into())),
+        UploadStop::from_error(&UploadError::Parse("x".into())),
         UploadStop::Failed(_)
     ));
     assert!(matches!(
-        UploadStop::from_error(UploadError::Http {
+        UploadStop::from_error(&UploadError::Http {
             status: 400,
             body: String::new()
         }),
         UploadStop::Failed(_)
     ));
     assert!(matches!(
-        UploadStop::from_error(UploadError::OutcomeUnknown {
+        UploadStop::from_error(&UploadError::OutcomeUnknown {
             changeset_id: 1,
             url: "u".into(),
             detail: "d".into()
@@ -1314,7 +1315,7 @@ fn only_a_refusal_and_an_unknown_outcome_get_their_own_stop() {
         UploadStop::OutcomeUnknown(_)
     ));
     assert!(matches!(
-        UploadStop::from_error(UploadError::Conflict(UploadConflict {
+        UploadStop::from_error(&UploadError::Conflict(UploadConflict {
             kind: ConflictKind::Other,
             object: None,
             status: 409,
@@ -1322,4 +1323,114 @@ fn only_a_refusal_and_an_unknown_outcome_get_their_own_stop() {
         })),
         UploadStop::Refused(_)
     ));
+}
+
+// ---------------------------------------------------------------------------
+// 3. The shared driver: token failures, unknown outcomes and refusals between
+// changesets
+// ---------------------------------------------------------------------------
+
+/// `upload`, but with a token provider of the test's choosing.
+fn upload_with_token(
+    s: &mut Session,
+    server: &Server,
+    max: usize,
+    token: &mut dyn FnMut() -> Result<String, String>,
+) -> ChunkedUpload {
+    use osm_gpui::upload_chunks::{drive_to_completion, UploadDriver};
+    let diff = s.diff();
+    let layer = s.layer;
+    let layers = &mut s.view.layer_manager;
+    let history = &mut s.view.undo_stack;
+    let driver = UploadDriver::plan(&[&diff], max, "a comment").expect("the edits can be planned");
+    drive_to_completion(driver, server, BASE, token, &mut |_, _| {}, &mut |done| {
+        apply_to_layer(layers.find_layer_mut(layer).unwrap(), done);
+        history.remove_touching(&crate::uploaded_taint(&[layer], &done.chunk));
+    })
+}
+
+#[gpui::test]
+fn a_token_failure_between_changesets_stops_after_the_accepted_part_and_a_retry_resumes(
+    cx: &mut TestAppContext,
+) {
+    use osm_gpui::upload_chunks::UploadStop;
+    let data = ways_net();
+    let server = Server::holding(&data);
+    with_session(cx, data, move |s| {
+        let before = server.visible_nodes();
+        for i in 0..5 {
+            s.editable_mut().add_node(40.5 + i as f64 * 0.001, -74.5);
+        }
+        let mut calls = 0;
+        let up = upload_with_token(s, &server, 2, &mut || {
+            calls += 1;
+            if calls == 2 {
+                Err("login expired".to_string())
+            } else {
+                Ok("tok".to_string())
+            }
+        });
+        assert_eq!(up.total, 3);
+        assert_eq!(up.completed.len(), 1);
+        assert!(up.failure.is_none(), "nothing reached the server");
+        match up.stop {
+            Some(UploadStop::Failed(message)) => assert_eq!(message, "login expired"),
+            other => panic!("expected a plain failure, got {other:?}"),
+        }
+        assert_eq!(calls, 2, "no token is asked for after the failure");
+        // Only the first part went out and is reflected locally.
+        assert_eq!(server.uploads(), vec![2]);
+        assert_eq!(server.visible_nodes(), before + 2);
+        assert_eq!(s.counts(), (3, 0, 0));
+        assert_all_changesets_closed(&server, 1);
+
+        // A retry plans from what the layer still holds: parts 2 and 3 only.
+        let retry = upload_with_token(s, &server, 2, &mut || Ok("tok".to_string()));
+        assert!(retry.stop.is_none());
+        assert_eq!(retry.completed.len(), 2);
+        assert_eq!(server.uploads(), vec![2, 2, 1]);
+        assert_eq!(server.visible_nodes(), before + 5);
+        assert_eq!(s.counts(), (0, 0, 0));
+    });
+}
+
+#[gpui::test]
+fn an_unknown_outcome_on_part_two_stops_without_applying_or_resending_it(cx: &mut TestAppContext) {
+    use osm_gpui::upload_chunks::UploadStop;
+    let data = ways_net();
+    let server = Server::holding(&data);
+    with_session(cx, data, move |s| {
+        for i in 0..5 {
+            s.editable_mut().add_node(40.5 + i as f64 * 0.001, -74.5);
+        }
+        server.fail_uploads(vec![None, Some(Fault::DropAfterApply)]);
+        let up = upload_with_token(s, &server, 2, &mut || Ok("tok".to_string()));
+        assert_eq!(up.completed.len(), 1);
+        assert!(matches!(up.stop, Some(UploadStop::OutcomeUnknown(_))));
+        // Part 2 was sent once and never again; part 3 never went out.
+        assert_eq!(server.uploads(), vec![2, 2]);
+        // Part 1 is applied; part 2 (applied on the server, unknown to us)
+        // and part 3 are still pending.
+        assert_eq!(s.counts(), (3, 0, 0));
+        assert_all_changesets_closed(&server, 2);
+    });
+}
+
+#[gpui::test]
+fn a_refusal_on_part_two_stops_as_refused_with_part_one_applied(cx: &mut TestAppContext) {
+    use osm_gpui::upload_chunks::UploadStop;
+    let data = ways_net();
+    let server = Server::holding(&data);
+    with_session(cx, data, move |s| {
+        edit_tag(s, N, 1, "name", "mine");
+        s.editable_mut().add_node(40.5, -74.5);
+        s.editable_mut().add_node(40.6, -74.5);
+        server.someone_else_edits_node(1);
+        // Two creates, then the modify of node 1.
+        let up = upload_with_token(s, &server, 2, &mut || Ok("tok".to_string()));
+        assert_eq!(up.completed.len(), 1);
+        assert!(matches!(up.stop, Some(UploadStop::Refused(_))));
+        assert_eq!(conflict_of(&up).status, 409);
+        assert_eq!(s.counts(), (0, 1, 0));
+    });
 }

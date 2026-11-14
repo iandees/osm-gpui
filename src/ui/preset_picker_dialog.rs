@@ -19,6 +19,7 @@ use crate::preset_recents::{self, Section};
 use crate::preset_translations::PresetTranslations;
 use crate::presets::{Geometry, Preset};
 use crate::tr;
+use crate::ui::modal;
 use crate::ui::style::muted_text_size;
 
 const MAX_RESULTS: usize = 30;
@@ -156,21 +157,19 @@ impl PresetPickerDialog {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match ev.keystroke.key.as_str() {
-            "escape" => self.cancel(cx),
-            "enter" => self.submit_selected(cx),
-            "down" => {
-                let count = self.results(cx).len();
-                if count > 0 {
-                    self.selected_index = (self.selected_index + 1).min(count - 1);
-                    cx.notify();
+        match modal::classify_key(ev) {
+            modal::ModalKey::Escape => self.cancel(cx),
+            modal::ModalKey::Enter => self.submit_selected(cx),
+            modal::ModalKey::Other => {
+                let key = ev.keystroke.key.as_str();
+                if matches!(key, "up" | "down") {
+                    let count = self.results(cx).len();
+                    if let Some(i) = modal::move_selection(self.selected_index, count, key) {
+                        self.selected_index = i;
+                        cx.notify();
+                    }
                 }
             }
-            "up" => {
-                self.selected_index = self.selected_index.saturating_sub(1);
-                cx.notify();
-            }
-            _ => {}
         }
     }
 }
@@ -300,58 +299,23 @@ impl Render for PresetPickerDialog {
 
         let body = v_flex().gap_3().child(Input::new(&self.query)).child(list);
 
-        let frame = v_flex()
-            .w(gpui::px(420.0))
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_lg()
-            .shadow_lg()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .text_color(cx.theme().foreground)
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .child(tr!("dialog.preset_picker.title"))
-                    .child(
-                        Button::new("preset-picker-close")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Close)
-                            .tooltip(tr!("dialog.preset_picker.close"))
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-                    ),
+        let frame = modal::card(cx, gpui::px(420.0), tr!("dialog.preset_picker.title"), body)
+            .header_end(
+                Button::new("preset-picker-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(tr!("dialog.preset_picker.close"))
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
             )
-            .child(div().p_4().child(body))
-            // A press inside the card must not reach the scrim's
-            // click-to-dismiss handler below.
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            .build();
 
-        div()
-            .track_focus(&self.focus_handle)
-            // Clicking the scrim, outside the card, closes the dialog like Esc.
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.cancel(cx)),
-            )
-            .on_key_down(cx.listener(Self::on_key_down))
-            .absolute()
-            .inset_0()
-            // Without this, GPUI lets mouse events fall through to whatever's
-            // behind the modal — the map area's own mouse-down handler then
-            // steals window focus back from the dialog on every click.
-            .occlude()
-            .bg(crate::ui::style::scrim_color())
-            .flex()
-            .justify_center()
-            .items_center()
-            .child(frame)
+        modal::scrim_dismissing(
+            &self.focus_handle,
+            cx.listener(Self::on_key_down),
+            cx.listener(|this, _, _, cx| this.cancel(cx)),
+            frame,
+        )
     }
 }
 

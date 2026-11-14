@@ -1,22 +1,16 @@
 //! Pure mouse-interaction state machine for the map view.
 //!
-//! `MapViewer` used to track click-vs-drag-vs-box-select-vs-move-drag with
-//! three independent `Option` fields (`mouse_down_pos`, `box_select`,
-//! `move_drag`), which made illegal combinations representable (e.g. a
-//! box-select *and* a move-drag both active) and made the decision tree
-//! untestable, since every handler took gpui event/context types.
-//!
-//! [`Interaction`] replaces all three with a single enum, and the free
-//! functions in this module implement the same decision tree as a set of
-//! pure transitions over plain `(f32, f32)` points. `MapViewer`'s gpui
+//! [`Interaction`] is a single enum for click vs drag vs box-select vs
+//! move-drag, so illegal combinations (a box-select *and* a move-drag) cannot
+//! be represented, and the free functions in this module implement the
+//! decision tree as pure transitions over plain `(f32, f32)` points, testable
+//! without gpui event or context types. `MapViewer`'s gpui
 //! handlers become thin adapters: convert event coordinates, call these
 //! functions, and act on the result (hit-test, mutate layers, push undo,
 //! `cx.notify()`).
 //!
-//! This is a *behavior-preserving* port of the original branchy handlers —
-//! not a redesign — including quirks like the drag threshold being `>=` in
-//! some comparisons and `<` in others. It tracks the left button only:
-//! pan-drags (right/middle button, or Space + left) go straight to the
+//! The drag threshold is `>=` in some comparisons and `<` in others. The
+//! machine tracks the left button only: pan-drags (right/middle button, or Space + left) go straight to the
 //! `Viewport` and never enter this state machine.
 
 use crate::layers::LayerId;
@@ -27,8 +21,7 @@ use crate::layers::LayerId;
 pub type Pt = (f32, f32);
 
 /// Minimum screen-pixel distance between a mouse-down and the current
-/// position before a press is treated as a drag rather than a click. Was a
-/// magic `4.0` scattered across `handle_mouse_move`/`handle_mouse_up`.
+/// position before a press is treated as a drag rather than a click.
 pub const DRAG_THRESHOLD: f32 = 4.0;
 
 fn magnitude(a: Pt, b: Pt) -> f32 {

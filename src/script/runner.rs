@@ -75,9 +75,7 @@ pub trait AppHandle {
     fn upload_cancel(&mut self) -> Result<(), String>;
     /// One of the upload dialog's changeset-extras ops. None of them can
     /// start an upload.
-    fn upload_dialog(&mut self, _cmd: &crate::script::UploadDialogCmd) -> Result<(), String> {
-        Err("this app has no upload dialog".to_string())
-    }
+    fn upload_dialog(&mut self, cmd: &crate::script::UploadDialogCmd) -> Result<(), String>;
     /// Press the delete-layer confirmation's "Delete Layer" button.
     fn confirm_delete_layer(&mut self) -> Result<(), String>;
     /// Press the delete-layer confirmation's Cancel button.
@@ -88,16 +86,10 @@ pub trait AppHandle {
     fn export_layer(&mut self, path: &std::path::Path) -> Result<(), String>;
     /// Evaluate a read-only condition on the app; `Err` says what it found.
     fn check(&mut self, check: &Check) -> Result<(), String>;
-    /// Do one of the autosave script ops (see `AutosaveCmd`). Apps without
-    /// autosave refuse.
-    fn autosave(&mut self, _cmd: crate::script::AutosaveCmd) -> Result<(), String> {
-        Err("this app has no autosave".to_string())
-    }
-    /// Do one of the object history script ops (see `HistoryCmd`). Apps
-    /// without an object history refuse.
-    fn history(&mut self, _cmd: crate::script::HistoryCmd) -> Result<(), String> {
-        Err("this app has no object history".to_string())
-    }
+    /// Do one of the autosave script ops (see `AutosaveCmd`).
+    fn autosave(&mut self, cmd: crate::script::AutosaveCmd) -> Result<(), String>;
+    /// Do one of the object history script ops (see `HistoryCmd`).
+    fn history(&mut self, cmd: crate::script::HistoryCmd) -> Result<(), String>;
     /// Click a finding's row in the side panel's Validation section.
     fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String>;
     /// Expand or collapse a side panel section.
@@ -116,9 +108,7 @@ pub trait AppHandle {
     fn sign_in_failure(&mut self) -> Option<String>;
     /// Do an OSM notes op (see `note_ops`). A write starts in the background;
     /// the runner then waits for `NoteCheck::Idle`.
-    fn note_op(&mut self, _op: &crate::script::NoteOp) -> Result<(), String> {
-        Err("this app has no notes".to_string())
-    }
+    fn note_op(&mut self, op: &crate::script::NoteOp) -> Result<(), String>;
 }
 
 /// Why `op` may not run against `server`, if it may not. An op that starts or
@@ -129,13 +119,8 @@ pub fn upload_guard(op: &Op, server: &str) -> Result<(), String> {
     if !op.writes_to_server() {
         return Ok(());
     }
-    let name = match op {
-        Op::UploadConfirm => "upload_confirm".to_string(),
-        Op::ResolveConflict { .. } => "resolve_conflict".to_string(),
-        Op::SignIn => "sign_in".to_string(),
-        Op::Note(n) => n.name().to_string(),
-        other => describe(other),
-    };
+    let described = describe(op);
+    let name = described.split_whitespace().next().unwrap_or_default();
     if crate::settings_store::is_dev_server(server) {
         Ok(())
     } else {
@@ -998,6 +983,10 @@ mod tests {
         }
         fn autosave(&mut self, cmd: crate::script::AutosaveCmd) -> Result<(), String> {
             self.calls.push(format!("autosave {cmd:?}"));
+            Ok(())
+        }
+        fn history(&mut self, cmd: crate::script::HistoryCmd) -> Result<(), String> {
+            self.calls.push(format!("history {cmd:?}"));
             Ok(())
         }
         fn show_finding(&mut self, target: &crate::script::FindingTarget) -> Result<(), String> {
