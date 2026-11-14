@@ -142,7 +142,7 @@ hover 430,186
 hover 430,209
 wait 2s
 capture out/sub-14-available-entry-hover.png
-click 430,245
+click 430,209
 wait 3s
 assert_layer_count 4
 capture out/sub-15-available-chosen.png
