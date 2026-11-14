@@ -52,11 +52,10 @@ pub(crate) fn write_tag_entries(
 /// A single node move: its id, (lat, lon) before, and (lat, lon) after.
 pub(crate) type NodeMoveUndoEntry = osm_gpui::edit_ops::NodeMove;
 
-/// Per layer: node id -> (before (lat, lon), after (lat, lon)).
+/// The node moves to record, grouped by layer.
 pub(crate) type NodeMoveUndoEntries = Vec<(LayerId, Vec<NodeMoveUndoEntry>)>;
 
-/// What the History panel calls an `Edit` step, with whatever its text
-/// counts.
+/// The History panel text of an `Edit` step, with any count it reports.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EditLabel {
     CreatedNode,
@@ -456,8 +455,8 @@ impl UndoableAction {
     }
 }
 
-/// A global undo/redo stack of committed data mutations, shared across all
-/// layers in the order actions happened.
+/// The global undo/redo stack of committed data mutations, shared across all
+/// layers, in the order the actions happened.
 #[derive(Default)]
 pub(crate) struct UndoStack {
     pub(crate) actions: Vec<UndoableAction>,
@@ -829,10 +828,9 @@ mod undo_stack_tests {
         stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
         stack.push(move_one(2, (0.0, 0.0), (2.0, 2.0)));
 
-        stack.undo(); // cursor now points at action 2 as redo-able
+        stack.undo();
         stack.push(move_one(3, (0.0, 0.0), (3.0, 3.0))); // discards action 2
 
-        // Only actions 1 and 3 remain; redo should have nothing left.
         assert!(stack.redo().is_none());
         let undone_3 = stack.undo().unwrap();
         assert_eq!(undone_3.description(), "Moved 1 node");

@@ -930,9 +930,9 @@ impl MapViewer {
         let idle = GLOBAL_IDLE.get().cloned().unwrap_or_else(IdleTracker::new);
         let tile_cache = Arc::new(Mutex::new(TileCache::new(executor, idle)));
         let layer_manager = LayerManager::new();
-        // No layers here; the window setup adds OSM Carto (see
-        // `add_default_layers`), other imagery comes from the
-        // menu, and loaded files add their own OSM layer.
+        // No layers here: the window setup adds OSM Carto (see
+        // `add_default_layers`), imagery comes from the menu, and loaded
+        // files add their own OSM layer.
         Self {
             viewport,
             layer_manager,
@@ -1073,8 +1073,6 @@ impl MapViewer {
         if !state_changed && !center_moved {
             return;
         }
-        // Only refresh when the imagery index has reached a terminal state
-        // (Ready or Failed). In Loading we don't have entries yet.
         rebuild_menus(&mut *cx, center, current_state, self.menu_toggles());
         self.menu_sync.last_menu_center = Some(center);
         self.menu_sync.last_imagery_load_state = Some(current_state);
@@ -1161,13 +1159,9 @@ impl MapViewer {
         }
     }
 
-    /// Handle the `DeleteLayer` context-menu action. This handler already has
-    /// `&mut Context<Self>`, so it mutates `layer_manager` directly rather
-    /// than going through `LayerRequest`.
-    ///
-    /// A layer with unsaved edits asks first (`show_delete_layer_dialog`);
-    /// one without (imagery, a data layer with nothing pending)
-    /// goes straight away.
+    /// Handle the `DeleteLayer` context-menu action. A layer with unsaved
+    /// edits asks first (`show_delete_layer_dialog`); one without (imagery, a
+    /// data layer with nothing pending) is removed at once.
     fn on_delete_layer(
         &mut self,
         action: &DeleteLayer,
@@ -1411,20 +1405,13 @@ impl MapViewer {
         self.mode_state.reset_progress();
     }
 
-    /// Convert a raw window-space mouse position (as delivered by every
-    /// gpui mouse event) into map-area-local coordinates, i.e. relative to
-    /// the map div's own top-left corner. Needed because the map area is no
-    /// longer flush against the window's left edge — the mode-selector
-    /// toolbar (`render_mode_panel`) sits before it in the flex row,
-    /// offsetting the map's actual on-screen origin by
-    /// `Self::MODE_PANEL_WIDTH`. `Viewport`'s hit-testing/projection math
-    /// assumes (0,0) is the map area's own top-left, matching how rendering
-    /// already adds back `bounds.origin` (the map div's real window
-    /// position) when painting — this is the input-side counterpart of
-    /// that.
-    ///
-    /// The in-window menu bar (Windows/Linux, see `menu::in_window_menu_enabled`)
-    /// is a row above the map, so it shifts the map's origin down too.
+    /// Convert a window-space mouse position (as every gpui mouse event
+    /// delivers it) into map-area-local coordinates, relative to the map
+    /// div's top-left corner. `Viewport`'s hit-testing and projection assume
+    /// (0,0) is that corner; the mode-selector toolbar (`render_mode_panel`,
+    /// `Self::MODE_PANEL_WIDTH`) sits left of the map and the in-window menu
+    /// bar (Windows/Linux, see `menu::in_window_menu_enabled`) above it.
+    /// Painting adds `bounds.origin` back; this is the input-side counterpart.
     fn window_to_map(&self, position: gpui::Point<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
         window_to_map_origin(position, menu::top_chrome_height())
     }
@@ -2907,11 +2894,9 @@ impl MapViewer {
     }
 
     /// Handle the `ChangeFeatureType` action: opens the preset picker dialog
-    /// for the single selected feature, letting the user deliberately
-    /// override whatever `PresetIndex::match_feature` auto-matched. Mirrors
-    /// `on_apply_nsi_preset` exactly, but resolves the feature's `Geometry`
-    /// first (the picker filters results by it) and reuses the same
-    /// `apply_nsi_preset` tag-mutation function on submit.
+    /// for the single selected feature, letting the user override whatever
+    /// `PresetIndex::match_feature` auto-matched. The picker filters its
+    /// results by the feature's geometry candidates.
     fn on_change_feature_type(
         &mut self,
         _: &ChangeFeatureType,
@@ -3023,13 +3008,9 @@ impl MapViewer {
         self.undo_stack.push(UndoableAction::set_tags(entries));
     }
 
-    /// Apply `preset_tags` to `target`: for each preset key whose value
-    /// differs from what the feature already has, set it via `set_tag` and
-    /// record a `(feature, key, before, after)` entry; push one
-    /// `UndoableAction::SetTags` covering every changed key (skipped
-    /// entirely if the preset didn't actually change anything). Existing
-    /// tags the preset doesn't mention (e.g. `addr:*`) are left untouched —
-    /// this only ever adds/overwrites keys, never removes any.
+    /// Apply `preset_tags` to `target` as one `SetTags` undo step (none if
+    /// nothing changes). Existing tags the preset doesn't mention (e.g.
+    /// `addr:*`) are left untouched: this only adds or overwrites keys.
     fn apply_nsi_preset(
         &mut self,
         target: &osm_gpui::selection::FeatureRef,
@@ -3614,11 +3595,9 @@ impl MapViewer {
                     osm_gpui::snap::snapping_disabled(event.modifiers.alt, event.modifiers.control),
                     cx,
                 );
-                // Always notify, regardless of whether the selection changed:
-                // `self.pointer.interaction` just transitioned back to `Idle` and the
-                // drag-preview clear above needs a repaint to actually reach
-                // the screen, or both would appear to "stick" until some
-                // unrelated redraw (e.g. a pan) happened to pick it up.
+                // Always notify: the interaction state just went back to `Idle`
+                // and the drag-preview clear needs a repaint, whether or not
+                // the selection changed.
                 cx.notify();
             }
             interaction::Gesture::BoxSelected { rect } => {
@@ -3628,11 +3607,10 @@ impl MapViewer {
                 self.fields_panel.fields_text_subscribed.clear();
                 self.fields_panel.fields_open_combo = None;
                 self.fields_panel.fields_promoted_more_fields.clear();
-                // Always notify: the box-select overlay is driven off
-                // `self.pointer.interaction`, which just transitioned back to `Idle`.
-                // If the box hit nothing, `self.selected` wouldn't otherwise
-                // change and the stale rectangle would stay on screen until
-                // some unrelated redraw happened to pick up the new state.
+                // Always notify: the box-select overlay is driven off the
+                // interaction state, which just went back to `Idle`. A box that
+                // hit nothing leaves `selected` unchanged, so the stale
+                // rectangle would otherwise stay on screen.
                 cx.notify();
             }
             interaction::Gesture::Click { at } => {
@@ -3645,10 +3623,8 @@ impl MapViewer {
                     osm_gpui::snap::snapping_disabled(event.modifiers.alt, event.modifiers.control),
                     cx,
                 );
-                // Add mode re-selects the same way on every extend click (the
-                // way id doesn't change), so the before/after diff alone
-                // misses that the way's geometry grew a node — always
-                // notify for Add mode regardless of the selection diff.
+                // Add mode re-selects the same way on every extend click, so
+                // the selection diff alone misses that the way grew a node.
                 if before != self.selected || self.click_always_redraws() {
                     cx.notify();
                 }
@@ -4084,7 +4060,7 @@ impl MapViewer {
 
     /// The point of a visible reference layer to snap a new node to: the
     /// nearest vertex, marker or point on a segment within the snap
-    /// tolerance, as `(lat, lon)`. Topmost layer first.
+    /// tolerance. Topmost layer first.
     fn reference_snap_at(&self, screen_pt: gpui::Point<gpui::Pixels>) -> Option<LatLon> {
         self.layer_manager
             .layers()
@@ -4325,11 +4301,9 @@ impl MapViewer {
     }
 
     /// Open the "Add Custom Imagery…" dialog, if one isn't already open.
-    /// Called directly from the menu handler (via `with_map_viewer_in`).
-    /// Unlike an inline
-    /// tag edit, this dialog has no post-paint focus requirement, so
-    /// it's safe to construct straight from the menu-triggered `update_in`
-    /// call rather than deferring to the next render pass.
+    /// Called from the menu handler (via `with_map_viewer_in`). Unlike an
+    /// inline tag edit, the dialog has no post-paint focus requirement, so it
+    /// can be built outside a render pass.
     pub(crate) fn open_custom_imagery_dialog(
         &mut self,
         window: &mut Window,
@@ -4375,19 +4349,12 @@ impl MapViewer {
     }
 
     /// Handle the `Quit` action (Cmd+Q / File > Quit menu item). Registered
-    /// as a window/entity-scoped `.on_action` listener (like `on_undo`,
-    /// `on_move_layer`, etc.) rather than dispatched through the old
-    /// `menu::quit` free function + `MAP_VIEWER_HANDLE` lookup: GPUI
-    /// dispatches actions to a window while that window is "checked out" of
-    /// `App` for the duration of the dispatch (it's how `Window::dispatch_*`
-    /// gets exclusive access), so any attempt to re-acquire it via
-    /// `with_map_viewer_in`'s `WeakEntity::update_in` (which looks the
-    /// window up again by id) silently fails and is swallowed — which is
-    /// exactly why Cmd+Q appeared to do nothing whenever there were unsaved
-    /// changes (the no-changes path took a window-free `cx.quit()` and
-    /// happened to work). A listener registered directly on the render tree
-    /// gets `&mut Window` handed to it by the in-progress dispatch, so no
-    /// re-acquisition is needed.
+    /// as a window-scoped `.on_action` listener, not through
+    /// `MAP_VIEWER_HANDLE`: GPUI checks the window out of `App` while it
+    /// dispatches an action to it, so `with_map_viewer_in`'s
+    /// `WeakEntity::update_in` (which looks the window up again by id)
+    /// silently fails. A listener on the render tree is handed `&mut Window`
+    /// by the dispatch itself, which the unsaved-changes dialog needs.
     fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
         use osm_gpui::transfer::{quit_decision, QuitDecision};
         let unsaved = self
@@ -4415,12 +4382,9 @@ impl MapViewer {
     }
 
     /// Open the "unsaved changes" quit-confirmation dialog, if one isn't
-    /// already open. Called directly by `on_quit` and by the
-    /// `on_window_should_close` hook (which already has a `Window` in
-    /// scope). Like
-    /// `open_custom_imagery_dialog`, this dialog has no post-paint focus
-    /// requirement, so it's safe to construct directly rather than
-    /// deferring to the next render pass.
+    /// already open. Called by `on_quit` and by the `on_window_should_close`
+    /// hook. Like `open_custom_imagery_dialog`, it can be built outside a
+    /// render pass.
     pub(crate) fn show_quit_confirm_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dialogs.quit_confirm_dialog.is_some() {
             return;
@@ -4500,8 +4464,7 @@ impl MapViewer {
     /// Window-scoped handler for the `UploadToOsm` action (File > Upload to
     /// OSM and its shortcut). Registered on the render tree like `on_quit`:
     /// the global `menu::upload_to_osm` handler runs while this window is
-    /// checked out for the dispatch, so its window lookup used to fail
-    /// silently and the action never did anything.
+    /// checked out for the dispatch, so its window lookup fails silently.
     fn on_upload_to_osm(&mut self, _: &UploadToOsm, window: &mut Window, cx: &mut Context<Self>) {
         self.open_upload_dialog(window, cx);
     }
@@ -4810,8 +4773,7 @@ impl MapViewer {
 
     /// Run the full upload sequence (create changeset -> build+upload
     /// osmChange -> close changeset -> reconcile local layers) on the
-    /// background executor, mirroring `request_download`'s `cx.spawn`/
-    /// `background_executor().spawn` structure.
+    /// background executor, one changeset per chunk of the pending changes.
     ///
     /// If the changeset is created but the upload itself fails, the changeset
     /// is closed again before the failure is reported (see
@@ -4848,9 +4810,8 @@ impl MapViewer {
             return;
         }
         // Layers are looked up by `LayerId`, not name (names aren't unique
-        // identity — see `LayerId`'s doc comment), so both the id and the
-        // display name are captured up front: the id for `find_layer`/
-        // `find_layer_mut`, the name only for the outgoing changeset XML.
+        // identity — see `LayerId`'s doc comment). The name is captured only
+        // for the outgoing changeset XML.
         let modified: Vec<(LayerId, String)> = self
             .layer_manager
             .layers()
@@ -4914,8 +4875,8 @@ impl MapViewer {
 
         // The chunks go one at a time: each is sent on the background
         // executor, and when it is accepted the layers are updated HERE, on
-        // the foreground, before the next chunk is handed out. So the id map
-        // in `queue` and the layers never disagree, and if the app is lost
+        // the foreground, before the next chunk is handed out. So the driver's
+        // id map and the layers never disagree, and if the app is lost
         // between two chunks, what the layers still hold as pending is
         // exactly what the server has not got.
         let http = self.http.clone();
@@ -5545,10 +5506,6 @@ impl MapViewer {
         }
     }
 
-    /// Kick off a background fetch of the OSM data within the current
-    /// viewport bounds, applying the result to `self` on completion. Called
-    /// directly from the `File > Download from OSM` menu handler (via
-    /// `with_map_viewer`).
     /// Restyle every open layer with the active MapCSS style (the built-in
     /// one when no custom style is active) and repaint.
     pub(crate) fn apply_map_style(&mut self, cx: &mut Context<Self>) {
@@ -5564,12 +5521,16 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Kick off a background fetch of the OSM data within the current
+    /// viewport bounds, applying the result to `self` on completion. Called
+    /// from the `File > Download from OSM` menu handler (via
+    /// `with_map_viewer`).
     pub(crate) fn request_download(&mut self, cx: &mut Context<Self>) {
         let bounds = self.viewport.visible_bounds();
 
         let base_url = settings_store::api_base_url();
-        // Lazily (re)fetch the server's capabilities if we have none or it
-        // last reported itself offline; never blocks.
+        // Lazily (re)fetch the server's capabilities if there are none or the
+        // server last reported itself offline; never blocks.
         osm_gpui::capabilities::ensure_fetched(self.http.clone(), &base_url);
 
         if osm_gpui::capabilities::for_server(&base_url).is_offline() {
@@ -5641,11 +5602,10 @@ impl MapViewer {
     }
 
     /// Put downloaded OSM data on the map. It is merged, by object id, into
-    /// the active layer when there is one — so downloading again after a
-    /// pan extends the same editable dataset instead of stacking a second
-    /// copy of every object in a new layer — keeping any local edits (see
-    /// `osm_gpui::layers::merge`). With no active layer, the download
-    /// becomes a new layer and is made active.
+    /// the active layer when there is one, keeping any local edits (see
+    /// `osm_gpui::layers::merge`), so a second download extends the same
+    /// dataset instead of duplicating objects in a new layer. With no active
+    /// layer, the download becomes a new layer and is made active.
     fn apply_download(&mut self, data: OsmData) {
         let target = self
             .active_layer
@@ -5687,14 +5647,10 @@ impl Render for MapViewer {
         self.process_script_command(window, cx);
         self.sync_upload_menu(cx);
 
-        // Starting an inline tag edit is the one remaining case that must
-        // happen inside a render pass (its deferred select-all-on-open
-        // depends on the inputs being built in the pass that first paints
-        // them — see its doc comment). Every other former polling queue (new
-        // OSM data, layer requests, download requests, debug-overlay toggle,
-        // the dialogs) is applied directly to `self` by menu handlers /
-        // background-task completions via `MAP_VIEWER_HANDLE`, so there's
-        // nothing else to drain here.
+        // Requests that need a render pass (they need the `Window`, or, for
+        // inline edits, their inputs must be built in the pass that first
+        // paints them — see `check_for_pending_tag_edit`). Everything else is
+        // applied directly to `self` by menu handlers and task completions.
         self.check_for_pending_tag_edit(window, cx);
         self.check_for_pending_role_edit(window, cx);
         self.check_for_pending_relation_picker(window, cx);
@@ -5883,7 +5839,7 @@ impl Render for MapViewer {
                         div()
                             .size_full()
                             .relative()
-                            .overflow_hidden() // Add clipping to prevent tiles from drawing outside viewport
+                            .overflow_hidden()
                             .when_some(canvas_style.background, |d, color| d.bg(rgb(color)))
                             // Render all layer elements (raster content like tiles)
                             .children(self.layer_manager.render_all_elements(
@@ -5896,13 +5852,9 @@ impl Render for MapViewer {
                             .child(
                                 canvas(|_, _, _| {}, {
                                     let viewport_clone = self.viewport.clone();
-                                    // Rather than aliasing `&self.layer_manager` with a
-                                    // raw pointer (the paint closure runs after `render`
-                                    // returns, so a borrow can't outlive this function),
-                                    // capture a cheap `Entity<Self>` handle and re-borrow
-                                    // `self` safely through it once paint actually runs —
-                                    // the `&mut App` the canvas API hands the paint
-                                    // closure is exactly what `Entity::read` needs.
+                                    // The paint closure runs after `render` returns,
+                                    // so it can't borrow `self`; it holds an
+                                    // `Entity<Self>` and reads through it at paint time.
                                     let entity = cx.entity();
                                     let selected = self.selected.clone();
                                     // An already-selected feature keeps its
@@ -5983,7 +5935,7 @@ impl Render for MapViewer {
                                     }
                                 })
                                 .absolute()
-                                .size_full(), // Ensure canvas fills the entire map area
+                                .size_full(),
                             ),
                     )
                     .child({
@@ -6266,7 +6218,6 @@ fn main() {
     let idle = IdleTracker::new();
     GLOBAL_IDLE.set(idle.clone()).ok();
 
-    // Initialize script bus
     let bus = ScriptBus::new();
     SCRIPT_BUS.set(bus.clone()).ok();
     KEYSTROKE_QUEUE.set(Arc::new(Mutex::new(Vec::new()))).ok();
@@ -6288,7 +6239,6 @@ fn main() {
             // Wait for the app to complete its first render pass.
             std::thread::sleep(Duration::from_millis(500));
 
-            // Parse the script file.
             let script_text = match std::fs::read_to_string(&script_path) {
                 Ok(t) => t,
                 Err(e) => {
@@ -6359,10 +6309,8 @@ fn main() {
         // `--theme` overrides the saved appearance for this run only.
         osm_gpui::appearance::set_run_override(cli_theme);
 
-        // Bring the menu bar to the foreground
         cx.activate(true);
 
-        // Register the open file action
         cx.on_action(open_osm_file);
         cx.on_action(add_osm_carto);
         cx.on_action(download_from_osm);
@@ -6505,21 +6453,14 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    // Register keyboard bindings in the window context.
                     // Built from the user's effective shortcut settings
-                    // (defaults, overridden by any customizations saved
-                    // in Settings > Keyboard Shortcuts).
+                    // (defaults, overridden by Settings > Keyboard Shortcuts).
                     //
-                    // Note: the "a"/"b"/"x" mode-switch shortcuts are
-                    // deliberately NOT registered here as global key
-                    // bindings. Unlike the cmd-modified bindings above,
-                    // these are plain unmodified letter keys, which would
-                    // otherwise risk firing while the user is typing into a
-                    // text input elsewhere in the app (e.g. the tag-edit
-                    // dialog's key/value fields). Instead they're handled in
-                    // the map area's local `on_key_down` handler below,
-                    // which only fires when the map area itself has focus —
-                    // see the `on_key_down` closure in `render()`.
+                    // The bare-letter mode-switch shortcuts are deliberately
+                    // not bound here: unmodified letter keys would fire while
+                    // the user types into a text input. The map area's
+                    // `on_key_down` handler (`on_map_key_down`) takes them
+                    // instead, and only runs when the map has focus.
                     cx.bind_keys(key_bindings_from_settings(
                         &osm_gpui::settings_store::snapshot(),
                         cfg!(target_os = "macos"),
@@ -6543,25 +6484,18 @@ fn main() {
                     // background; the viewer is told when it is done.
                     view.update(cx, |v, cx| v.load_imagery_index(cx));
 
-                    // Publish a weak handle to the live view so the
-                    // `on_window_should_close` closure below (which only has
-                    // `&mut Window`/`&mut App`, not `Context<MapViewer>`) can
-                    // reach it and query its *live* `layer_manager` state at
-                    // decision time, rather than a cached boolean.
+                    // The `on_window_should_close` closure below only has
+                    // `&mut Window`/`&mut App`, so it reaches the view through
+                    // this handle and reads its state live at decision time.
                     let _ = MAP_VIEWER_HANDLE.set(view.downgrade());
 
-                    // Intercept the OS window-close button (traffic-light / titlebar
-                    // close, or Cmd+W-equivalent) via gpui's cancelable pre-close
-                    // hook: unlike `on_window_closed` below (which only fires *after*
-                    // the window is already gone and can't stop anything), this one
-                    // can veto the close by returning `false`. If there are unsaved
-                    // changes (checked live, per layer, via `has_unsaved_changes`)
-                    // we cancel the close and ask the live `MapViewer` to show the
-                    // same confirmation dialog as Cmd+Q, directly (this closure
-                    // already has a `Window`, so no need to go through
-                    // `with_map_viewer_in`'s window-lookup-by-entity-id path);
-                    // otherwise we let the close proceed, which triggers
-                    // `on_window_closed` -> `cx.quit()` as before.
+                    // Intercept the OS window-close button via gpui's
+                    // cancelable pre-close hook; unlike `on_window_closed`
+                    // below (which fires after the window is gone), returning
+                    // `false` vetoes the close. With unsaved changes the close
+                    // is cancelled and the same confirmation dialog as Cmd+Q
+                    // is shown, using this closure's own `Window`; otherwise
+                    // the close proceeds and `on_window_closed` quits.
                     window.on_window_should_close(cx, |window, cx| {
                         if let Some(view) = MAP_VIEWER_HANDLE.get().and_then(|h| h.upgrade()) {
                             if osm_gpui::transfer::blocks_edits(view.read(cx).transfer.as_ref()) {
