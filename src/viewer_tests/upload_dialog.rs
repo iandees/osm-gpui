@@ -463,3 +463,54 @@ fn the_upload_dialog_has_nothing_to_show_in_the_panel_without_findings(cx: &mut 
         assert!(!view.validation_shown());
     });
 }
+
+/// Closing the upload dialog from the upload task (which has no `Window`)
+/// must leave focus on the map, or the map view's actions and shortcuts
+/// stop working until the next click.
+#[gpui::test]
+fn the_map_has_focus_after_a_finished_upload_closes_the_dialog(cx: &mut TestAppContext) {
+    let (view, vcx) = validation_view(cx);
+    view.update_in(vcx, |view, window, cx| {
+        make_pending_change(view);
+        view.open_upload_dialog_as(Some("me"), window, cx);
+        assert!(view.dialogs.upload_dialog.is_some());
+    });
+    vcx.run_until_parked();
+    // The comment input holds focus while the dialog is open.
+    view.update_in(vcx, |view, window, cx| {
+        assert!(!view.focus_handle.contains_focused(window, cx));
+    });
+    // What the upload task does on success.
+    view.update(vcx, |view, cx| {
+        view.dialogs.upload_dialog = None;
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    view.update_in(vcx, |view, window, cx| {
+        assert!(
+            view.focus_handle.contains_focused(window, cx),
+            "the map holds focus"
+        );
+        assert!(window.is_action_available(&crate::DeleteSelection, cx));
+    });
+}
+
+/// Cancelling the dialog has no `Window` either.
+#[gpui::test]
+fn the_map_has_focus_after_cancelling_the_upload_dialog(cx: &mut TestAppContext) {
+    let (view, vcx) = validation_view(cx);
+    view.update_in(vcx, |view, window, cx| {
+        make_pending_change(view);
+        view.open_upload_dialog_as(Some("me"), window, cx);
+    });
+    vcx.run_until_parked();
+    view.update(vcx, |view, cx| {
+        view.close_upload_dialog_keeping_draft(cx);
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    view.update_in(vcx, |view, window, cx| {
+        assert!(view.focus_handle.contains_focused(window, cx));
+        assert!(window.is_action_available(&crate::DeleteSelection, cx));
+    });
+}
