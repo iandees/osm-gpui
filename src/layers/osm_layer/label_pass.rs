@@ -327,6 +327,7 @@ impl OsmLayer {
         cam: labels::CameraSig,
         selected: &HashSet<i64>,
         forced_areas: &HashSet<labels::Key>,
+        space: &mut labels::LabelSpace,
         window: &mut Window,
     ) -> labels::Placement {
         let fs = crate::frame_stats::start();
@@ -409,11 +410,12 @@ impl OsmLayer {
         cands.extend(self.area_items(cache, viewport, cam, forced_areas, &node_texts, window));
         let items: Vec<labels::Item> = cands.iter().map(|c| c.item.clone()).collect();
         let prev = cache.prev_state();
-        let out = labels::place(
+        let out = labels::place_in(
             &items,
             &fixed,
             &prev,
             &labels::Config::for_view(cam.w, cam.h),
+            &mut space.grid,
         );
         let mut placed = Vec::with_capacity(out.len());
         let mut by_id = HashMap::with_capacity(out.len());
@@ -476,7 +478,9 @@ impl OsmLayer {
     /// Paint labels and POI icons above everything `render_canvas` and the
     /// highlights drew; `selected` and `hovered` keep their labels even when
     /// collision would drop them. Places when the camera has settled (or the
-    /// data changed), otherwise just re-projects the last placement.
+    /// data changed), otherwise just re-projects the last placement. `space`
+    /// is shared by all layers, which call this in z-order: this layer's
+    /// labels yield to the ones already in it and then claim their share.
     #[allow(clippy::too_many_arguments)]
     pub fn render_labels(
         &self,
@@ -484,6 +488,7 @@ impl OsmLayer {
         bounds: Bounds<Pixels>,
         selected: &[FeatureRef],
         hovered: Option<&FeatureRef>,
+        space: &mut labels::LabelSpace,
         window: &mut Window,
         cx: &App,
     ) {
@@ -532,9 +537,31 @@ impl OsmLayer {
                     FeatureKind::Node => None,
                 })
                 .collect();
-            let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
-            self.place_line_labels(viewport, cam, &p, &cache.tuning.line_knobs(), now);
+            let p = self.place_labels(
+                &mut cache,
+                viewport,
+                cam,
+                &ids,
+                &forced_areas,
+                space,
+                window,
+            );
+            space.taken.extend(p.occupied(|mx, my| {
+                let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
+                (f32::from(sp.x), f32::from(sp.y))
+            }));
+            self.place_line_labels(viewport, cam, &space.taken, &cache.tuning.line_knobs(), now);
             cache.store(p, now);
+        } else if let Some(p) = cache
+            .placement
+            .as_ref()
+            .filter(|_| step != labels::Step::HideAndWait)
+        {
+            // The kept placement still occupies its space.
+            space.take(p.occupied(|mx, my| {
+                let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
+                (f32::from(sp.x), f32::from(sp.y))
+            }));
         }
         // Frames are requested only while something is in flight: waiting to
         // settle, or a fade-in running.
@@ -737,21 +764,17 @@ impl OsmLayer {
     }
 
     /// Choose the street-name labels for the current camera, yielding to
-    /// the point labels and icons in `points`. Stores the result for
+    /// the point labels and icons in `obstacles` (screen rectangles). Stores the result for
     /// `paint_line_labels`.
     pub(super) fn place_line_labels(
         &self,
         viewport: &Viewport,
         cam: labels::CameraSig,
-        points: &labels::Placement,
+        obstacles: &[labels::Rect],
         knobs: &crate::layers::line_labels::BenchKnobs,
         now: std::time::Instant,
     ) {
         let fs = crate::frame_stats::start();
-        let obstacles = points.occupied(|mx, my| {
-            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
-            (f32::from(sp.x), f32::from(sp.y))
-        });
         let cands = self.line_label_candidates(viewport, cam.zoom);
         let mut placed_slot = self
             .render
@@ -774,7 +797,7 @@ impl OsmLayer {
                 knobs,
                 to_screen,
                 (cam.w, cam.h),
-                &obstacles,
+                obstacles,
                 &prev,
             ),
             Err(_) => (Vec::new(), 0),

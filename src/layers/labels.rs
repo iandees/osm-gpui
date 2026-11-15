@@ -326,6 +326,8 @@ pub struct CollisionGrid {
     rows: usize,
     cells: Vec<Vec<u32>>,
     items: Vec<(Rect, u32)>,
+    /// First owner id not yet handed out by `reserve_owners`.
+    next_owner: u32,
 }
 
 impl CollisionGrid {
@@ -341,7 +343,17 @@ impl CollisionGrid {
             rows,
             cells: vec![Vec::new(); cols * rows],
             items: Vec::new(),
+            next_owner: 0,
         }
+    }
+
+    /// Reserve `n` consecutive owner ids and return the first, so several
+    /// placements sharing this grid never mistake each other's items for
+    /// their own.
+    pub fn reserve_owners(&mut self, n: usize) -> u32 {
+        let base = self.next_owner;
+        self.next_owner = base.saturating_add(n as u32).min(NO_OWNER - 1);
+        base
     }
 
     pub fn len(&self) -> usize {
@@ -545,6 +557,21 @@ pub fn place(
     prev: &HashMap<Key, Prev>,
     cfg: &Config,
 ) -> Vec<Placed> {
+    let mut grid = CollisionGrid::new(cfg.view.inflate(GRID_CELL), GRID_CELL);
+    place_in(items, fixed, prev, cfg, &mut grid)
+}
+
+/// [`place`] into an existing `grid`, so what other placements (other
+/// layers) already put there blocks these items, and what these items take
+/// blocks the placements that follow.
+pub fn place_in(
+    items: &[Item],
+    fixed: &[Rect],
+    prev: &HashMap<Key, Prev>,
+    cfg: &Config,
+    grid: &mut CollisionGrid,
+) -> Vec<Placed> {
+    let base = grid.reserve_owners(items.len());
     let mut order: Vec<usize> = (0..items.len()).collect();
     let eff = |i: usize| {
         let it = &items[i];
@@ -552,7 +579,6 @@ pub fn place(
     };
     order.sort_by(|&a, &b| eff(b).cmp(&eff(a)).then(items[a].key.cmp(&items[b].key)));
 
-    let mut grid = CollisionGrid::new(cfg.view.inflate(GRID_CELL), GRID_CELL);
     for r in fixed {
         grid.insert(*r, NO_OWNER);
     }
@@ -560,7 +586,7 @@ pub fn place(
         if it.marker_r > 0.0 {
             grid.insert(
                 Rect::around(it.center.0, it.center.1, it.marker_r, it.marker_r),
-                i as u32,
+                base + i as u32,
             );
         }
     }
@@ -571,8 +597,8 @@ pub fn place(
         let Some(r) = it.icon_r else { continue };
         let rect = Rect::around(it.center.0, it.center.1, r, r);
         let padded = rect.inflate(cfg.icon_pad);
-        if it.forced() || !grid.collides(&padded, i as u32) {
-            grid.insert(rect, i as u32);
+        if it.forced() || !grid.collides(&padded, base + i as u32) {
+            grid.insert(rect, base + i as u32);
             icon_placed[i] = true;
         }
     }
@@ -603,8 +629,8 @@ pub fn place(
             let rect = label_rect(a, it.center, reach, cfg.gap, w, h);
             let padded = rect.inflate(cfg.text_pad);
             let fits = inner.contains(&rect);
-            if it.forced() || (fits && !grid.collides(&padded, i as u32)) {
-                grid.insert(padded, i as u32);
+            if it.forced() || (fits && !grid.collides(&padded, base + i as u32)) {
+                grid.insert(padded, base + i as u32);
                 text_placed[i] = Some((a, rect));
                 n_text += 1;
                 break;
@@ -1044,6 +1070,34 @@ impl Placement {
     }
 }
 
+/// The screen space the labels of all layers share, filled in layer z-order
+/// (lowest first) so a label never prints over one already placed beneath
+/// it. Rebuilt every frame by the layer manager.
+pub struct LabelSpace {
+    /// Markers, icons and texts placed so far.
+    pub grid: CollisionGrid,
+    /// The icon and text boxes placed so far, for street names to avoid.
+    pub taken: Vec<Rect>,
+}
+
+impl LabelSpace {
+    /// Empty space for a `w` x `h` view.
+    pub fn new(w: f32, h: f32) -> Self {
+        Self {
+            grid: CollisionGrid::new(Config::for_view(w, h).view.inflate(GRID_CELL), GRID_CELL),
+            taken: Vec::new(),
+        }
+    }
+
+    /// Claim `rects` (a layer's icon and text boxes) for the layers above.
+    pub fn take(&mut self, rects: Vec<Rect>) {
+        for r in &rects {
+            self.grid.insert(*r, NO_OWNER);
+        }
+        self.taken.extend(rects);
+    }
+}
+
 /// Whether to ask for another frame: while waiting for the camera to settle
 /// and while a fade-in runs, never when everything is at rest.
 pub fn wants_frame(step: Step, fade_end: Option<Instant>, now: Instant) -> bool {
@@ -1479,6 +1533,59 @@ mod tests {
         // Outside the grid still collides with itself.
         g.insert(Rect::new(-500.0, -500.0, -490.0, -490.0), 3);
         assert!(g.collides(&Rect::new(-495.0, -495.0, -492.0, -492.0), NO_OWNER));
+    }
+
+    #[test]
+    fn placements_sharing_a_grid_yield_to_the_ones_before_them() {
+        // The same spot in two "layers": the later one cannot take the
+        // right-hand anchor the earlier one holds, even though both items
+        // have index 0.
+        let mut grid = CollisionGrid::new(cfg().view.inflate(GRID_CELL), GRID_CELL);
+        let lower = place_in(
+            &[item(1, 100.0, 100.0, 40.0, 400)],
+            &[],
+            &HashMap::new(),
+            &cfg(),
+            &mut grid,
+        );
+        let upper = place_in(
+            &[item(2, 100.0, 100.0, 40.0, 400)],
+            &[],
+            &HashMap::new(),
+            &cfg(),
+            &mut grid,
+        );
+        assert_eq!(lower[0].text.unwrap().0, Anchor::Right);
+        let (anchor, r) = upper[0].text.unwrap();
+        assert_ne!(anchor, Anchor::Right);
+        assert!(!r.intersects(&lower[0].text.unwrap().1));
+        // Apart, with nothing shared, both take their first choice.
+        let mut grid = CollisionGrid::new(cfg().view.inflate(GRID_CELL), GRID_CELL);
+        for (id, y) in [(1, 50.0), (2, 200.0)] {
+            let out = place_in(
+                &[item(id, 100.0, y, 40.0, 400)],
+                &[],
+                &HashMap::new(),
+                &cfg(),
+                &mut grid,
+            );
+            assert_eq!(out[0].text.unwrap().0, Anchor::Right);
+        }
+    }
+
+    #[test]
+    fn label_space_claims_the_boxes_of_a_kept_placement() {
+        let mut space = LabelSpace::new(400.0, 300.0);
+        space.take(vec![Rect::new(107.0, 93.0, 147.0, 107.0)]);
+        let out = place_in(
+            &[item(1, 100.0, 100.0, 40.0, 400)],
+            &[],
+            &HashMap::new(),
+            &cfg(),
+            &mut space.grid,
+        );
+        assert_ne!(out[0].text.unwrap().0, Anchor::Right);
+        assert_eq!(space.taken.len(), 1);
     }
 
     #[test]
