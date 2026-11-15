@@ -356,6 +356,7 @@ impl OsmLayer {
 
     /// Place the labels and icons of the nodes in view (the expensive half;
     /// run when the camera settles, not every frame).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn place_labels(
         &self,
         cache: &mut labels::LabelCache,

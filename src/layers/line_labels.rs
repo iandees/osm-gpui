@@ -1165,10 +1165,9 @@ impl LineLabelCache {
                 );
                 built += 1;
             }
-            let n = self.layouts[&c.way_id].labels.len();
-            for slot in 0..n {
+            for (slot, label) in self.layouts[&c.way_id].labels.iter().enumerate() {
                 let priority = c.priority.with_recent(prev.contains(&(c.way_id, slot)));
-                let rects = self.layouts[&c.way_id].labels[slot]
+                let rects = label
                     .boxes
                     .iter()
                     .map(|b| Rect::new(rx + b[0], ry + b[1], rx + b[2], ry + b[3]))

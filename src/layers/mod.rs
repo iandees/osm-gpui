@@ -916,6 +916,7 @@ impl LayerManager {
     }
 
     /// Paint every visible layer's labels and icons.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_all_labels(
         &self,
         viewport: &Viewport,
