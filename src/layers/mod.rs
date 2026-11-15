@@ -918,13 +918,14 @@ impl LayerManager {
         bounds: Bounds<Pixels>,
         selected: &[crate::selection::FeatureRef],
         hovered: Option<&crate::selection::FeatureRef>,
+        vis: labels::LabelVisibility,
         window: &mut Window,
         cx: &App,
     ) {
         for layer in &self.layers {
             if layer.is_visible() {
                 if let Some(osm) = layer.as_osm() {
-                    osm.render_labels(viewport, bounds, selected, hovered, window, cx);
+                    osm.render_labels(viewport, bounds, selected, hovered, vis, window, cx);
                 }
             }
         }

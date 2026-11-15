@@ -133,6 +133,14 @@ pub struct AppSettings {
     pub welcome_dismissed: bool,
     /// Reverse the direction in which scrolling zooms the map.
     pub invert_scroll_zoom: bool,
+    /// Draw point label text. On by default.
+    pub show_labels: bool,
+    /// Draw POI icons. On by default.
+    pub show_poi_icons: bool,
+    /// Draw street names along lines. On by default.
+    pub show_street_names: bool,
+    /// Draw labels centred in areas. On by default.
+    pub show_area_labels: bool,
     /// The `source` text of the last upload, prefilled in the next upload
     /// dialog.
     pub last_source: String,
@@ -283,6 +291,10 @@ impl Default for AppSettings {
             autosave: default_autosave(),
             welcome_dismissed: false,
             invert_scroll_zoom: false,
+            show_labels: true,
+            show_poi_icons: true,
+            show_street_names: true,
+            show_area_labels: true,
             last_source: String::new(),
             recent_comments: Vec::new(),
             suggest_from_taginfo: default_suggest_from_taginfo(),
@@ -300,6 +312,16 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// The label toggles, as the map layers take them.
+    pub fn label_visibility(&self) -> crate::layers::labels::LabelVisibility {
+        crate::layers::labels::LabelVisibility {
+            labels: self.show_labels,
+            poi_icons: self.show_poi_icons,
+            street_names: self.show_street_names,
+            area_labels: self.show_area_labels,
+        }
+    }
+
     /// The Simplify Way tolerance in metres, the default if the stored value
     /// is out of range.
     pub fn simplify_tolerance(&self) -> f64 {
@@ -367,6 +389,22 @@ pub fn set_welcome_dismissed(dismissed: bool, persist: bool) {
 
 pub fn set_invert_scroll_zoom(invert: bool, persist: bool) {
     update(persist, |s| s.invert_scroll_zoom = invert);
+}
+
+pub fn set_show_labels(on: bool, persist: bool) {
+    update(persist, |s| s.show_labels = on);
+}
+
+pub fn set_show_poi_icons(on: bool, persist: bool) {
+    update(persist, |s| s.show_poi_icons = on);
+}
+
+pub fn set_show_street_names(on: bool, persist: bool) {
+    update(persist, |s| s.show_street_names = on);
+}
+
+pub fn set_show_area_labels(on: bool, persist: bool) {
+    update(persist, |s| s.show_area_labels = on);
 }
 
 pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
@@ -734,6 +772,10 @@ mod tests {
             autosave: false,
             welcome_dismissed: true,
             invert_scroll_zoom: true,
+            show_labels: false,
+            show_poi_icons: false,
+            show_street_names: false,
+            show_area_labels: false,
             last_source: "survey; GPS".into(),
             recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
             suggest_from_taginfo: false,
@@ -966,6 +1008,10 @@ mod tests {
             autosave: true,
             welcome_dismissed: false,
             invert_scroll_zoom: false,
+            show_labels: true,
+            show_poi_icons: true,
+            show_street_names: true,
+            show_area_labels: true,
             last_source: String::new(),
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
@@ -1123,6 +1169,20 @@ mod tests {
         let path = dir.join("settings.json");
         fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
         assert!(!load_from(&path).invert_scroll_zoom);
+    }
+
+    #[test]
+    fn missing_label_toggles_mean_everything_shows() {
+        let dir = tmp_dir("legacy-no-label-toggles");
+        let path = dir.join("settings.json");
+        fs::write(&path, br#"{"api_server":"Primary","custom_api_url":""}"#).unwrap();
+        let loaded = load_from(&path);
+        assert!(loaded.show_labels && loaded.show_poi_icons);
+        assert!(loaded.show_street_names && loaded.show_area_labels);
+        assert_eq!(
+            loaded.label_visibility(),
+            crate::layers::labels::LabelVisibility::default()
+        );
     }
 
     #[test]

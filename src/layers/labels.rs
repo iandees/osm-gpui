@@ -842,6 +842,41 @@ pub fn label_text(keys: &str, tags: &Tags) -> Option<String> {
     }
 }
 
+/// Which kinds of label the user has switched on (View menu and Settings).
+/// All on by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelVisibility {
+    /// Point label text.
+    pub labels: bool,
+    /// POI icons.
+    pub poi_icons: bool,
+    /// Street names along lines.
+    pub street_names: bool,
+    /// Labels centred in areas.
+    pub area_labels: bool,
+}
+
+impl Default for LabelVisibility {
+    fn default() -> Self {
+        Self {
+            labels: true,
+            poi_icons: true,
+            street_names: true,
+            area_labels: true,
+        }
+    }
+}
+
+impl LabelVisibility {
+    /// Differs between any two settings (a 4-bit mask).
+    pub fn stamp(&self) -> usize {
+        self.labels as usize
+            | (self.poi_icons as usize) << 1
+            | (self.street_names as usize) << 2
+            | (self.area_labels as usize) << 3
+    }
+}
+
 /// Build a node's label from its tags and resolved MapCSS properties.
 /// `None` when it has neither text nor an icon.
 pub fn resolve_node_label(
@@ -850,12 +885,24 @@ pub fn resolve_node_label(
     icons: &mut IconCache,
     zoom: f64,
 ) -> Option<NodeLabel> {
-    let text = if zoom >= LABEL_MIN_ZOOM {
+    resolve_node_label_with(style, tags, icons, zoom, LabelVisibility::default())
+}
+
+/// [`resolve_node_label`] honouring the user's label toggles: no text unless
+/// `vis.labels`, no icon unless `vis.poi_icons`.
+pub fn resolve_node_label_with(
+    style: &TextStyle,
+    tags: &Tags,
+    icons: &mut IconCache,
+    zoom: f64,
+    vis: LabelVisibility,
+) -> Option<NodeLabel> {
+    let text = if vis.labels && zoom >= LABEL_MIN_ZOOM {
         style.text.as_deref().and_then(|k| label_text(k, tags))
     } else {
         None
     };
-    let icon = if zoom >= ICON_MIN_ZOOM {
+    let icon = if vis.poi_icons && zoom >= ICON_MIN_ZOOM {
         choose_icon(style.icon_image.as_deref(), style.icon_width, tags, icons)
     } else {
         None
@@ -1396,6 +1443,8 @@ pub struct LabelTuning {
     pub outline_max_labels: usize,
     /// Street-name benchmark knobs, set by the `LabelBench` script action.
     pub bench: BenchKnobs,
+    /// The user's label toggles, set from the settings each frame.
+    pub vis: LabelVisibility,
 }
 
 impl Default for LabelTuning {
@@ -1404,6 +1453,7 @@ impl Default for LabelTuning {
             halo_override: None,
             outline_max_labels: OUTLINE_MAX_LABELS,
             bench: BenchKnobs::default(),
+            vis: LabelVisibility::default(),
         }
     }
 }
@@ -1434,7 +1484,10 @@ impl LabelTuning {
     /// not follow `halo_override` or `outline_max_labels` (their halo is a
     /// cached mesh, see [`crate::layers::line_labels::MeshHalo`]); to make them follow, map those here.
     pub fn line_knobs(&self) -> BenchKnobs {
-        self.bench
+        BenchKnobs {
+            labels: self.bench.labels && self.vis.street_names,
+            ..self.bench
+        }
     }
 
     /// Apply a `LabelBench` spec (see [`parse_bench`]).
@@ -1454,7 +1507,8 @@ impl LabelTuning {
         };
         let h = (self.bench.stamp() as u64)
             ^ halo.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            ^ (self.outline_max_labels as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+            ^ (self.outline_max_labels as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+            ^ (self.vis.stamp() as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
         (h as usize) << 3
     }
 }
@@ -1960,6 +2014,43 @@ mod tests {
         );
         let l17 = resolve_node_label(&st, &t, &mut ic, 17.0).unwrap();
         assert!(l17.text.is_some() && l17.icon.is_some());
+    }
+
+    #[test]
+    fn the_label_toggles_gate_node_text_and_icons() {
+        let t = tags(&[("amenity", "cafe"), ("name", "Joe")]);
+        let st = style(
+            "node[amenity] { text: name; icon-image: preset; }",
+            &t,
+            18.0,
+        );
+        let mut ic = IconCache::new();
+        let on = LabelVisibility::default();
+        let l = resolve_node_label_with(&st, &t, &mut ic, 18.0, on).unwrap();
+        assert!(l.text.is_some() && l.icon.is_some());
+        let no_text = LabelVisibility {
+            labels: false,
+            ..on
+        };
+        let l = resolve_node_label_with(&st, &t, &mut ic, 18.0, no_text).unwrap();
+        assert!(l.text.is_none() && l.icon.is_some());
+        let no_icons = LabelVisibility {
+            poi_icons: false,
+            ..on
+        };
+        let l = resolve_node_label_with(&st, &t, &mut ic, 18.0, no_icons).unwrap();
+        assert!(l.text.is_some() && l.icon.is_none());
+        let neither = LabelVisibility {
+            labels: false,
+            poi_icons: false,
+            ..on
+        };
+        assert!(resolve_node_label_with(&st, &t, &mut ic, 18.0, neither).is_none());
+        // Street names switch the line knobs off without touching the bench.
+        let mut tu = LabelTuning::default();
+        assert!(tu.line_knobs().labels);
+        tu.vis.street_names = false;
+        assert!(!tu.line_knobs().labels && tu.bench.labels);
     }
 
     #[test]
@@ -2476,6 +2567,17 @@ mod tests {
             outline_max_labels: 5,
             ..base
         });
+        for i in 1..16usize {
+            check(LabelTuning {
+                vis: LabelVisibility {
+                    labels: i & 1 == 0,
+                    poi_icons: i & 2 == 0,
+                    street_names: i & 4 == 0,
+                    area_labels: i & 8 == 0,
+                },
+                ..base
+            });
+        }
         // Setting the defaults explicitly is not a change.
         let mut same = base;
         same.set_bench("on halo=coarse repeat=1").unwrap();
