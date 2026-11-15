@@ -344,6 +344,7 @@ pub fn login(client: &dyn HttpClient, api_base_url: &str) -> Result<LoginResult,
 /// Returns the new stored token and persists it.
 fn refresh_from(
     client: &dyn HttpClient,
+    backend: &dyn SecretBackend,
     oauth_base_url: &str,
     existing: StoredToken,
 ) -> Result<StoredToken, AuthError> {
@@ -372,7 +373,7 @@ fn refresh_from(
         refresh_token: refresh_token.or(existing.refresh_token),
         expires_at,
     };
-    set_token(oauth_base_url, token.clone());
+    set_token_using(backend, oauth_base_url, token.clone());
     Ok(token)
 }
 
@@ -428,11 +429,12 @@ fn ensure_fresh_token_using(
     if !token.is_expired() {
         return Ok(token);
     }
-    // Lock order: this per-server refresh lock, then `KEYRING_READ_LOCK`, then the
+    // Lock order: this per-server refresh lock, then `KEYCHAIN_LOCK`, then the
     // token store's save lock and mutex. The later locks are only ever held for work
     // that never waits for a refresh lock, so no cycle is possible. The keychain
-    // read in the re-check below is therefore safe under the refresh lock, and has
-    // already happened (and raised its prompt) in the lookup above.
+    // read in the re-check below and the write in `refresh_from` are therefore safe
+    // under the refresh lock; the read has already happened (and raised its prompt)
+    // in the lookup above.
     let refresh_lock = refresh_lock_for(oauth_base_url);
     let _refreshing = refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
     // A caller ahead of us may have refreshed while we waited, consuming the refresh
@@ -442,7 +444,7 @@ fn ensure_fresh_token_using(
     if !token.is_expired() {
         return Ok(token);
     }
-    refresh_from(client, oauth_base_url, token)
+    refresh_from(client, backend, oauth_base_url, token)
 }
 
 /// One lock per OAuth server so refreshes of the same login are single-flight while
@@ -648,22 +650,34 @@ impl SecretBackend for SystemKeyring {
         if !secret_writes_allowed(oauth_base_url) {
             return false;
         }
-        let Some(entry) = keyring_entry(oauth_base_url) else {
-            return false;
-        };
         let Ok(json) = serde_json::to_string(secret) else {
             return false;
         };
-        match entry.set_password(&json) {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!(
-                    "auth: keyring set_password failed ({}), falling back to file storage",
-                    e
-                );
-                false
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            // keyring's macOS `set_password` first fetches the existing item together
+            // with its secret and then modifies it: two Keychain access checks, each a
+            // password prompt for a binary the item doesn't trust (every rebuilt dev
+            // binary). SecItemAdd, falling back to SecItemUpdate when the item exists,
+            // never reads the old secret, so replacing one costs a single check. It
+            // targets the same default-keychain item (service + account) keyring reads.
+            match security_framework::passwords::set_generic_password(
+                KEYRING_SERVICE,
+                oauth_base_url,
+                json.as_bytes(),
+            ) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!(
+                        "auth: keychain write failed ({}), falling back to file storage",
+                        e
+                    );
+                    false
+                }
             }
         }
+        #[cfg(not(all(target_os = "macos", not(test))))]
+        self.write_via_keyring(oauth_base_url, &json)
     }
 
     fn delete(&self, oauth_base_url: &str) {
@@ -674,6 +688,25 @@ impl SecretBackend for SystemKeyring {
             // NoEntry (nothing to delete) is fine; anything else is just logged.
             if let Err(e) = entry.delete_credential() {
                 eprintln!("auth: keyring delete failed: {}", e);
+            }
+        }
+    }
+}
+
+impl SystemKeyring {
+    #[cfg(not(all(target_os = "macos", not(test))))]
+    fn write_via_keyring(&self, oauth_base_url: &str, json: &str) -> bool {
+        let Some(entry) = keyring_entry(oauth_base_url) else {
+            return false;
+        };
+        match entry.set_password(json) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!(
+                    "auth: keyring set_password failed ({}), falling back to file storage",
+                    e
+                );
+                false
             }
         }
     }
@@ -710,6 +743,10 @@ pub struct TokenStore {
     /// actually looked up, so a plain app launch that never needs auth
     /// (e.g. just viewing tiles) never triggers a keychain prompt.
     pending_keyring: std::collections::HashSet<String>,
+    /// OAuth base URLs whose secret is kept in `oauth.json` because the keychain
+    /// refused it. Every other resolved entry's secret is already in the keychain, so
+    /// saving writes only its metadata and never touches (or prompts for) its item.
+    file_secrets: std::collections::HashSet<String>,
 }
 
 static TOKEN_STORE: crate::persist::JsonStore<TokenStore> = crate::persist::JsonStore::new();
@@ -719,6 +756,21 @@ pub fn init_store(store: TokenStore) {
 }
 
 fn set_token(oauth_base_url: &str, token: StoredToken) {
+    set_token_using(&SystemKeyring, oauth_base_url, token);
+}
+
+/// Store `token` for one server: its secret goes to `backend` (or, if that refuses,
+/// to the file), and that is the only keychain item written. Other servers' items are
+/// left alone, since each keychain write can cost the user a password prompt.
+fn set_token_using(backend: &dyn SecretBackend, oauth_base_url: &str, token: StoredToken) {
+    // Held across the keychain write and the store update so concurrent writes for a
+    // server land in the keychain and in memory in the same order.
+    let _guard = KEYCHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let secret = TokenSecret {
+        access_token: token.access_token.clone(),
+        refresh_token: token.refresh_token.clone(),
+    };
+    let in_keychain = backend.write(oauth_base_url, &secret);
     TOKEN_STORE.update_and_save(
         "auth",
         |g| {
@@ -726,6 +778,11 @@ fn set_token(oauth_base_url: &str, token: StoredToken) {
             // A token we were just handed supersedes whatever the keychain holds; there is
             // nothing left to read lazily for this server.
             g.pending_keyring.remove(oauth_base_url);
+            if in_keychain {
+                g.file_secrets.remove(oauth_base_url);
+            } else {
+                g.file_secrets.insert(oauth_base_url.to_string());
+            }
         },
         save,
     );
@@ -733,16 +790,16 @@ fn set_token(oauth_base_url: &str, token: StoredToken) {
 
 /// Remove the stored token for the given OAuth base URL, if any.
 pub fn logout(oauth_base_url: &str) {
+    let _guard = KEYCHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    SystemKeyring.delete(oauth_base_url);
     TOKEN_STORE.update_and_save(
         "auth",
         |g| {
             g.tokens.remove(oauth_base_url);
             g.pending_keyring.remove(oauth_base_url);
+            g.file_secrets.remove(oauth_base_url);
         },
-        |snapshot| {
-            SystemKeyring.delete(oauth_base_url);
-            save(snapshot);
-        },
+        save,
     );
 }
 
@@ -775,9 +832,11 @@ pub fn keyring_read_pending(oauth_base_url: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Serializes keychain reads so two threads needing the same pending secret raise one
-/// prompt, not two.
-static KEYRING_READ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Serializes the OAuth keychain reads and writes: two threads needing the same
+/// pending secret raise one prompt, not two, and a write is applied to the keychain
+/// and the store in one step. Lock order: this lock, then the token store's save lock
+/// and mutex.
+static KEYCHAIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl TokenStore {
     /// Fold the outcome of a keychain read into the store. Only `NoEntry` (the
@@ -823,7 +882,7 @@ fn resolve_pending(
         return Ok(());
     }
     on_keychain_wait();
-    let _guard = KEYRING_READ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = KEYCHAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Another thread may have resolved it while we waited for the lock.
     if !keyring_read_pending(oauth_base_url) {
         return Ok(());
@@ -895,9 +954,13 @@ pub fn load() -> TokenStore {
 fn build_token_store(persisted: PersistedStore) -> TokenStore {
     let mut tokens = HashMap::new();
     let mut pending_keyring = std::collections::HashSet::new();
+    let mut file_secrets = std::collections::HashSet::new();
     for (oauth_base_url, meta) in persisted.tokens {
         let (access_token, refresh_token) = match meta.access_token_fallback.clone() {
-            Some(access_token) => (access_token, meta.refresh_token_fallback.clone()),
+            Some(access_token) => {
+                file_secrets.insert(oauth_base_url.clone());
+                (access_token, meta.refresh_token_fallback.clone())
+            }
             // Secret lives in the keyring; defer the read until this URL's
             // token is actually requested (see `try_current_token`).
             None => {
@@ -919,6 +982,7 @@ fn build_token_store(persisted: PersistedStore) -> TokenStore {
     TokenStore {
         tokens,
         pending_keyring,
+        file_secrets,
     }
 }
 
@@ -939,6 +1003,12 @@ fn save(store: &TokenStore) {
         if !crate::persist::write_permitted(&p) {
             return;
         }
+        let dev_urls = |urls: &std::collections::HashSet<String>| {
+            urls.iter()
+                .filter(|url| crate::settings_store::is_dev_server(url))
+                .cloned()
+                .collect()
+        };
         let dev_only = TokenStore {
             tokens: store
                 .tokens
@@ -946,16 +1016,12 @@ fn save(store: &TokenStore) {
                 .filter(|(url, _)| crate::settings_store::is_dev_server(url))
                 .map(|(url, t)| (url.clone(), t.clone()))
                 .collect(),
-            pending_keyring: store
-                .pending_keyring
-                .iter()
-                .filter(|url| crate::settings_store::is_dev_server(url))
-                .cloned()
-                .collect(),
+            pending_keyring: dev_urls(&store.pending_keyring),
+            file_secrets: dev_urls(&store.file_secrets),
         };
-        merge_dev_logins(load_from(&p), build_persisted(&dev_only, &SystemKeyring))
+        merge_dev_logins(load_from(&p), build_persisted(&dev_only))
     } else {
-        build_persisted(store, &SystemKeyring)
+        build_persisted(store)
     };
     crate::persist::save_reporting("auth", Some(&p), |p| save_to(p, &persisted));
 }
@@ -974,47 +1040,28 @@ fn merge_dev_logins(mut on_disk: PersistedStore, dev: PersistedStore) -> Persist
     on_disk
 }
 
-/// The on-disk form of `store`, storing each resolved secret via `backend` (falling back
-/// to the file when it refuses). Entries still pending a keychain read hold only empty
-/// placeholders: they are written as metadata alone and their keychain item is left
-/// untouched, so saving one server's token can neither blank another server's real
+/// The on-disk form of `store`. Pure: it never touches the keychain, because every
+/// secret not listed in `file_secrets` was put there by `set_token_using` (or read
+/// from there), so only metadata needs writing for it. Entries still pending a
+/// keychain read hold only empty placeholders and are likewise written as metadata
+/// alone, so saving one server's token can neither blank another server's real
 /// secret nor turn it into a fallback-less file entry that loses it.
-fn build_persisted(store: &TokenStore, backend: &dyn SecretBackend) -> PersistedStore {
+fn build_persisted(store: &TokenStore) -> PersistedStore {
     let mut persisted = PersistedStore::default();
     for (oauth_base_url, token) in &store.tokens {
-        if store.pending_keyring.contains(oauth_base_url) {
-            persisted.tokens.insert(
-                oauth_base_url.clone(),
-                PersistedToken {
-                    display_name: token.display_name.clone(),
-                    user_id: token.user_id,
-                    expires_at: token.expires_at,
-                    access_token_fallback: None,
-                    refresh_token_fallback: None,
-                },
-            );
-            continue;
-        }
-        let secret = TokenSecret {
-            access_token: token.access_token.clone(),
-            refresh_token: token.refresh_token.clone(),
-        };
-        let stored_in_keyring = backend.write(oauth_base_url, &secret);
+        let in_file = store.file_secrets.contains(oauth_base_url)
+            && !store.pending_keyring.contains(oauth_base_url);
         persisted.tokens.insert(
             oauth_base_url.clone(),
             PersistedToken {
                 display_name: token.display_name.clone(),
                 user_id: token.user_id,
                 expires_at: token.expires_at,
-                access_token_fallback: if stored_in_keyring {
-                    None
-                } else {
-                    Some(token.access_token.clone())
-                },
-                refresh_token_fallback: if stored_in_keyring {
-                    None
-                } else {
+                access_token_fallback: in_file.then(|| token.access_token.clone()),
+                refresh_token_fallback: if in_file {
                     token.refresh_token.clone()
+                } else {
+                    None
                 },
             },
         );
@@ -1637,67 +1684,84 @@ mod tests {
         assert_eq!(t.access_token, "kc-access");
     }
 
-    #[test]
-    fn saving_keeps_pending_entries_and_does_not_write_their_keychain_item() {
-        let mut store = TokenStore::default();
-        let tok = |name: &str, access: &str| StoredToken {
+    fn tok(name: &str, access: &str) -> StoredToken {
+        StoredToken {
             access_token: access.to_string(),
             display_name: name.to_string(),
             user_id: 1,
             refresh_token: Some("r".into()),
             expires_at: Some(5),
-        };
-        store
-            .tokens
-            .insert("https://a.example".into(), tok("alice", "A"));
-        store
-            .tokens
-            .insert("https://b.example".into(), tok("bob", ""));
-        store.pending_keyring.insert("https://b.example".into());
+        }
+    }
 
+    #[test]
+    fn saving_one_login_writes_only_its_own_keychain_item() {
+        let (a, b, c) = (
+            "https://only-own-a.example",
+            "https://only-own-b.example",
+            "https://only-own-c.example",
+        );
+        init_store(TokenStore::default());
         let backend = FakeBackend::with_secret();
-        let persisted = build_persisted(&store, &backend);
+        // A: resolved and in the keychain. B: still pending a keychain read.
+        set_token_using(&backend, a, tok("alice", "A"));
+        TOKEN_STORE.update("auth", |g| {
+            g.tokens.insert(b.to_string(), tok("bob", ""));
+            g.pending_keyring.insert(b.to_string());
+        });
+        backend.writes.lock().unwrap().clear();
 
+        set_token_using(&backend, c, tok("carol", "C"));
         assert_eq!(
             *backend.writes.lock().unwrap(),
-            vec!["https://a.example".to_string()],
-            "the pending server's keychain item must not be overwritten with placeholders"
+            vec![c.to_string()],
+            "each keychain write can prompt, so other logins' items are left alone"
         );
-        let b = &persisted.tokens["https://b.example"];
-        assert_eq!(b.display_name, "bob");
-        assert_eq!(b.expires_at, Some(5));
-        assert!(b.access_token_fallback.is_none() && b.refresh_token_fallback.is_none());
-        let a = &persisted.tokens["https://a.example"];
-        assert!(a.access_token_fallback.is_none(), "stored in keychain");
 
-        // Reloading the saved form still defers B to the keychain.
+        let persisted = build_persisted(&TOKEN_STORE.snapshot("auth"));
+        for url in [a, b, c] {
+            let t = &persisted.tokens[url];
+            assert!(
+                t.access_token_fallback.is_none() && t.refresh_token_fallback.is_none(),
+                "{url} lives in the keychain, so the file gets metadata only"
+            );
+        }
+        assert_eq!(persisted.tokens[b].display_name, "bob");
+        assert_eq!(persisted.tokens[b].expires_at, Some(5));
+
+        // Reloading the saved form defers every keychain-held secret to a lazy read.
         let reloaded = build_token_store(persisted);
-        assert!(reloaded.pending_keyring.contains("https://b.example"));
-        assert!(
-            reloaded.pending_keyring.contains("https://a.example"),
-            "keychain-stored secrets are read lazily after a reload"
-        );
+        for url in [a, b, c] {
+            assert!(reloaded.pending_keyring.contains(url), "{url}");
+        }
     }
 
     #[test]
     fn failed_keychain_write_falls_back_to_the_file_instead_of_losing_the_token() {
-        let mut store = TokenStore::default();
-        store.tokens.insert(
-            "https://a.example".into(),
-            StoredToken {
-                access_token: "A".into(),
-                display_name: "alice".into(),
-                user_id: 1,
-                refresh_token: Some("R".into()),
-                expires_at: None,
-            },
-        );
+        let url = "https://fallback-a.example";
+        init_store(TokenStore::default());
         let mut backend = FakeBackend::with_secret();
         backend.write_ok = false;
-        let persisted = build_persisted(&store, &backend);
-        let a = &persisted.tokens["https://a.example"];
+        let mut token = tok("alice", "A");
+        token.refresh_token = Some("R".into());
+        set_token_using(&backend, url, token);
+
+        let persisted = build_persisted(&TOKEN_STORE.snapshot("auth"));
+        let a = &persisted.tokens[url];
         assert_eq!(a.access_token_fallback.as_deref(), Some("A"));
         assert_eq!(a.refresh_token_fallback.as_deref(), Some("R"));
+
+        // A file-held secret stays in the file across reloads and later saves.
+        let reloaded = build_token_store(persisted);
+        assert!(!reloaded.pending_keyring.contains(url));
+        let a = &build_persisted(&reloaded).tokens[url];
+        assert_eq!(a.access_token_fallback.as_deref(), Some("A"));
+
+        // Once the keychain accepts it, the file copy is dropped.
+        backend.write_ok = true;
+        set_token_using(&backend, url, tok("alice", "A2"));
+        let a = &build_persisted(&TOKEN_STORE.snapshot("auth")).tokens[url];
+        assert!(a.access_token_fallback.is_none());
     }
 
     #[test]

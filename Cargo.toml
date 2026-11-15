@@ -56,6 +56,10 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee3
 # title bar and other system chrome follow the app's theme.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2.7"
+# Same version keyring's Apple store uses. Keychain writes go through its SecItem API
+# directly (see `auth::SystemKeyring::write`): keyring's own write reads the old
+# secret before replacing it, which costs an extra Keychain prompt.
+security-framework = "3.7"
 
 [dev-dependencies]
 

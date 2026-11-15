@@ -4636,6 +4636,7 @@ dependencies = [
  "rust-i18n",
  "rustybuzz",
  "schemars",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2",
