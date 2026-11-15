@@ -25,7 +25,7 @@
 //! tests use.
 
 use crate::layers::area_labels::AreaCaches;
-use crate::layers::line_labels::{parse_bench, BenchKnobs};
+use crate::layers::line_labels::{parse_bench, BenchKnobs, LineSlot};
 use crate::presets;
 use crate::style::{TextPosition, TextStyle};
 use crate::tags::Tags;
@@ -92,8 +92,12 @@ pub enum LabelClass {
 /// tier. Area tiers sit below named nodes (400) and above house numbers
 /// (100), 20+ apart, so the 40-point hysteresis bonus may reorder neighbours
 /// but the size bonus (<= 30) keeps classes apart. Street tiers (20..=90) are
-/// on a scale of their own: line labels are placed in a pass after the
-/// points and never compete with them.
+/// on a scale of their own by default, below every point label; they take
+/// part in [`place_with_lines`] with the points, so a stylesheet can lift them
+/// (or lower an icon) with `label-priority`.
+///
+/// `label-priority` ([`LabelPriority::with_style`]) replaces the tier (and the
+/// area size bonus) outright.
 ///
 /// Ordering is `forced`, then `tier + size + hysteresis`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -106,6 +110,8 @@ pub struct LabelPriority {
     pub size: i32,
     /// Placed last time (see [`HYSTERESIS_BONUS`]).
     pub recent: bool,
+    /// The tier came from `label-priority`: no size bonus.
+    pub custom: bool,
 }
 
 impl LabelPriority {
@@ -116,6 +122,20 @@ impl LabelPriority {
             LabelClass::Street => street_tier(tags),
         };
         Self::from(tier)
+    }
+
+    /// The priority the stylesheet's `label-priority` asks for, if it sets
+    /// one; otherwise `self` unchanged.
+    pub fn with_style(self, style: &TextStyle) -> Self {
+        match style.label_priority {
+            Some(tier) => Self {
+                tier,
+                size: 0,
+                custom: true,
+                ..self
+            },
+            None => self,
+        }
     }
 
     pub fn with_forced(self, forced: bool) -> Self {
@@ -129,6 +149,9 @@ impl LabelPriority {
     /// The size bonus for an area whose polygon's screen bounding box has a
     /// larger side of `bbox_px`.
     pub fn with_size_px(self, bbox_px: f32) -> Self {
+        if self.custom {
+            return self;
+        }
         Self {
             size: ((bbox_px / 20.0) as i32).clamp(0, 30),
             ..self
@@ -215,6 +238,15 @@ fn area_tier(tags: &Tags) -> i32 {
         return 250;
     }
     280
+}
+
+/// Whether an area's label is set in italic: water features, the
+/// cartographic convention (the same classes as the top area tier).
+pub fn area_label_italic(tags: &Tags) -> bool {
+    let is = |k: &str, vs: &[&str]| tags.get(k).is_some_and(|v| vs.contains(&v));
+    is("natural", &["water", "bay", "strait"])
+        || is("waterway", &["riverbank", "dock"])
+        || is("landuse", &["reservoir", "basin"])
 }
 
 fn street_tier(tags: &Tags) -> i32 {
@@ -326,6 +358,8 @@ pub struct CollisionGrid {
     rows: usize,
     cells: Vec<Vec<u32>>,
     items: Vec<(Rect, u32)>,
+    /// First owner id not yet handed out by `reserve_owners`.
+    next_owner: u32,
 }
 
 impl CollisionGrid {
@@ -341,7 +375,17 @@ impl CollisionGrid {
             rows,
             cells: vec![Vec::new(); cols * rows],
             items: Vec::new(),
+            next_owner: 0,
         }
+    }
+
+    /// Reserve `n` consecutive owner ids and return the first, so several
+    /// placements sharing this grid never mistake each other's items for
+    /// their own.
+    pub fn reserve_owners(&mut self, n: usize) -> u32 {
+        let base = self.next_owner;
+        self.next_owner = base.saturating_add(n as u32).min(NO_OWNER - 1);
+        base
     }
 
     pub fn len(&self) -> usize {
@@ -545,6 +589,45 @@ pub fn place(
     prev: &HashMap<Key, Prev>,
     cfg: &Config,
 ) -> Vec<Placed> {
+    place_with_lines(items, &[], fixed, prev, cfg).0
+}
+
+/// Line labels (street names) with a score of at least this are placed in the
+/// icon pass, competing with icons by priority and beating any text. The rest
+/// are placed in the text pass, competing with text by priority. The default
+/// street tiers (20..=90) are below text (400) and icons (500), so a street
+/// name yields to both unless the stylesheet gives it a `label-priority`; one
+/// between a text-only label (400) and an icon (500) beats the text but not
+/// the icon. A tie with an icon goes to the icon.
+pub const LINE_ICON_PASS_SCORE: i32 = 450;
+
+/// [`place`] with line labels ranked in the same pass. `lines` are the
+/// laid-out street-name slots ([`LineSlot`]); the second result says which
+/// were placed (same indexing). A line label is all-or-nothing: every one of
+/// its rectangles is inside the view and clear of what was placed before it.
+pub fn place_with_lines(
+    items: &[Item],
+    lines: &[LineSlot],
+    fixed: &[Rect],
+    prev: &HashMap<Key, Prev>,
+    cfg: &Config,
+) -> (Vec<Placed>, Vec<bool>) {
+    let mut grid = CollisionGrid::new(cfg.view.inflate(GRID_CELL), GRID_CELL);
+    place_with_lines_in(items, lines, fixed, prev, cfg, &mut grid)
+}
+
+/// [`place_with_lines`] into an existing `grid`, so what other placements
+/// (other layers) already put there, street names included, blocks these
+/// items, and what these take blocks the placements that follow.
+pub fn place_with_lines_in(
+    items: &[Item],
+    lines: &[LineSlot],
+    fixed: &[Rect],
+    prev: &HashMap<Key, Prev>,
+    cfg: &Config,
+    grid: &mut CollisionGrid,
+) -> (Vec<Placed>, Vec<bool>) {
+    let base = grid.reserve_owners(items.len());
     let mut order: Vec<usize> = (0..items.len()).collect();
     let eff = |i: usize| {
         let it = &items[i];
@@ -552,7 +635,6 @@ pub fn place(
     };
     order.sort_by(|&a, &b| eff(b).cmp(&eff(a)).then(items[a].key.cmp(&items[b].key)));
 
-    let mut grid = CollisionGrid::new(cfg.view.inflate(GRID_CELL), GRID_CELL);
     for r in fixed {
         grid.insert(*r, NO_OWNER);
     }
@@ -560,21 +642,63 @@ pub fn place(
         if it.marker_r > 0.0 {
             grid.insert(
                 Rect::around(it.center.0, it.center.1, it.marker_r, it.marker_r),
-                i as u32,
+                base + i as u32,
             );
         }
     }
 
+    // Line labels by priority, split by the pass they are placed in.
+    let mut line_order: Vec<usize> = (0..lines.len()).collect();
+    line_order.sort_by(|&a, &b| lines[b].priority.cmp(&lines[a].priority).then(a.cmp(&b)));
+    let (early, late): (Vec<usize>, Vec<usize>) = line_order
+        .into_iter()
+        .partition(|&l| lines[l].priority.score() >= LINE_ICON_PASS_SCORE);
+    let line_inner = Rect::new(
+        cfg.view.x0 + cfg.edge_pad,
+        cfg.view.y0 + cfg.edge_pad,
+        cfg.view.x1 - cfg.edge_pad,
+        cfg.view.y1 - cfg.edge_pad,
+    );
+    let mut line_placed = vec![false; lines.len()];
+    let mut n_lines = 0usize;
+    let mut try_line = |l: usize, grid: &mut CollisionGrid| {
+        if n_lines >= crate::layers::line_labels::MAX_PLACED {
+            return;
+        }
+        let rects = &lines[l].rects;
+        let pad = crate::layers::line_labels::COLLIDE_PAD;
+        if rects
+            .iter()
+            .any(|r| !line_inner.contains(r) || grid.collides(&r.inflate(pad), NO_OWNER - 1))
+        {
+            return;
+        }
+        for r in rects {
+            grid.insert(*r, NO_OWNER);
+        }
+        line_placed[l] = true;
+        n_lines += 1;
+    };
+
     let mut icon_placed = vec![false; items.len()];
+    let mut next_early = 0;
     for &i in &order {
         let it = &items[i];
+        while next_early < early.len() && lines[early[next_early]].priority > eff(i) {
+            try_line(early[next_early], grid);
+            next_early += 1;
+        }
         let Some(r) = it.icon_r else { continue };
         let rect = Rect::around(it.center.0, it.center.1, r, r);
         let padded = rect.inflate(cfg.icon_pad);
-        if it.forced() || !grid.collides(&padded, i as u32) {
-            grid.insert(rect, i as u32);
+        if it.forced() || !grid.collides(&padded, base + i as u32) {
+            grid.insert(rect, base + i as u32);
             icon_placed[i] = true;
         }
+    }
+
+    for &l in &early[next_early..] {
+        try_line(l, grid);
     }
 
     let mut text_placed: Vec<Option<(Anchor, Rect)>> = vec![None; items.len()];
@@ -585,8 +709,13 @@ pub fn place(
         cfg.view.y1 - cfg.edge_pad,
     );
     let mut n_text = 0usize;
+    let mut next_late = 0;
     for &i in &order {
         let it = &items[i];
+        while next_late < late.len() && lines[late[next_late]].priority > eff(i) {
+            try_line(late[next_late], grid);
+            next_late += 1;
+        }
         let Some((w, h, pref)) = it.text else {
             continue;
         };
@@ -603,8 +732,8 @@ pub fn place(
             let rect = label_rect(a, it.center, reach, cfg.gap, w, h);
             let padded = rect.inflate(cfg.text_pad);
             let fits = inner.contains(&rect);
-            if it.forced() || (fits && !grid.collides(&padded, i as u32)) {
-                grid.insert(padded, i as u32);
+            if it.forced() || (fits && !grid.collides(&padded, base + i as u32)) {
+                grid.insert(padded, base + i as u32);
                 text_placed[i] = Some((a, rect));
                 n_text += 1;
                 break;
@@ -612,7 +741,11 @@ pub fn place(
         }
     }
 
-    order
+    for &l in &late[next_late..] {
+        try_line(l, grid);
+    }
+
+    let placed = order
         .into_iter()
         .filter(|&i| icon_placed[i] || text_placed[i].is_some())
         .map(|i| Placed {
@@ -620,7 +753,8 @@ pub fn place(
             icon: icon_placed[i],
             text: text_placed[i],
         })
-        .collect()
+        .collect();
+    (placed, line_placed)
 }
 
 /// The icon a node gets.
@@ -744,6 +878,41 @@ pub fn label_text(keys: &str, tags: &Tags) -> Option<String> {
     }
 }
 
+/// Which kinds of label the user has switched on (View menu and Settings).
+/// All on by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelVisibility {
+    /// Point label text.
+    pub labels: bool,
+    /// POI icons.
+    pub poi_icons: bool,
+    /// Street names along lines.
+    pub street_names: bool,
+    /// Labels centred in areas.
+    pub area_labels: bool,
+}
+
+impl Default for LabelVisibility {
+    fn default() -> Self {
+        Self {
+            labels: true,
+            poi_icons: true,
+            street_names: true,
+            area_labels: true,
+        }
+    }
+}
+
+impl LabelVisibility {
+    /// Differs between any two settings (a 4-bit mask).
+    pub fn stamp(&self) -> usize {
+        self.labels as usize
+            | (self.poi_icons as usize) << 1
+            | (self.street_names as usize) << 2
+            | (self.area_labels as usize) << 3
+    }
+}
+
 /// Build a node's label from its tags and resolved MapCSS properties.
 /// `None` when it has neither text nor an icon.
 pub fn resolve_node_label(
@@ -752,12 +921,24 @@ pub fn resolve_node_label(
     icons: &mut IconCache,
     zoom: f64,
 ) -> Option<NodeLabel> {
-    let text = if zoom >= LABEL_MIN_ZOOM {
+    resolve_node_label_with(style, tags, icons, zoom, LabelVisibility::default())
+}
+
+/// [`resolve_node_label`] honouring the user's label toggles: no text unless
+/// `vis.labels`, no icon unless `vis.poi_icons`.
+pub fn resolve_node_label_with(
+    style: &TextStyle,
+    tags: &Tags,
+    icons: &mut IconCache,
+    zoom: f64,
+    vis: LabelVisibility,
+) -> Option<NodeLabel> {
+    let text = if vis.labels && zoom >= LABEL_MIN_ZOOM {
         style.text.as_deref().and_then(|k| label_text(k, tags))
     } else {
         None
     };
-    let icon = if zoom >= ICON_MIN_ZOOM {
+    let icon = if vis.poi_icons && zoom >= ICON_MIN_ZOOM {
         choose_icon(style.icon_image.as_deref(), style.icon_width, tags, icons)
     } else {
         None
@@ -773,7 +954,8 @@ pub fn resolve_node_label(
                 named,
             },
             tags,
-        ),
+        )
+        .with_style(style),
         text: text.map(SharedString::from),
         look: TextLook::resolve(style, TextLook::POINT),
         pref: Anchor::from_position(style.position),
@@ -784,7 +966,7 @@ pub fn resolve_node_label(
 /// An LRU of shaped lines keyed by text and size.
 #[derive(Default)]
 pub struct ShapeCache {
-    map: HashMap<(SharedString, u32), (Arc<ShapedLine>, u64)>,
+    map: HashMap<(SharedString, u32, bool), (Arc<ShapedLine>, u64)>,
     tick: u64,
     pub misses: usize,
 }
@@ -800,14 +982,28 @@ impl ShapeCache {
 
     /// The shaped line for `text` at `font_px`, shaping it on a miss.
     pub fn get(&mut self, window: &Window, text: &SharedString, font_px: f32) -> Arc<ShapedLine> {
+        self.get_styled(window, text, font_px, false)
+    }
+
+    /// Like [`ShapeCache::get`], in the italic face when `italic`.
+    pub fn get_styled(
+        &mut self,
+        window: &Window,
+        text: &SharedString,
+        font_px: f32,
+        italic: bool,
+    ) -> Arc<ShapedLine> {
         self.tick += 1;
-        let key = (text.clone(), (font_px * 10.0).round() as u32);
+        let key = (text.clone(), (font_px * 10.0).round() as u32, italic);
         if let Some((line, used)) = self.map.get_mut(&key) {
             *used = self.tick;
             return line.clone();
         }
         self.misses += 1;
-        let font = window.text_style().font();
+        let mut font = window.text_style().font();
+        if italic {
+            font = font.italic();
+        }
         let run = gpui::TextRun {
             len: text.len(),
             font,
@@ -845,18 +1041,46 @@ pub struct PlacedText {
     pub dx: f32,
     pub dy: f32,
     pub look: TextLook,
+    /// A second line below `line` (a wrapped area label), centred under it.
+    pub line2: Option<Arc<ShapedLine>>,
 }
 
 impl PlacedText {
     /// Every placed text is built here: `line` with its box's top-left `(dx,
     /// dy)` from the feature's screen position.
     pub fn new(line: Arc<ShapedLine>, dx: f32, dy: f32, look: TextLook) -> Self {
-        Self { line, dx, dy, look }
+        Self {
+            line,
+            dx,
+            dy,
+            look,
+            line2: None,
+        }
+    }
+
+    /// This text with `line2` as its second line.
+    pub fn with_second(mut self, line2: Option<Arc<ShapedLine>>) -> Self {
+        self.line2 = line2;
+        self
+    }
+
+    /// Size of the whole text box: the wider line, the lines stacked.
+    pub fn size(&self) -> (f32, f32) {
+        text_size(&self.line, self.line2.as_deref())
     }
 
     /// `line` in the box `rect`, for a feature drawn at `center`.
     pub fn in_rect(line: Arc<ShapedLine>, rect: &Rect, center: (f32, f32), look: TextLook) -> Self {
         Self::new(line, rect.x0 - center.0, rect.y0 - center.1, look)
+    }
+}
+
+/// Size of one or two stacked lines of text.
+pub fn text_size(line: &ShapedLine, line2: Option<&ShapedLine>) -> (f32, f32) {
+    let h = f32::from(line.ascent + line.descent);
+    match line2 {
+        Some(l2) => (f32::from(line.width).max(f32::from(l2.width)), h * 2.0),
+        None => (f32::from(line.width), h),
     }
 }
 
@@ -1028,10 +1252,7 @@ impl Placement {
                 out.push(Rect::around(cx, cy, r, r));
             }
             if let Some(t) = &l.text {
-                let (w, h) = (
-                    f32::from(t.line.width),
-                    f32::from(t.line.ascent + t.line.descent),
-                );
+                let (w, h) = t.size();
                 out.push(Rect::new(
                     cx + t.dx,
                     cy + t.dy,
@@ -1041,6 +1262,31 @@ impl Placement {
             }
         }
         out
+    }
+}
+
+/// The screen space the labels of all layers share, filled in layer z-order
+/// (lowest first) so a label never prints over one already placed beneath
+/// it. Rebuilt every frame by the layer manager.
+pub struct LabelSpace {
+    /// Markers, icons, texts and street names placed so far.
+    pub grid: CollisionGrid,
+}
+
+impl LabelSpace {
+    /// Empty space for a `w` x `h` view.
+    pub fn new(w: f32, h: f32) -> Self {
+        Self {
+            grid: CollisionGrid::new(Config::for_view(w, h).view.inflate(GRID_CELL), GRID_CELL),
+        }
+    }
+
+    /// Claim `rects` (a layer's kept icon, text and street-name boxes) for
+    /// the layers above.
+    pub fn take(&mut self, rects: &[Rect]) {
+        for r in rects {
+            self.grid.insert(*r, NO_OWNER);
+        }
     }
 }
 
@@ -1272,6 +1518,8 @@ pub struct LabelTuning {
     pub outline_max_labels: usize,
     /// Street-name benchmark knobs, set by the `LabelBench` script action.
     pub bench: BenchKnobs,
+    /// The user's label toggles, set from the settings each frame.
+    pub vis: LabelVisibility,
 }
 
 impl Default for LabelTuning {
@@ -1280,6 +1528,7 @@ impl Default for LabelTuning {
             halo_override: None,
             outline_max_labels: OUTLINE_MAX_LABELS,
             bench: BenchKnobs::default(),
+            vis: LabelVisibility::default(),
         }
     }
 }
@@ -1310,7 +1559,10 @@ impl LabelTuning {
     /// not follow `halo_override` or `outline_max_labels` (their halo is a
     /// cached mesh, see [`crate::layers::line_labels::MeshHalo`]); to make them follow, map those here.
     pub fn line_knobs(&self) -> BenchKnobs {
-        self.bench
+        BenchKnobs {
+            labels: self.bench.labels && self.vis.street_names,
+            ..self.bench
+        }
     }
 
     /// Apply a `LabelBench` spec (see [`parse_bench`]).
@@ -1330,7 +1582,8 @@ impl LabelTuning {
         };
         let h = (self.bench.stamp() as u64)
             ^ halo.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            ^ (self.outline_max_labels as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+            ^ (self.outline_max_labels as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+            ^ (self.vis.stamp() as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
         (h as usize) << 3
     }
 }
@@ -1359,35 +1612,40 @@ pub fn paint_text(
     alpha: f32,
     mode: HaloMode,
 ) {
-    let baseline = point(top_left.x, top_left.y + t.line.ascent);
     let look = &t.look;
+    let (box_w, box_h) = t.size();
+    let line_h = t.line.ascent + t.line.descent;
+    // Each line's baseline origin; a second line is centred under the first.
+    let baselines: Vec<(&ShapedLine, Point<Pixels>)> = std::iter::once(&t.line)
+        .chain(t.line2.as_ref())
+        .enumerate()
+        .map(|(i, l)| {
+            let x = top_left.x + (px(box_w) - l.width) / 2.0;
+            let y = top_left.y + line_h * i as f32 + l.ascent;
+            (&**l, point(x, y))
+        })
+        .collect();
     if look.halo_radius > 0.0 {
         let halo = rgb_hsla(look.halo_color, look.halo_alpha * alpha);
         match mode {
             HaloMode::Offsets => {
                 for (ox, oy) in halo_offsets(look.halo_radius) {
-                    paint_glyphs(
-                        window,
-                        &t.line,
-                        point(baseline.x + px(ox), baseline.y + px(oy)),
-                        halo,
-                    );
+                    for (l, b) in &baselines {
+                        paint_glyphs(window, l, point(b.x + px(ox), b.y + px(oy)), halo);
+                    }
                 }
             }
             HaloMode::Shadow => {
                 let d = look.halo_radius * std::f32::consts::FRAC_1_SQRT_2;
-                paint_glyphs(
-                    window,
-                    &t.line,
-                    point(baseline.x + px(d), baseline.y + px(d)),
-                    halo,
-                );
+                for (l, b) in &baselines {
+                    paint_glyphs(window, l, point(b.x + px(d), b.y + px(d)), halo);
+                }
             }
             HaloMode::Quad => {
                 let pad = look.halo_radius + 1.0;
                 let b = Bounds {
                     origin: point(top_left.x - px(pad), top_left.y),
-                    size: size(t.line.width + px(2.0 * pad), t.line.ascent + t.line.descent),
+                    size: size(px(box_w + 2.0 * pad), px(box_h)),
                 };
                 let mut c = halo;
                 c.a *= 0.6;
@@ -1396,7 +1654,9 @@ pub fn paint_text(
             HaloMode::Off => {}
         }
     }
-    paint_glyphs(window, &t.line, baseline, rgb_hsla(look.color, alpha));
+    for (l, b) in &baselines {
+        paint_glyphs(window, l, *b, rgb_hsla(look.color, alpha));
+    }
 }
 
 /// Paint an icon centred on `center`: a round backing in `fill` with a dark
@@ -1479,6 +1739,96 @@ mod tests {
         // Outside the grid still collides with itself.
         g.insert(Rect::new(-500.0, -500.0, -490.0, -490.0), 3);
         assert!(g.collides(&Rect::new(-495.0, -495.0, -492.0, -492.0), NO_OWNER));
+    }
+
+    #[test]
+    fn placements_sharing_a_grid_yield_to_the_ones_before_them() {
+        // The same spot in two "layers": the later one cannot take the
+        // right-hand anchor the earlier one holds, even though both items
+        // have index 0.
+        let mut grid = CollisionGrid::new(cfg().view.inflate(GRID_CELL), GRID_CELL);
+        let mut run = |id| {
+            place_with_lines_in(
+                &[item(id, 100.0, 100.0, 40.0, 400)],
+                &[],
+                &[],
+                &HashMap::new(),
+                &cfg(),
+                &mut grid,
+            )
+            .0
+        };
+        let lower = run(1);
+        let upper = run(2);
+        assert_eq!(lower[0].text.unwrap().0, Anchor::Right);
+        let (anchor, r) = upper[0].text.unwrap();
+        assert_ne!(anchor, Anchor::Right);
+        assert!(!r.intersects(&lower[0].text.unwrap().1));
+        // Apart, with nothing shared in the way, both take their first choice.
+        let mut grid = CollisionGrid::new(cfg().view.inflate(GRID_CELL), GRID_CELL);
+        for (id, y) in [(1, 50.0), (2, 200.0)] {
+            let out = place_with_lines_in(
+                &[item(id, 100.0, y, 40.0, 400)],
+                &[],
+                &[],
+                &HashMap::new(),
+                &cfg(),
+                &mut grid,
+            )
+            .0;
+            assert_eq!(out[0].text.unwrap().0, Anchor::Right);
+        }
+    }
+
+    #[test]
+    fn a_street_name_of_a_lower_layer_blocks_points_and_streets_above() {
+        let mut grid = CollisionGrid::new(cfg().view.inflate(GRID_CELL), GRID_CELL);
+        let street = [line_slot(60.0, 160.0, 100.0, 90)];
+        let (_, ok) = place_with_lines_in(&[], &street, &[], &HashMap::new(), &cfg(), &mut grid);
+        assert_eq!(ok, [true]);
+        // A later layer's street over it loses, a clear one is fine.
+        let (_, ok) = place_with_lines_in(
+            &[],
+            &[
+                line_slot(100.0, 150.0, 100.0, 90),
+                line_slot(100.0, 150.0, 200.0, 90),
+            ],
+            &[],
+            &HashMap::new(),
+            &cfg(),
+            &mut grid,
+        );
+        assert_eq!(ok, [false, true]);
+        // A text whose every anchor would sit on the street is dropped unless
+        // forced; an unobstructed anchor is used instead.
+        let out = place_with_lines_in(
+            &[item(1, 100.0, 104.0, 40.0, 400)],
+            &[],
+            &[],
+            &HashMap::new(),
+            &cfg(),
+            &mut grid,
+        )
+        .0;
+        if let Some((_, r)) = out.first().and_then(|p| p.text) {
+            assert!(!r.intersects(&Rect::new(60.0, 94.0, 160.0, 106.0)));
+        }
+    }
+
+    #[test]
+    fn label_space_claims_the_boxes_of_a_kept_placement() {
+        let mut space = LabelSpace::new(400.0, 300.0);
+        space.take(&[Rect::new(107.0, 93.0, 147.0, 107.0)]);
+        let out = place_with_lines_in(
+            &[item(1, 100.0, 100.0, 40.0, 400)],
+            &[],
+            &[],
+            &HashMap::new(),
+            &cfg(),
+            &mut space.grid,
+        )
+        .0;
+        assert_ne!(out[0].text.unwrap().0, Anchor::Right);
     }
 
     #[test]
@@ -1619,6 +1969,105 @@ mod tests {
         assert_eq!(out[0].item, 0);
     }
 
+    fn icon_item(id: i64, x: f32, y: f32, priority: i32) -> Item {
+        Item {
+            icon_r: Some(8.0),
+            marker_r: 0.0,
+            text: None,
+            ..item(id, x, y, 0.0, priority)
+        }
+    }
+
+    /// A street-name slot over `x0..x1` at `y`.
+    fn line_slot(x0: f32, x1: f32, y: f32, priority: i32) -> LineSlot {
+        LineSlot {
+            ci: 0,
+            slot: 0,
+            priority: priority.into(),
+            rects: vec![Rect::new(x0, y - 6.0, x1, y + 6.0)],
+        }
+    }
+
+    #[test]
+    fn water_areas_are_italic_and_others_are_not() {
+        for t in [
+            &[("natural", "water")][..],
+            &[("natural", "bay")],
+            &[("waterway", "riverbank")],
+            &[("landuse", "reservoir")],
+        ] {
+            assert!(area_label_italic(&tags(t)), "{t:?}");
+        }
+        for t in [
+            &[("natural", "wood")][..],
+            &[("leisure", "park")],
+            &[("building", "yes")],
+            &[],
+        ] {
+            assert!(!area_label_italic(&tags(t)), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn label_priority_replaces_the_tier_and_the_area_size_bonus() {
+        let tags = Tags::default();
+        let style = TextStyle {
+            label_priority: Some(600),
+            ..TextStyle::default()
+        };
+        let p = LabelPriority::of(LabelClass::Street, &tags).with_style(&style);
+        assert_eq!(p.score(), 600);
+        let area = LabelPriority::of(LabelClass::Area, &tags);
+        assert_eq!(area.with_size_px(1000.0).score(), 280 + 30);
+        assert_eq!(area.with_style(&style).with_size_px(1000.0).score(), 600);
+        // No property: unchanged.
+        let none = TextStyle::default();
+        assert_eq!(area.with_style(&none).tier, 280);
+    }
+
+    #[test]
+    fn street_names_yield_to_icons_unless_given_a_higher_priority() {
+        // The icon sits on the street name.
+        let icons = [icon_item(1, 100.0, 100.0, 500)];
+        let lines = |p| [line_slot(60.0, 160.0, 100.0, p)];
+        let (placed, ok) = place_with_lines(&icons, &lines(90), &[], &HashMap::new(), &cfg());
+        assert!(placed[0].icon);
+        assert_eq!(ok, [false], "default street tier loses to an icon");
+        let (placed, ok) = place_with_lines(&icons, &lines(600), &[], &HashMap::new(), &cfg());
+        assert!(
+            placed.is_empty(),
+            "the icon yields to the higher-ranked street"
+        );
+        assert_eq!(ok, [true]);
+        // A tie goes to the icon (placed first).
+        let (placed, ok) = place_with_lines(&icons, &lines(500), &[], &HashMap::new(), &cfg());
+        assert!(placed[0].icon);
+        assert_eq!(ok, [false]);
+    }
+
+    #[test]
+    fn street_names_and_texts_compete_by_priority() {
+        // The text's box lands on the street name.
+        let texts = [item(1, 100.0, 100.0, 60.0, 400)];
+        let at = |p| [line_slot(110.0, 170.0, 100.0, p)];
+        let (placed, ok) = place_with_lines(&texts, &at(90), &[], &HashMap::new(), &cfg());
+        assert!(placed[0].text.is_some());
+        assert_eq!(ok, [false]);
+        let (_, ok) = place_with_lines(&texts, &at(420), &[], &HashMap::new(), &cfg());
+        assert_eq!(ok, [true], "a street ranked above the text takes the spot");
+    }
+
+    #[test]
+    fn a_street_name_must_fit_in_the_view_and_clear_other_streets() {
+        let lines = [
+            line_slot(10.0, 90.0, 50.0, 80),
+            line_slot(50.0, 130.0, 50.0, 70),
+            line_slot(-20.0, 40.0, 200.0, 90),
+        ];
+        let (_, ok) = place_with_lines(&[], &lines, &[], &HashMap::new(), &cfg());
+        assert_eq!(ok, [true, false, false]);
+    }
+
     #[test]
     fn icons_beat_text_and_each_other_by_priority() {
         let mut a = item(1, 100.0, 100.0, 50.0, 500);
@@ -1750,6 +2199,43 @@ mod tests {
         );
         let l17 = resolve_node_label(&st, &t, &mut ic, 17.0).unwrap();
         assert!(l17.text.is_some() && l17.icon.is_some());
+    }
+
+    #[test]
+    fn the_label_toggles_gate_node_text_and_icons() {
+        let t = tags(&[("amenity", "cafe"), ("name", "Joe")]);
+        let st = style(
+            "node[amenity] { text: name; icon-image: preset; }",
+            &t,
+            18.0,
+        );
+        let mut ic = IconCache::new();
+        let on = LabelVisibility::default();
+        let l = resolve_node_label_with(&st, &t, &mut ic, 18.0, on).unwrap();
+        assert!(l.text.is_some() && l.icon.is_some());
+        let no_text = LabelVisibility {
+            labels: false,
+            ..on
+        };
+        let l = resolve_node_label_with(&st, &t, &mut ic, 18.0, no_text).unwrap();
+        assert!(l.text.is_none() && l.icon.is_some());
+        let no_icons = LabelVisibility {
+            poi_icons: false,
+            ..on
+        };
+        let l = resolve_node_label_with(&st, &t, &mut ic, 18.0, no_icons).unwrap();
+        assert!(l.text.is_some() && l.icon.is_none());
+        let neither = LabelVisibility {
+            labels: false,
+            poi_icons: false,
+            ..on
+        };
+        assert!(resolve_node_label_with(&st, &t, &mut ic, 18.0, neither).is_none());
+        // Street names switch the line knobs off without touching the bench.
+        let mut tu = LabelTuning::default();
+        assert!(tu.line_knobs().labels);
+        tu.vis.street_names = false;
+        assert!(!tu.line_knobs().labels && tu.bench.labels);
     }
 
     #[test]
@@ -2266,6 +2752,17 @@ mod tests {
             outline_max_labels: 5,
             ..base
         });
+        for i in 1..16usize {
+            check(LabelTuning {
+                vis: LabelVisibility {
+                    labels: i & 1 == 0,
+                    poi_icons: i & 2 == 0,
+                    street_names: i & 4 == 0,
+                    area_labels: i & 8 == 0,
+                },
+                ..base
+            });
+        }
         // Setting the defaults explicitly is not a change.
         let mut same = base;
         same.set_bench("on halo=coarse repeat=1").unwrap();

@@ -456,6 +456,15 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Switch one kind of map label on or off. Written straight to the store,
+    /// which the map reads every frame; the windows are refreshed so the map
+    /// repaints.
+    fn set_label_toggle(&mut self, set: impl FnOnce(&mut AppSettings), cx: &mut Context<Self>) {
+        self.commit(set);
+        cx.refresh_windows();
+        cx.notify();
+    }
+
     /// Load the style at `location` (`None` is the built-in style) off the UI
     /// thread and, if it parses, make it the active one. A style that cannot
     /// be read or parsed is reported and the current style stays in use.
@@ -998,7 +1007,57 @@ impl SettingsWindow {
         let value_view = view.clone();
         let welcome_view = view.clone();
         let invert_view = view.clone();
+        let label_views: [Entity<Self>; 4] = std::array::from_fn(|_| view.clone());
         let set_value_view = view;
+        let [labels_view, icons_view, streets_view, areas_view] = label_views;
+        let labels_item = SettingItem::new(
+            tr!("settings.appearance.show_labels"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().show_labels,
+                move |on: bool, cx: &mut App| {
+                    labels_view.update(cx, |this, cx| {
+                        this.set_label_toggle(|s| s.show_labels = on, cx)
+                    });
+                },
+            ),
+        )
+        .description(tr!("settings.appearance.show_labels_description"));
+        let icons_item = SettingItem::new(
+            tr!("settings.appearance.show_poi_icons"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().show_poi_icons,
+                move |on: bool, cx: &mut App| {
+                    icons_view.update(cx, |this, cx| {
+                        this.set_label_toggle(|s| s.show_poi_icons = on, cx)
+                    });
+                },
+            ),
+        )
+        .description(tr!("settings.appearance.show_poi_icons_description"));
+        let streets_item = SettingItem::new(
+            tr!("settings.appearance.show_street_names"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().show_street_names,
+                move |on: bool, cx: &mut App| {
+                    streets_view.update(cx, |this, cx| {
+                        this.set_label_toggle(|s| s.show_street_names = on, cx)
+                    });
+                },
+            ),
+        )
+        .description(tr!("settings.appearance.show_street_names_description"));
+        let areas_item = SettingItem::new(
+            tr!("settings.appearance.show_area_labels"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().show_area_labels,
+                move |on: bool, cx: &mut App| {
+                    areas_view.update(cx, |this, cx| {
+                        this.set_label_toggle(|s| s.show_area_labels = on, cx)
+                    });
+                },
+            ),
+        )
+        .description(tr!("settings.appearance.show_area_labels_description"));
         let invert_item = SettingItem::new(
             tr!("settings.appearance.invert_scroll_zoom"),
             SettingField::switch(
@@ -1069,6 +1128,12 @@ impl SettingsWindow {
                     .item(item),
                 self.language_group(language_view),
                 self.map_style_group(map_style_view),
+                SettingGroup::new()
+                    .title(tr!("settings.appearance.map_labels_group"))
+                    .item(labels_item)
+                    .item(icons_item)
+                    .item(streets_item)
+                    .item(areas_item),
                 SettingGroup::new()
                     .title(tr!("settings.appearance.scroll_group"))
                     .item(invert_item),

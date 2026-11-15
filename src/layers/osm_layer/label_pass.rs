@@ -19,6 +19,8 @@ pub(super) enum Subject {
     Area {
         label: Arc<area_labels::AreaLabel>,
         line: Arc<ShapedLine>,
+        /// The second line of a wrapped label.
+        line2: Option<Arc<ShapedLine>>,
         /// Where the text is centred, Mercator metres.
         mx: f64,
         my: f64,
@@ -50,13 +52,19 @@ impl OsmLayer {
         id: NodeId,
         zoom: f64,
     ) -> Option<Arc<labels::NodeLabel>> {
-        let labels::LabelCache { nodes, icons, .. } = cache;
+        let labels::LabelCache {
+            nodes,
+            icons,
+            tuning,
+            ..
+        } = cache;
+        let vis = tuning.vis;
         nodes
             .entry(id.get())
             .or_insert_with(|| {
                 let tags = &self.store.osm_data.as_ref()?.nodes.get(&id)?.tags;
                 let st = self.store.stylesheet.node_text_style(tags, zoom);
-                labels::resolve_node_label(&st, tags, icons, zoom).map(Arc::new)
+                labels::resolve_node_label_with(&st, tags, icons, zoom, vis).map(Arc::new)
             })
             .clone()
     }
@@ -162,20 +170,61 @@ impl OsmLayer {
         forced: bool,
         budget: &mut usize,
         window: &mut Window,
-    ) -> Option<(area_labels::Located, Arc<ShapedLine>)> {
+    ) -> Option<(
+        area_labels::Located,
+        Arc<ShapedLine>,
+        Option<Arc<ShapedLine>>,
+    )> {
         let geom = self.area_geom_for(cache, key)?;
-        let line = cache.shapes.get(window, &label.text, label.look.font_px);
+        let font_px = label.look.font_px;
+        let italic = label.italic;
+        let line = cache
+            .shapes
+            .get_styled(window, &label.text, font_px, italic);
         let size = (f32::from(line.width), f32::from(line.ascent + line.descent));
-        let scales = area_labels::font_scales(label.look.font_px);
-        let at = area_labels::locate(&geom, view, size, &scales, forced, budget)?;
+        // The name on two lines too, if it has a space to split at.
+        let halves = area_labels::split_two_lines(&label.text);
+        let wrapped = halves.map(|(a, b)| {
+            let a = cache.shapes.get_styled(
+                window,
+                &SharedString::from(a.to_string()),
+                font_px,
+                italic,
+            );
+            let b = cache.shapes.get_styled(
+                window,
+                &SharedString::from(b.to_string()),
+                font_px,
+                italic,
+            );
+            labels::text_size(&a, Some(&b))
+        });
+        let scales = area_labels::font_scales(font_px);
+        let at = area_labels::locate_wrapped(&geom, view, size, wrapped, &scales, forced, budget)?;
+        let px_size = font_px * at.scale;
+        if let (2, Some((a, b))) = (at.lines, halves) {
+            let a = cache.shapes.get_styled(
+                window,
+                &SharedString::from(a.to_string()),
+                px_size,
+                italic,
+            );
+            let b = cache.shapes.get_styled(
+                window,
+                &SharedString::from(b.to_string()),
+                px_size,
+                italic,
+            );
+            return Some((at, a, Some(b)));
+        }
         let line = if at.scale == 1.0 {
             line
         } else {
             cache
                 .shapes
-                .get(window, &label.text, label.look.font_px * at.scale)
+                .get_styled(window, &label.text, px_size, italic)
         };
-        Some((at, line))
+        Some((at, line, None))
     }
 
     /// The named areas in view as placement items (`Anchor::Center`, no
@@ -195,6 +244,9 @@ impl OsmLayer {
         node_texts: &HashMap<SharedString, Vec<(f64, f64)>>,
         window: &mut Window,
     ) -> Vec<Candidate> {
+        if !cache.tuning.vis.area_labels {
+            return Vec::new();
+        }
         let zoom = cam.zoom;
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
         let view = area_labels::AreaView::new(vmin_x, vmax_x, vmax_y, cam.w, cam.h);
@@ -271,7 +323,7 @@ impl OsmLayer {
         let mut out = Vec::with_capacity(found.len());
         for (key, label, bpx) in found {
             let is_forced = forced.contains(&key);
-            let Some((at, line)) =
+            let Some((at, line, line2)) =
                 self.locate_area_label(cache, &view, key, &label, is_forced, &mut budget, window)
             else {
                 continue;
@@ -280,7 +332,7 @@ impl OsmLayer {
                 continue;
             }
             let sp = viewport.mercator_to_screen(Mercator::new(at.mx, at.my));
-            let (w, h) = (f32::from(line.width), f32::from(line.ascent + line.descent));
+            let (w, h) = labels::text_size(&line, line2.as_deref());
             out.push(Candidate {
                 item: labels::Item {
                     key,
@@ -293,6 +345,7 @@ impl OsmLayer {
                 subject: Subject::Area {
                     label,
                     line,
+                    line2,
                     mx: at.mx,
                     my: at.my,
                 },
@@ -320,6 +373,7 @@ impl OsmLayer {
 
     /// Place the labels and icons of the nodes in view (the expensive half;
     /// run when the camera settles, not every frame).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn place_labels(
         &self,
         cache: &mut labels::LabelCache,
@@ -327,6 +381,7 @@ impl OsmLayer {
         cam: labels::CameraSig,
         selected: &HashSet<i64>,
         forced_areas: &HashSet<labels::Key>,
+        space: &mut labels::LabelSpace,
         window: &mut Window,
     ) -> labels::Placement {
         let fs = crate::frame_stats::start();
@@ -409,11 +464,24 @@ impl OsmLayer {
         cands.extend(self.area_items(cache, viewport, cam, forced_areas, &node_texts, window));
         let items: Vec<labels::Item> = cands.iter().map(|c| c.item.clone()).collect();
         let prev = cache.prev_state();
-        let out = labels::place(
+        // Street names rank against the icons and texts in the same pass.
+        let line_cands = self.line_label_candidates(viewport, zoom);
+        let (line_slots, _) = self.line_label_slots(viewport, cam, &line_cands, cache);
+        let (out, line_ok) = labels::place_with_lines_in(
             &items,
+            &line_slots,
             &fixed,
             &prev,
             &labels::Config::for_view(cam.w, cam.h),
+            &mut space.grid,
+        );
+        self.store_line_labels(
+            viewport,
+            cam,
+            &line_cands,
+            &line_slots,
+            &line_ok,
+            std::time::Instant::now(),
         );
         let mut placed = Vec::with_capacity(out.len());
         let mut by_id = HashMap::with_capacity(out.len());
@@ -423,6 +491,7 @@ impl OsmLayer {
                 Subject::Area {
                     label,
                     line,
+                    line2,
                     mx,
                     my,
                 } => {
@@ -432,7 +501,8 @@ impl OsmLayer {
                             item.key.1,
                             *mx,
                             *my,
-                            labels::PlacedText::in_rect(line.clone(), &r, item.center, label.look),
+                            labels::PlacedText::in_rect(line.clone(), &r, item.center, label.look)
+                                .with_second(line2.clone()),
                         ));
                     }
                 }
@@ -476,7 +546,9 @@ impl OsmLayer {
     /// Paint labels and POI icons above everything `render_canvas` and the
     /// highlights drew; `selected` and `hovered` keep their labels even when
     /// collision would drop them. Places when the camera has settled (or the
-    /// data changed), otherwise just re-projects the last placement.
+    /// data changed), otherwise just re-projects the last placement. `space`
+    /// is shared by all layers, which call this in z-order: this layer's
+    /// labels yield to the ones already in it and then claim their share.
     #[allow(clippy::too_many_arguments)]
     pub fn render_labels(
         &self,
@@ -484,6 +556,8 @@ impl OsmLayer {
         bounds: Bounds<Pixels>,
         selected: &[FeatureRef],
         hovered: Option<&FeatureRef>,
+        vis: labels::LabelVisibility,
+        space: &mut labels::LabelSpace,
         window: &mut Window,
         cx: &App,
     ) {
@@ -511,6 +585,7 @@ impl OsmLayer {
             .label_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        cache.tuning.vis = vis;
         let sheet = self.label_sheet_id(&cache.tuning);
         cache.validate(self.store.revision, sheet, zoom.floor() as i32);
         let now = std::time::Instant::now();
@@ -532,9 +607,33 @@ impl OsmLayer {
                     FeatureKind::Node => None,
                 })
                 .collect();
-            let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
-            self.place_line_labels(viewport, cam, &p, &cache.tuning.line_knobs(), now);
+            let p = self.place_labels(
+                &mut cache,
+                viewport,
+                cam,
+                &ids,
+                &forced_areas,
+                space,
+                window,
+            );
             cache.store(p, now);
+        } else if step != labels::Step::HideAndWait {
+            // The kept placement (points and street names) still occupies
+            // its space for the layers above.
+            let to_screen = |mx: f64, my: f64| {
+                let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
+                (f32::from(sp.x), f32::from(sp.y))
+            };
+            if let Some(p) = &cache.placement {
+                space.take(&p.occupied(to_screen));
+            }
+            let lines = self
+                .render
+                .line_placed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .occupied(to_screen);
+            space.take(&lines);
         }
         // Frames are requested only while something is in flight: waiting to
         // settle, or a fade-in running.
@@ -629,11 +728,12 @@ impl OsmLayer {
             let item = forced_item(
                 (labels::KIND_NODE, f.id),
                 reach,
-                &line,
+                labels::text_size(&line, None),
                 label.pref,
                 label.priority,
             );
-            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
+            let t = labels::PlacedText::new(line, 0.0, 0.0, label.look);
+            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, t);
         }
         // Likewise a selected or hovered area whose label was not placed:
         // shown at its label point, fitted or not, collision ignored.
@@ -646,6 +746,7 @@ impl OsmLayer {
                 FeatureKind::Node => continue,
             };
             if f.layer_id != self.id
+                || !vis.area_labels
                 || placement
                     .labels
                     .iter()
@@ -657,7 +758,7 @@ impl OsmLayer {
             let Some(label) = self.area_label_for(&mut cache, key, zoom) else {
                 continue;
             };
-            let Some((at, line)) = self.locate_area_label(
+            let Some((at, line, line2)) = self.locate_area_label(
                 &mut cache,
                 &view,
                 key,
@@ -672,8 +773,10 @@ impl OsmLayer {
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
-            let item = forced_item(key, 0.0, &line, labels::Anchor::Center, label.priority);
-            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
+            let (w, h) = labels::text_size(&line, line2.as_deref());
+            let item = forced_item(key, 0.0, (w, h), labels::Anchor::Center, label.priority);
+            let t = labels::PlacedText::new(line, 0.0, 0.0, label.look).with_second(line2);
+            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, t);
         }
         cache.placement = Some(placement);
         crate::frame_stats::lap("labels.paint", fs);
@@ -730,35 +833,27 @@ impl OsmLayer {
                 text,
                 verts: &self.derived.way_vertices[i],
                 style: LabelStyle::resolve(&st, half_width),
-                priority: labels::LabelPriority::of(labels::LabelClass::Street, &way.tags),
+                priority: labels::LabelPriority::of(labels::LabelClass::Street, &way.tags)
+                    .with_style(&st),
             });
         }
         cands
     }
 
-    /// Choose the street-name labels for the current camera, yielding to
-    /// the point labels and icons in `points`. Stores the result for
-    /// `paint_line_labels`.
-    pub(super) fn place_line_labels(
+    /// Lay out the street-name candidates for the current camera, ready to
+    /// be ranked with the point labels in [`labels::place_with_lines`].
+    pub(super) fn line_label_slots(
         &self,
         viewport: &Viewport,
         cam: labels::CameraSig,
-        points: &labels::Placement,
-        knobs: &crate::layers::line_labels::BenchKnobs,
-        now: std::time::Instant,
-    ) {
-        let fs = crate::frame_stats::start();
-        let obstacles = points.occupied(|mx, my| {
-            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
-            (f32::from(sp.x), f32::from(sp.y))
-        });
-        let cands = self.line_label_candidates(viewport, cam.zoom);
-        let mut placed_slot = self
+        cands: &[crate::layers::line_labels::Candidate<'_>],
+        cache: &labels::LabelCache,
+    ) -> (Vec<crate::layers::line_labels::LineSlot>, usize) {
+        let prev: HashSet<(i64, usize)> = self
             .render
             .line_placed
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let prev: HashSet<(i64, usize)> = placed_slot
+            .unwrap_or_else(|e| e.into_inner())
             .placed
             .iter()
             .map(|p| (p.way_id, p.slot))
@@ -767,22 +862,68 @@ impl OsmLayer {
             let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             (f32::from(sp.x), f32::from(sp.y))
         };
-        let (placed, _built) = match self.render.line_labels.lock() {
-            Ok(mut cache) => cache.place(
-                &cands,
+        match self.render.line_labels.lock() {
+            Ok(mut lc) => lc.prepare(
+                cands,
                 cam.zoom,
-                knobs,
+                &cache.tuning.line_knobs(),
                 to_screen,
-                (cam.w, cam.h),
-                &obstacles,
                 &prev,
             ),
             Err(_) => (Vec::new(), 0),
+        }
+    }
+
+    /// Keep the street names `place_with_lines` accepted (`ok[i]` for
+    /// `slots[i]`) for `paint_line_labels`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn store_line_labels(
+        &self,
+        viewport: &Viewport,
+        cam: labels::CameraSig,
+        cands: &[crate::layers::line_labels::Candidate<'_>],
+        slots: &[crate::layers::line_labels::LineSlot],
+        ok: &[bool],
+        now: std::time::Instant,
+    ) {
+        let to_screen = |mx: f64, my: f64| {
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
+            (f32::from(sp.x), f32::from(sp.y))
+        };
+        let (placed, boxes): (Vec<_>, Vec<_>) = match self.render.line_labels.lock() {
+            Ok(lc) => slots
+                .iter()
+                .zip(ok)
+                .filter(|(_, &ok)| ok)
+                .map(|(s, _)| {
+                    let p = lc.finish(&cands[s.ci], s, to_screen);
+                    // Boxes relative to the anchor, to re-project when kept.
+                    let (ax, ay) = to_screen(p.mx, p.my);
+                    let offs = s
+                        .rects
+                        .iter()
+                        .map(|r| labels::Rect::new(r.x0 - ax, r.y0 - ay, r.x1 - ax, r.y1 - ay))
+                        .collect();
+                    let anchor = (p.mx, p.my);
+                    (p, (anchor.0, anchor.1, offs))
+                })
+                .unzip(),
+            Err(_) => (Vec::new(), Vec::new()),
         };
         crate::frame_stats::count("linelabels.candidates", cands.len());
         crate::frame_stats::count("linelabels.placed", placed.len());
-        placed_slot.store(placed, cam.zoom, now, labels::ZOOM_KEEP, labels::FADE);
-        crate::frame_stats::lap("linelabels.place", fs);
+        self.render
+            .line_placed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .store(placed, cam.zoom, now, labels::ZOOM_KEEP, labels::FADE);
+        // The boxes are keyed by their own anchor, so `store`'s reordering of
+        // `placed` does not matter.
+        self.render
+            .line_placed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .boxes = boxes;
     }
 
     /// Paint the placed street-name labels: halos first, then glyph fills.
@@ -902,7 +1043,7 @@ impl OsmLayer {
 fn forced_item(
     key: labels::Key,
     marker_r: f32,
-    line: &ShapedLine,
+    (w, h): (f32, f32),
     anchor: labels::Anchor,
     priority: labels::LabelPriority,
 ) -> labels::Item {
@@ -911,11 +1052,7 @@ fn forced_item(
         center: (0.0, 0.0),
         marker_r,
         icon_r: None,
-        text: Some((
-            f32::from(line.width),
-            f32::from(line.ascent + line.descent),
-            anchor,
-        )),
+        text: Some((w, h, anchor)),
         priority: priority.with_forced(true),
     }
 }
@@ -925,13 +1062,12 @@ fn paint_forced(
     window: &mut Window,
     at: Point<Pixels>,
     item: &labels::Item,
-    line: Arc<ShapedLine>,
-    look: labels::TextLook,
+    mut t: labels::PlacedText,
 ) {
     let Some((_, r)) = item.forced_text_rect() else {
         return;
     };
-    let t = labels::PlacedText::new(line, r.x0, r.y0, look);
+    (t.dx, t.dy) = (r.x0, r.y0);
     labels::paint_text(
         window,
         &t,
