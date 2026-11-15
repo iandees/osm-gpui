@@ -271,7 +271,7 @@ Each item was checked against the code.
 
 - **Typed coordinates.** Latitude/longitude travel as bare `(f64, f64)` tuples whose order differs between modules (`Viewport::center` and `screen_to_geo` return `(lat, lon)`, while mercator values are `(x, y)` pairs of the same type), and the mercator bounds are tuples too. Introduce `LatLon` and `Mercator` newtypes and a bounds struct.
 - **`MapViewer` field grouping.** `MapViewer` in `src/main.rs` is still one flat struct; group related fields (viewport and interaction, dialogs, autosave, imagery) into sub-structs.
-- **Imagery provider secrets in the keychain.** `mapillary_token` and `fotoshi_api_key` are plain fields of `settings.json` (`src/settings_store.rs`); store them in the keyring like the OAuth token.
+- ✅ **Imagery provider secrets in the keychain.** Done in #301: `src/secrets.rs` keeps `mapillary_token` and `fotoshi_api_key` in the keyring (owner-only `secrets.json` fallback when the keychain refuses), reads lazily once per session, and `migrate_from_settings` moves legacy plaintext out of `settings.json` at startup.
 - **Fully offline script runs.** Scripts still use the real HTTP client for anything not seeded by a fixture; add a script-mode `HttpClient` that serves only fixtures and fails loudly otherwise.
 - **Flaky UI scripts when the window is covered.** Scripts can hang at `capture` or `scroll` after an idle wait when another window covers the app; not yet diagnosed.
 - **3D building follow-ups.** The 3D view work lives on the unmerged `building-3d` branch; its follow-ups stay open until it merges.
@@ -287,4 +287,4 @@ The original edit-loop arc (versions, undo, tags, create/delete, quit guard, upl
 2. **MapCSS leftovers:** node zoom selectors beyond z18 (3.14 item 9), chevron/one-way properties (7).
 3. **Small rendering items:** 3.11 (theme-sourced map colors, tile fade, error badge), 3.7 remainder (theme accent).
 4. **UX gaps:** 4.1(c) auto-fetch on viewport settle, 4.5 double-click zoom.
-5. **Code health, safely parallelizable:** 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 `OsmParser` associated functions, then the "Still open from the architecture review" list (typed coordinates, `MapViewer` field grouping, imagery secrets in the keychain, a script-mode HTTP client, the covered-window script hangs, compiler-checked dispatch for the last two mode hooks).
+5. **Code health, safely parallelizable:** 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 `OsmParser` associated functions, then the "Still open from the architecture review" list (typed coordinates, `MapViewer` field grouping, a script-mode HTTP client, the covered-window script hangs, compiler-checked dispatch for the last two mode hooks).
