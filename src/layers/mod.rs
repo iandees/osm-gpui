@@ -21,6 +21,7 @@ pub mod reference_layer;
 pub mod resolve;
 pub mod street_imagery_layer;
 pub mod tile_layer;
+pub mod vector_tile_layer;
 pub mod way_stroke;
 
 /// Wash laid over the part of the map that was not downloaded (RGBA): a deep
@@ -151,6 +152,8 @@ pub enum LayerKind {
     /// GPX, GeoJSON and downloaded GPS traces.
     Reference,
     StreetImagery,
+    /// Tiles of a vector-tile archive (PMTiles).
+    VectorTile,
 }
 
 /// What a layer found under a click, in the layer's own terms.

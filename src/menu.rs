@@ -17,6 +17,7 @@ use osm_gpui::ui::settings_window::SettingsPage;
 use crate::gps_traces_ui::DownloadGpsTraces;
 use crate::history_actions::ShowObjectHistory;
 use crate::notes_ui::{NewNote, RefreshNotes, ToggleNotes};
+use crate::pmtiles_ui::AddPmtilesLayer;
 use crate::selection_actions;
 use crate::street_imagery_ui::{
     RefreshStreetImagery, ToggleFotoshi, ToggleMapillary, TogglePanoramax,
@@ -343,6 +344,11 @@ pub(crate) fn toggle_debug_overlay(_: &ToggleDebugOverlay, cx: &mut App) {
 // Global fallback, deferred; see `upload_to_osm`.
 pub(crate) fn open_custom_imagery_dialog(_: &AddCustomImagery, cx: &mut App) {
     cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_custom_imagery_dialog(window, cx)));
+}
+
+// Global fallback, deferred; see `upload_to_osm`.
+pub(crate) fn open_pmtiles_dialog(_: &AddPmtilesLayer, cx: &mut App) {
+    cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_pmtiles_dialog(window, cx)));
 }
 
 // Global fallback, deferred; see `upload_to_osm`.
@@ -742,6 +748,7 @@ fn build_menus(
     let mut custom_items: Vec<MenuItem> = vec![
         MenuItem::action(tr!("menu.imagery.custom_add"), AddCustomImagery),
         MenuItem::action(tr!("menu.imagery.esri_add"), AddEsriImagery),
+        MenuItem::action(tr!("menu.imagery.pmtiles_add"), AddPmtilesLayer),
     ];
     if !custom.is_empty() {
         custom_items.push(MenuItem::separator());

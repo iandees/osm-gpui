@@ -48,6 +48,7 @@ menu:
     custom: "Eigenes Hintergrundbild"
     custom_add: "Hinzufügen …"
     esri_add: "Esri-Ebene hinzufügen …"
+    pmtiles_add: "PMTiles-Vektorebene hinzufügen …"
     osm_carto: "OpenStreetMap Carto"
     loading: "(Lade Bildquellenverzeichnis …)"
     unavailable: "(Bildquellenverzeichnis nicht verfügbar)"
@@ -1052,6 +1053,16 @@ dialog:
       min_zoom_invalid: "Min. Zoom muss eine ganze Zahl von 0 bis 24 sein."
       max_zoom_invalid: "Max. Zoom muss eine ganze Zahl von 0 bis 24 sein."
       min_zoom_above_max: "Min. Zoom darf nicht größer als Max. Zoom sein."
+  pmtiles:
+    title: "PMTiles-Vektorebene hinzufügen"
+    source: "Adresse oder Datei des Archivs"
+    source_placeholder: "https://…/tiles.pmtiles oder /Pfad/zu/tiles.pmtiles"
+    name: "Name (optional)"
+    name_placeholder: "Nach der Datei benannt"
+    hint: "Zeigt ein PMTiles-Archiv mit Vektorkacheln (MVT) als Überlagerung, in einer Farbe je Ebene. Eine Webadresse muss Bereichsanfragen erlauben."
+    confirm: "Hinzufügen"
+    error:
+      source_empty: "Gib die Adresse eines PMTiles-Archivs oder den Pfad einer Datei ein."
   esri:
     title: "Esri-Ebene hinzufügen"
     url: "ArcGIS-REST-Adresse"
@@ -1292,6 +1303,14 @@ validator:
     tag_whitespace: "Das Tag „%{key}“ hat führende oder abschließende Leerzeichen"
     fixme: "Enthält einen Korrekturhinweis: %{key}=%{value}"
     deprecated_tag: "Veraltetes Tag %{old}; stattdessen %{new} verwenden"
+pmtiles:
+  state:
+    opening: "%{name} wird geöffnet …"
+    open_failed: "%{name} konnte nicht geöffnet werden: %{detail}"
+    loading: "Kacheln von %{name} werden geladen …"
+    loaded: "%{name}: Kacheln geladen"
+    tile_failed: "%{name}: Eine Kachel konnte nicht geladen werden (%{detail})"
+
 street_imagery:
   menu:
     mapillary: "Mapillary-Fotos anzeigen"

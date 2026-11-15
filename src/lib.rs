@@ -49,6 +49,7 @@ pub mod osm_export;
 pub mod osm_upload;
 pub mod parallel;
 pub mod persist;
+pub mod pmtiles;
 pub mod polylabel;
 pub mod preset_recents;
 pub mod preset_translations;
@@ -79,6 +80,7 @@ pub mod transfer;
 pub mod ui;
 pub mod upload_chunks;
 pub mod validator;
+pub mod vector_tile;
 pub mod version;
 pub mod viewport;
 
