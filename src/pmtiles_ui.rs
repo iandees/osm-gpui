@@ -9,16 +9,22 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext as _, Context, Window};
+use gpui::{div, prelude::*, px, AnyElement, Context, SharedString, Window};
+use gpui_component::{
+    button::{Button, ButtonVariants as _},
+    label::Label,
+    v_flex, ActiveTheme as _, IconName, Sizable as _,
+};
+use osm_gpui::ui::style::muted_text_size;
 
 use osm_gpui::layers::vector_tile_layer::{
-    needed_tiles, tile_zoom, VectorTileLayer, VectorTileStore,
+    needed_tiles, tile_zoom, VectorFeatureInfo, VectorTileLayer, VectorTileStore,
 };
 use osm_gpui::layers::LayerId;
 use osm_gpui::pmtiles::{Archive, SourceSpec};
 use osm_gpui::tiles::TileCoord;
 use osm_gpui::tr;
-use osm_gpui::vector_tile::{self, DecodedTile};
+use osm_gpui::vector_tile::{self, DecodedTile, GeomKind};
 
 use crate::MapViewer;
 
@@ -46,6 +52,8 @@ struct Overlay {
 #[derive(Default)]
 pub(crate) struct PmtilesState {
     overlays: Vec<Overlay>,
+    /// The feature open in the side panel, and the layer it is in.
+    selected: Option<(LayerId, Arc<VectorFeatureInfo>)>,
 }
 
 impl MapViewer {
@@ -135,6 +143,125 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// Open `info`, a feature of layer `layer`, in the side panel and
+    /// highlight it on the map. It replaces the OSM selection.
+    pub(crate) fn select_vector_feature(&mut self, layer: LayerId, info: Arc<VectorFeatureInfo>) {
+        self.close_vector_feature();
+        self.set_selection(Vec::new());
+        self.close_note_panel();
+        self.close_photo_panel();
+        if let Some(o) = self.pmtiles.overlays.iter().find(|o| o.layer == layer) {
+            o.store.set_selected(Some((info.tile, info.index)));
+        }
+        self.pmtiles.selected = Some((layer, info));
+    }
+
+    pub(crate) fn close_vector_feature(&mut self) {
+        if self.pmtiles.selected.take().is_some() {
+            for o in &self.pmtiles.overlays {
+                o.store.set_selected(None);
+            }
+        }
+    }
+
+    /// The side-panel section for the open feature, shaped like the photo
+    /// one: its title, a pinned header row and the scrolled attributes.
+    pub(crate) fn render_vector_feature_section(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(SharedString, AnyElement, AnyElement)> {
+        let (_, info) = self.pmtiles.selected.clone()?;
+        // Selecting an OSM feature replaces it.
+        if !self.selected.is_empty() {
+            self.close_vector_feature();
+            return None;
+        }
+        let theme = cx.theme();
+        let (muted, foreground, border) = (theme.muted_foreground, theme.foreground, theme.border);
+        let kind = match info.kind {
+            GeomKind::Point => tr!("pmtiles.panel.geometry.point"),
+            GeomKind::Line => tr!("pmtiles.panel.geometry.line"),
+            GeomKind::Polygon => tr!("pmtiles.panel.geometry.polygon"),
+        };
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .child(
+                div().flex_1().min_w_0().truncate().child(
+                    Label::new(format!("{} · {}", info.layer, kind))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(foreground),
+                ),
+            )
+            .child(
+                Button::new("vector-feature-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(tr!("pmtiles.panel.close"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_vector_feature();
+                        cx.notify();
+                    })),
+            )
+            .into_any_element();
+
+        let mut rows: Vec<AnyElement> = Vec::new();
+        if let Some(id) = info.id {
+            rows.push(
+                Label::new(tr!("pmtiles.panel.id", id = id))
+                    .text_size(muted_text_size())
+                    .text_color(muted)
+                    .into_any_element(),
+            );
+        }
+        for (k, v) in &info.props {
+            rows.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(110.0))
+                            .flex_shrink_0()
+                            .text_size(muted_text_size())
+                            .text_color(muted)
+                            .child(k.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(muted_text_size())
+                            .text_color(foreground)
+                            .child(v.clone()),
+                    )
+                    .into_any_element(),
+            );
+        }
+        if info.props.is_empty() && info.id.is_none() {
+            rows.push(
+                Label::new(tr!("pmtiles.panel.no_attributes"))
+                    .text_size(muted_text_size())
+                    .text_color(muted)
+                    .into_any_element(),
+            );
+        }
+        let body = v_flex()
+            .gap_1()
+            .p_2()
+            .border_t_1()
+            .border_color(border)
+            .children(rows)
+            .into_any_element();
+        Some((tr!("pmtiles.panel.title"), header, body))
+    }
+
     /// Per-frame upkeep, called from `render`: forgets overlays whose layer
     /// was deleted and fetches the tiles the map has moved onto. Cheap when
     /// nothing is missing.
@@ -146,6 +273,14 @@ impl MapViewer {
         self.pmtiles
             .overlays
             .retain(|o| layers.find_layer(o.layer).is_some());
+        if self
+            .pmtiles
+            .selected
+            .as_ref()
+            .is_some_and(|(id, _)| !self.pmtiles.overlays.iter().any(|o| o.layer == *id))
+        {
+            self.pmtiles.selected = None;
+        }
         if self.viewport.is_dragging {
             return;
         }

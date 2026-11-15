@@ -1361,6 +1361,17 @@ pmtiles:
     loading: "Loading %{name} tiles…"
     loaded: "%{name}: tiles loaded"
     tile_failed: "%{name}: a tile could not be loaded (%{detail})"
+  # The side-panel section for a clicked feature.
+  panel:
+    title: "Map feature"
+    close: "Close feature"
+    source_layer: "Layer: %{layer}"
+    id: "ID: %{id}"
+    no_attributes: "This feature has no attributes."
+    geometry:
+      point: "Point"
+      line: "Line"
+      polygon: "Area"
 
 street_imagery:
   menu:

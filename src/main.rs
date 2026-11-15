@@ -3466,6 +3466,11 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        // The end of a pan repaints in full detail (vector layers draw coarser
+        // while the map is dragged).
+        if std::mem::take(&mut self.viewport.is_dragging) {
+            cx.notify();
+        }
         self.viewport.handle_mouse_up();
 
         if self.offset_adjust_mouse_up() {
@@ -3702,17 +3707,24 @@ impl MapViewer {
         }
         match self.layer_manager.hit_test_point(&self.viewport, screen_pt) {
             Some((_, LayerHit::Note(id))) => {
+                self.close_vector_feature();
                 self.notes.pending_open = Some(id);
                 true
             }
             Some((_, LayerHit::Photo { photo, .. })) => {
+                self.close_vector_feature();
                 self.imagery.pending_open = Some(photo);
+                true
+            }
+            Some((layer, LayerHit::VectorFeature(info))) => {
+                self.select_vector_feature(layer, info);
                 true
             }
             // Reference features only describe themselves when no OSM
             // feature is under the click (`select::click`).
             Some((_, LayerHit::ReferenceFeature(_))) | None => {
                 self.close_photo_panel();
+                self.close_vector_feature();
                 false
             }
         }

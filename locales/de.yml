@@ -1310,6 +1310,16 @@ pmtiles:
     loading: "Kacheln von %{name} werden geladen …"
     loaded: "%{name}: Kacheln geladen"
     tile_failed: "%{name}: Eine Kachel konnte nicht geladen werden (%{detail})"
+  panel:
+    title: "Kartenobjekt"
+    close: "Objekt schließen"
+    source_layer: "Ebene: %{layer}"
+    id: "ID: %{id}"
+    no_attributes: "Dieses Objekt hat keine Attribute."
+    geometry:
+      point: "Punkt"
+      line: "Linie"
+      polygon: "Fläche"
 
 street_imagery:
   menu:

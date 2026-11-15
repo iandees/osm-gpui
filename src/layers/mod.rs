@@ -169,6 +169,8 @@ pub enum LayerHit {
     },
     /// A GPX/GeoJSON/trace feature; its index in the layer's data.
     ReferenceFeature(usize),
+    /// A feature of a vector-tile layer.
+    VectorFeature(std::sync::Arc<crate::layers::vector_tile_layer::VectorFeatureInfo>),
 }
 
 impl LayerHit {
@@ -180,6 +182,7 @@ impl LayerHit {
             LayerHit::Note(_) => 0,
             LayerHit::Photo { .. } => 1,
             LayerHit::ReferenceFeature(_) => 2,
+            LayerHit::VectorFeature(_) => 3,
         }
     }
 
@@ -187,7 +190,7 @@ impl LayerHit {
     fn distance_px(&self) -> f32 {
         match self {
             LayerHit::Photo { distance_px, .. } => *distance_px,
-            LayerHit::Note(_) | LayerHit::ReferenceFeature(_) => 0.0,
+            LayerHit::Note(_) | LayerHit::ReferenceFeature(_) | LayerHit::VectorFeature(_) => 0.0,
         }
     }
 }

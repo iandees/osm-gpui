@@ -6,6 +6,9 @@
 //! blue, buildings brown, roads orange, ...), falling back to a stable colour
 //! picked from the name for names nothing is known about.
 
+use std::sync::Arc;
+
+use mvt_reader::feature::Value;
 use mvt_reader::Reader;
 
 use crate::tiles::TileCoord;
@@ -13,42 +16,52 @@ use crate::tiles::TileCoord;
 /// A point in Web Mercator metres.
 pub type Merc = [f64; 2];
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Line {
-    pub color: u32,
-    pub pts: Vec<Merc>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeomKind {
+    Point,
+    Line,
+    Polygon,
 }
 
-/// A filled area: `tris` holds three vertices per triangle.
+/// One feature of a tile: what it is, its attributes and its geometry.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Fill {
+pub struct Feature {
+    /// The name of the source layer it came from.
+    pub layer: Arc<str>,
     pub color: u32,
+    pub kind: GeomKind,
+    /// The feature id, when the tile has one.
+    pub id: Option<u64>,
+    /// Attributes, sorted by key.
+    pub props: Vec<(String, String)>,
+    /// `[min_x, min_y, max_x, max_y]` of the geometry.
+    pub bbox: [f64; 4],
+    /// Triangles of a filled area: three vertices each.
     pub tris: Vec<Merc>,
+    /// Lines, and the outlines (rings) of areas.
+    pub lines: Vec<Vec<Merc>>,
+    pub dots: Vec<Merc>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Dot {
-    pub color: u32,
-    pub at: Merc,
+impl Feature {
+    fn vertex_count(&self) -> usize {
+        self.tris.len() + self.lines.iter().map(Vec::len).sum::<usize>() + self.dots.len()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DecodedTile {
-    pub fills: Vec<Fill>,
-    pub lines: Vec<Line>,
-    pub dots: Vec<Dot>,
+    pub features: Vec<Feature>,
 }
 
 impl DecodedTile {
     pub fn is_empty(&self) -> bool {
-        self.fills.is_empty() && self.lines.is_empty() && self.dots.is_empty()
+        self.features.is_empty()
     }
 
     /// Vertices held, as a rough size for the tile cache.
     pub fn vertex_count(&self) -> usize {
-        self.fills.iter().map(|f| f.tris.len()).sum::<usize>()
-            + self.lines.iter().map(|l| l.pts.len()).sum::<usize>()
-            + self.dots.len()
+        self.features.iter().map(Feature::vertex_count).sum()
     }
 }
 
@@ -106,6 +119,18 @@ fn hsv_to_rgba(h: u32, s: f32, v: f32) -> u32 {
     byte(r) << 24 | byte(g) << 16 | byte(b) << 8 | 0xff
 }
 
+fn value_text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Float(f) => Some(f.to_string()),
+        Value::Double(d) => Some(d.to_string()),
+        Value::Int(i) | Value::SInt(i) => Some(i.to_string()),
+        Value::UInt(u) => Some(u.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Null => None,
+    }
+}
+
 /// Decode the MVT `bytes` of tile `t`. An empty body is an empty tile.
 pub fn decode(bytes: &[u8], t: TileCoord) -> Result<DecodedTile, String> {
     let mut out = DecodedTile::default();
@@ -120,6 +145,7 @@ pub fn decode(bytes: &[u8], t: TileCoord) -> Result<DecodedTile, String> {
     let size = bounds.max_x - bounds.min_x;
     for layer in layers {
         let color = layer_color(&layer.name);
+        let name: Arc<str> = Arc::from(layer.name.as_str());
         let extent = f64::from(layer.extent.max(1));
         let to_merc = |p: geo_types::Coord<f32>| -> Merc {
             [
@@ -131,66 +157,103 @@ pub fn decode(bytes: &[u8], t: TileCoord) -> Result<DecodedTile, String> {
             .get_features(layer.layer_index)
             .map_err(|e| format!("tile: {e}"))?;
         for f in features {
-            add_geometry(&mut out, color, f.geometry, &to_merc);
+            let mut props: Vec<(String, String)> = f
+                .properties
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|(k, v)| value_text(v).map(|v| (k.clone(), v)))
+                .collect();
+            props.sort();
+            let mut feature = Feature {
+                layer: name.clone(),
+                color,
+                kind: GeomKind::Point,
+                id: f.id,
+                props,
+                bbox: [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+                tris: Vec::new(),
+                lines: Vec::new(),
+                dots: Vec::new(),
+            };
+            add_geometry(&mut feature, f.geometry, &to_merc);
+            let [x0, y0, x1, y1] = feature.bbox;
+            if x0 <= x1 && y0 <= y1 {
+                out.features.push(feature);
+            }
         }
     }
     Ok(out)
 }
 
+fn widen(f: &mut Feature, p: Merc) {
+    f.bbox[0] = f.bbox[0].min(p[0]);
+    f.bbox[1] = f.bbox[1].min(p[1]);
+    f.bbox[2] = f.bbox[2].max(p[0]);
+    f.bbox[3] = f.bbox[3].max(p[1]);
+}
+
 fn add_geometry(
-    out: &mut DecodedTile,
-    color: u32,
+    out: &mut Feature,
     g: geo_types::Geometry<f32>,
     to_merc: &impl Fn(geo_types::Coord<f32>) -> Merc,
 ) {
     use geo_types::Geometry as G;
     match g {
-        G::Point(p) => out.dots.push(Dot {
-            color,
-            at: to_merc(p.0),
-        }),
-        G::MultiPoint(mp) => out.dots.extend(mp.0.into_iter().map(|p| Dot {
-            color,
-            at: to_merc(p.0),
-        })),
-        G::LineString(l) => add_line(out, color, &l, to_merc),
-        G::MultiLineString(ml) => {
-            for l in &ml.0 {
-                add_line(out, color, l, to_merc);
+        G::Point(p) => add_dot(out, to_merc(p.0)),
+        G::MultiPoint(mp) => {
+            for p in mp.0 {
+                add_dot(out, to_merc(p.0));
             }
         }
-        G::Polygon(p) => add_polygon(out, color, &p, to_merc),
+        G::LineString(l) => add_line(out, &l, GeomKind::Line, to_merc),
+        G::MultiLineString(ml) => {
+            for l in &ml.0 {
+                add_line(out, l, GeomKind::Line, to_merc);
+            }
+        }
+        G::Polygon(p) => add_polygon(out, &p, to_merc),
         G::MultiPolygon(mp) => {
             for p in &mp.0 {
-                add_polygon(out, color, p, to_merc);
+                add_polygon(out, p, to_merc);
             }
         }
         G::GeometryCollection(gc) => {
             for g in gc.0 {
-                add_geometry(out, color, g, to_merc);
+                add_geometry(out, g, to_merc);
             }
         }
         _ => {}
     }
 }
 
+fn add_dot(out: &mut Feature, at: Merc) {
+    out.kind = GeomKind::Point;
+    widen(out, at);
+    out.dots.push(at);
+}
+
 fn add_line(
-    out: &mut DecodedTile,
-    color: u32,
+    out: &mut Feature,
     l: &geo_types::LineString<f32>,
+    kind: GeomKind,
     to_merc: &impl Fn(geo_types::Coord<f32>) -> Merc,
 ) {
-    if l.0.len() >= 2 {
-        out.lines.push(Line {
-            color,
-            pts: l.0.iter().map(|&c| to_merc(c)).collect(),
-        });
+    if l.0.len() < 2 {
+        return;
     }
+    // A feature that has an area stays an area when its rings are added.
+    if out.kind != GeomKind::Polygon {
+        out.kind = kind;
+    }
+    let pts: Vec<Merc> = l.0.iter().map(|&c| to_merc(c)).collect();
+    for &p in &pts {
+        widen(out, p);
+    }
+    out.lines.push(pts);
 }
 
 fn add_polygon(
-    out: &mut DecodedTile,
-    color: u32,
+    out: &mut Feature,
     p: &geo_types::Polygon<f32>,
     to_merc: &impl Fn(geo_types::Coord<f32>) -> Merc,
 ) {
@@ -218,19 +281,15 @@ fn add_polygon(
     for h in p.interiors() {
         ring(h, true);
     }
+    out.kind = GeomKind::Polygon;
     if let Ok(idx) = earcutr::earcut(&flat, &holes, 2) {
-        let tris: Vec<Merc> = idx
-            .iter()
-            .map(|&i| [flat[2 * i], flat[2 * i + 1]])
-            .collect();
-        if !tris.is_empty() {
-            out.fills.push(Fill { color, tris });
-        }
+        out.tris
+            .extend(idx.iter().map(|&i| [flat[2 * i], flat[2 * i + 1]]));
     }
     // The outline of the area, including its holes.
-    add_line(out, color, p.exterior(), to_merc);
+    add_line(out, p.exterior(), GeomKind::Polygon, to_merc);
     for h in p.interiors() {
-        add_line(out, color, h, to_merc);
+        add_line(out, h, GeomKind::Polygon, to_merc);
     }
 }
 
@@ -321,19 +380,77 @@ mod tests {
         tile
     }
 
+    /// A tile of one point feature with an id and two attributes.
+    fn tile_with_tags() -> Vec<u8> {
+        let mut f = Vec::new();
+        field(1, 0, &mut f);
+        varint(7, &mut f); // id
+        let mut tags = Vec::new();
+        for v in [0, 0, 1, 1] {
+            varint(v, &mut tags);
+        }
+        bytes_field(2, &tags, &mut f); // tags: key0=value0, key1=value1
+        field(3, 0, &mut f);
+        varint(1, &mut f);
+        let mut g = Vec::new();
+        for v in [(1 << 3) | 1, zigzag(10), zigzag(10)] {
+            varint(v, &mut g);
+        }
+        bytes_field(4, &g, &mut f);
+        let mut layer = Vec::new();
+        field(15, 0, &mut layer);
+        varint(2, &mut layer);
+        bytes_field(1, b"poi", &mut layer);
+        bytes_field(2, &f, &mut layer);
+        bytes_field(3, b"height", &mut layer);
+        bytes_field(3, b"name", &mut layer);
+        let mut v0 = Vec::new();
+        field(3, 1, &mut v0); // double_value
+        v0.extend_from_slice(&12.5f64.to_le_bytes());
+        bytes_field(4, &v0, &mut layer);
+        let mut v1 = Vec::new();
+        bytes_field(1, b"Lake", &mut v1);
+        bytes_field(4, &v1, &mut layer);
+        field(5, 0, &mut layer);
+        varint(4096, &mut layer);
+        let mut tile = Vec::new();
+        bytes_field(3, &layer, &mut tile);
+        tile
+    }
+
     #[test]
-    fn a_tile_decodes_to_fills_lines_and_dots_in_mercator_metres() {
+    fn a_tile_decodes_to_features_in_mercator_metres() {
         let t = TileCoord::new(0, 0, 0);
         let d = decode(&tile(), t).unwrap();
-        assert_eq!(d.dots.len(), 1);
+        assert_eq!(d.features.len(), 3);
+        let kinds: Vec<_> = d.features.iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, [GeomKind::Point, GeomKind::Line, GeomKind::Polygon]);
         // The point is at the middle of the world tile.
-        assert!(d.dots[0].at[0].abs() < 1.0 && d.dots[0].at[1].abs() < 1.0);
-        // The line and the square's outline.
-        assert_eq!(d.lines.len(), 2);
-        // A square is two triangles.
-        assert_eq!(d.fills.len(), 1);
-        assert_eq!(d.fills[0].tris.len(), 6);
-        assert!(d.fills.iter().all(|f| f.color == 0x3b82f6ff));
+        let dot = &d.features[0];
+        assert!(dot.dots[0][0].abs() < 1.0 && dot.dots[0][1].abs() < 1.0);
+        assert_eq!(dot.bbox[0], dot.bbox[2]);
+        // A square is two triangles and one outline ring.
+        let square = &d.features[2];
+        assert_eq!(square.tris.len(), 6);
+        assert_eq!(square.lines.len(), 1);
+        assert!(square.bbox[0] < square.bbox[2] && square.bbox[1] < square.bbox[3]);
+        assert!(d.features.iter().all(|f| f.color == 0x3b82f6ff));
+        assert!(d.features.iter().all(|f| &*f.layer == "water"));
+    }
+
+    #[test]
+    fn attributes_and_ids_are_kept_sorted_as_text() {
+        let t = TileCoord::new(0, 0, 0);
+        let d = decode(&tile_with_tags(), t).unwrap();
+        let f = &d.features[0];
+        assert_eq!(f.id, Some(7));
+        assert_eq!(
+            f.props,
+            [
+                ("height".to_string(), "12.5".to_string()),
+                ("name".to_string(), "Lake".to_string()),
+            ]
+        );
     }
 
     #[test]
