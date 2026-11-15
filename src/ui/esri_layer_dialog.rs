@@ -204,6 +204,7 @@ impl EsriLayerDialog {
             min_zoom: source.min_zoom,
             max_zoom: source.max_zoom,
             attribution: loaded.info.copyright.clone(),
+            tile_size: source.tile_size,
         }));
     }
 
@@ -312,10 +313,11 @@ impl EsriLayerDialog {
             tr!(
                 "dialog.esri.cached",
                 min = source.min_zoom,
-                max = source.max_zoom
+                max = source.max_zoom,
+                size = source.tile_size
             )
         } else {
-            tr!("dialog.esri.dynamic")
+            tr!("dialog.esri.dynamic", size = source.tile_size)
         };
         let kind = match loaded.service.kind {
             ServiceKind::MapServer => tr!("dialog.esri.map_service"),

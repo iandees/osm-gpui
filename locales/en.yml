@@ -1102,9 +1102,10 @@ dialog:
     map_service: "Map service"
     image_service: "Image service"
     layers: "Layers"
-    # How the layer's images will be fetched.
-    cached: "Cached tiles, zoom %{min}–%{max}"
-    dynamic: "Drawn by the server for each tile"
+    # How the layer's images will be fetched. `%{size}` is the tile width in
+    # pixels (256 or 512).
+    cached: "Cached %{size} px tiles, zoom %{min}–%{max}"
+    dynamic: "Drawn by the server as %{size} px tiles"
     copyright: "Credit: %{text}"
     error:
       not_arcgis: "That is not the address of an ArcGIS REST services directory, folder, MapServer or ImageServer."

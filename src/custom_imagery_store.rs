@@ -54,6 +54,22 @@ pub struct CustomImageryEntry {
     /// text); absent from entries saved before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution: Option<String>,
+    /// Width of the source's tile images in pixels: 256, or 512 for
+    /// high-resolution tiles of the same grid. Absent (256) from entries
+    /// saved before it existed.
+    #[serde(
+        default = "standard_tile_size",
+        skip_serializing_if = "is_standard_tile_size"
+    )]
+    pub tile_size: u32,
+}
+
+fn standard_tile_size() -> u32 {
+    crate::layers::tile_layer::STANDARD_TILE_SIZE
+}
+
+fn is_standard_tile_size(size: &u32) -> bool {
+    *size == standard_tile_size()
 }
 
 impl CustomImageryEntry {
@@ -142,6 +158,7 @@ mod tests {
                 min_zoom: 0,
                 max_zoom: 19,
                 attribution: None,
+                tile_size: 256,
             },
             CustomImageryEntry {
                 name: "Other".into(),
@@ -149,12 +166,13 @@ mod tests {
                 min_zoom: 4,
                 max_zoom: 18,
                 attribution: Some("© Other".into()),
+                tile_size: 512,
             },
         ]
     }
 
     #[test]
-    fn entries_saved_without_attribution_still_load() {
+    fn entries_saved_without_attribution_or_tile_size_still_load() {
         let dir = tmp_dir("no-attribution");
         let path = dir.join("custom-imagery.json");
         fs::write(
@@ -165,6 +183,7 @@ mod tests {
         let loaded = load_from(&path);
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].attribution, None);
+        assert_eq!(loaded[0].tile_size, 256);
     }
 
     #[test]

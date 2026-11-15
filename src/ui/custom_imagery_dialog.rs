@@ -59,6 +59,7 @@ pub fn validate(
         min_zoom,
         max_zoom,
         attribution: None,
+        tile_size: crate::layers::tile_layer::STANDARD_TILE_SIZE,
     })
 }
 

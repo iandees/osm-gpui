@@ -444,6 +444,9 @@ enum LayerRequest {
         /// Stable id of the source (the ELI id) that imagery offsets are
         /// remembered under; `None` for a custom template.
         imagery_id: Option<String>,
+        /// Width of the source's tile images in pixels (256, or 512 for
+        /// high-resolution tiles).
+        tile_size: u32,
     },
 }
 
@@ -4160,6 +4163,7 @@ impl MapViewer {
                 max_zoom,
                 attribution,
                 imagery_id,
+                tile_size,
             } => {
                 let candidate = self.layer_manager.unique_name(&name);
                 let layer_id = self.layer_manager.alloc_id();
@@ -4175,7 +4179,8 @@ impl MapViewer {
                 .with_max_zoom(max_zoom)
                 .with_attribution(attribution)
                 .with_imagery_id(imagery_id)
-                .with_offset(offset);
+                .with_offset(offset)
+                .with_tile_size(tile_size);
                 self.layer_manager.add_layer(Box::new(layer));
             }
         }
@@ -4348,6 +4353,7 @@ impl MapViewer {
                 max_zoom: Some(entry.max_zoom),
                 attribution: entry.attribution_info(),
                 imagery_id: None,
+                tile_size: entry.tile_size,
             },
             cx,
         );

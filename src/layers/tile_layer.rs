@@ -40,7 +40,14 @@ pub struct TileLayer {
     imagery_id: String,
     /// How far the imagery is painted from where its tiles say it is.
     offset: ImageryOffset,
+    /// Width of the source's tile images in pixels. A 512 tile is a
+    /// high-resolution image of the same grid cell a 256 tile covers, so on
+    /// a Hi-DPI display it is already sharp at the normal zoom.
+    tile_size: u32,
 }
+
+/// Standard XYZ raster tile width in pixels.
+pub const STANDARD_TILE_SIZE: u32 = 256;
 
 impl TileLayer {
     pub fn new(id: LayerId, tile_cache: Arc<Mutex<TileCache>>) -> Self {
@@ -81,7 +88,14 @@ impl TileLayer {
             attribution: None,
             imagery_id,
             offset: ImageryOffset::ZERO,
+            tile_size: STANDARD_TILE_SIZE,
         }
+    }
+
+    /// Set the width of the source's tile images (see `tile_size`).
+    pub fn with_tile_size(mut self, tile_size: u32) -> Self {
+        self.tile_size = tile_size.max(1);
+        self
     }
 
     /// Set the stable id of the imagery source (see `MapLayer::imagery_id`).
@@ -136,10 +150,12 @@ impl TileLayer {
 
     /// The tile zoom to actually request for a display with `scale_factor`
     /// device pixels per logical pixel: `effective_tile_zoom`, one level
-    /// deeper on Hi-DPI displays when the source has tiles that deep.
+    /// deeper on Hi-DPI displays when the source has tiles that deep and its
+    /// tiles are not already high-resolution.
     fn render_tile_zoom(&self, viewport_z: f64, scale_factor: f32) -> Option<u32> {
         render_tile_zoom(
             &self.url_template,
+            self.tile_size,
             self.min_zoom,
             self.max_zoom,
             viewport_z,
@@ -148,17 +164,20 @@ impl TileLayer {
     }
 }
 
-/// `TileLayer::render_tile_zoom` for a source with `url_template` and the
-/// given zoom bounds.
+/// `TileLayer::render_tile_zoom` for a source with `url_template`, tiles
+/// `tile_size` pixels wide and the given zoom bounds.
 fn render_tile_zoom(
     url_template: &str,
+    tile_size: u32,
     min_zoom: Option<u32>,
     max_zoom: Option<u32>,
     viewport_z: f64,
     scale_factor: f32,
 ) -> Option<u32> {
     compute_effective_tile_zoom(viewport_z, min_zoom, max_zoom).map(|z| {
-        if template_supports_hidpi(url_template) {
+        // A high-resolution tile already has a device pixel per texel at 2x:
+        // one request per grid cell instead of four deeper ones.
+        if tile_size < 2 * STANDARD_TILE_SIZE && template_supports_hidpi(url_template) {
             hidpi_tile_zoom(z, scale_factor, max_zoom)
         } else {
             z
@@ -234,9 +253,6 @@ fn compute_effective_tile_zoom(
 /// image to fill a bigger box, which crops real edge content.
 const TILE_OVERLAP_PX: f32 = 0.5;
 
-/// Source tile size in texels (standard XYZ raster tiles).
-const TILE_TEXELS: f32 = 256.0;
-
 /// How far (in screen pixels) to extend a tile's image past the tile's own
 /// box on every side, so the box's clip removes the image's outermost
 /// half-texel.
@@ -245,13 +261,13 @@ const TILE_TEXELS: f32 = 256.0;
 /// filtering. Within half a texel of the image edge a sample blends the
 /// edge texel with the atlas padding (transparent black), giving a dark,
 /// semi-transparent edge row. That row is half a texel thick, i.e.
-/// `0.5 * tile_width / 256` screen pixels, so it is negligible at 1x but
+/// `0.5 * tile_width / tile_texels` screen pixels, so it is negligible at 1x but
 /// grows when tiles are magnified (overzoomed) and shows as a dark seam
 /// along every tile boundary. Extending the image by that much and clipping
 /// it back to the tile box discards the blended row at the cost of
 /// stretching the content by at most half a source texel at the edges.
-fn edge_bleed_margin(tile_width_px: f32) -> f32 {
-    (0.5 * tile_width_px / TILE_TEXELS).clamp(0.0, 16.0)
+fn edge_bleed_margin(tile_width_px: f32, tile_texels: u32) -> f32 {
+    (0.5 * tile_width_px / tile_texels as f32).clamp(0.0, 16.0)
 }
 
 /// Screen rect (x, y, width, height) for one tile with no imagery offset.
@@ -437,7 +453,7 @@ impl MapLayer for TileLayer {
                 tile_element = tile_element.child(parent_el);
             }
 
-            let bleed = px(edge_bleed_margin(f32::from(tile_width)));
+            let bleed = px(edge_bleed_margin(f32::from(tile_width), self.tile_size));
             // Character budget for the fallback message: roughly one char per
             // 6 px of tile width, clamped so very small tiles still get some.
             let char_budget = ((f32::from(tile_width) / 6.0) as usize).clamp(8, 40);
@@ -505,6 +521,7 @@ impl MapLayer for TileLayer {
         if let Some(max_z) = self.max_zoom {
             stats.push(("Max Zoom".to_string(), max_z.to_string()));
         }
+        stats.push(("Tile Size".to_string(), format!("{} px", self.tile_size)));
         stats
     }
 }
@@ -691,10 +708,10 @@ mod tests {
 
     #[test]
     fn edge_bleed_margin_is_half_a_texel_and_bounded() {
-        assert_eq!(edge_bleed_margin(256.0), 0.5);
-        assert_eq!(edge_bleed_margin(1024.0), 2.0);
-        assert_eq!(edge_bleed_margin(0.0), 0.0);
-        assert_eq!(edge_bleed_margin(1.0e6), 16.0);
+        assert_eq!(edge_bleed_margin(256.0, 256), 0.5);
+        assert_eq!(edge_bleed_margin(1024.0, 256), 2.0);
+        assert_eq!(edge_bleed_margin(0.0, 256), 0.0);
+        assert_eq!(edge_bleed_margin(1.0e6, 256), 16.0);
     }
 
     #[test]
@@ -842,38 +859,69 @@ mod tests {
     #[test]
     fn osm_carto_requests_the_viewport_zoom_even_on_hidpi() {
         assert_eq!(
-            render_tile_zoom(OSM_CARTO_TEMPLATE, None, None, 12.4, 2.0),
+            render_tile_zoom(OSM_CARTO_TEMPLATE, 256, None, None, 12.4, 2.0),
             Some(12)
         );
         assert_eq!(
-            render_tile_zoom(OSM_CARTO_TEMPLATE, None, None, 12.6, 1.0),
+            render_tile_zoom(OSM_CARTO_TEMPLATE, 256, None, None, 12.6, 1.0),
             Some(13)
         );
     }
 
     #[test]
     fn other_sources_go_one_zoom_deeper_on_hidpi_only() {
-        assert_eq!(render_tile_zoom(CUSTOM, None, None, 12.0, 1.0), Some(12));
-        assert_eq!(render_tile_zoom(CUSTOM, None, None, 12.0, 2.0), Some(13));
+        assert_eq!(
+            render_tile_zoom(CUSTOM, 256, None, None, 12.0, 1.0),
+            Some(12)
+        );
+        assert_eq!(
+            render_tile_zoom(CUSTOM, 256, None, None, 12.0, 2.0),
+            Some(13)
+        );
+    }
+
+    #[test]
+    fn high_resolution_tiles_are_requested_at_the_viewport_zoom_on_hidpi() {
+        // One 512 px tile per grid cell instead of four 256 px ones a zoom deeper.
+        assert_eq!(
+            render_tile_zoom(CUSTOM, 512, None, None, 12.0, 2.0),
+            Some(12)
+        );
+        assert_eq!(
+            render_tile_zoom(CUSTOM, 512, None, None, 12.0, 1.0),
+            Some(12)
+        );
+        assert_eq!(render_tile_zoom(CUSTOM, 512, Some(8), None, 7.0, 2.0), None);
+    }
+
+    #[test]
+    fn a_high_resolution_tile_bleeds_half_of_its_own_texel() {
+        assert_eq!(edge_bleed_margin(256.0, 512), 0.25);
     }
 
     #[test]
     fn render_zoom_is_none_below_the_sources_min_zoom() {
-        assert_eq!(render_tile_zoom(CUSTOM, Some(8), None, 7.0, 2.0), None);
-        assert_eq!(render_tile_zoom(CUSTOM, Some(8), None, 8.0, 1.0), Some(8));
+        assert_eq!(render_tile_zoom(CUSTOM, 256, Some(8), None, 7.0, 2.0), None);
+        assert_eq!(
+            render_tile_zoom(CUSTOM, 256, Some(8), None, 8.0, 1.0),
+            Some(8)
+        );
     }
 
     #[test]
     fn render_zoom_stays_within_the_sources_max_zoom_on_hidpi() {
         assert_eq!(
-            render_tile_zoom(CUSTOM, None, Some(14), 16.0, 2.0),
+            render_tile_zoom(CUSTOM, 256, None, Some(14), 16.0, 2.0),
             Some(14)
         );
         assert_eq!(
-            render_tile_zoom(CUSTOM, None, Some(14), 13.0, 2.0),
+            render_tile_zoom(CUSTOM, 256, None, Some(14), 13.0, 2.0),
             Some(14)
         );
-        assert_eq!(render_tile_zoom(CUSTOM, None, None, 19.0, 3.0), Some(19));
+        assert_eq!(
+            render_tile_zoom(CUSTOM, 256, None, None, 19.0, 3.0),
+            Some(19)
+        );
     }
 
     #[test]

@@ -272,7 +272,23 @@ pub struct MapLayer {
 pub struct WebMercatorCache {
     pub min_zoom: u32,
     pub max_zoom: u32,
+    /// Tile width in pixels: 256, or 512 for Esri's high-resolution scheme
+    /// (each level's tiles cover the same cells as the 256 grid's, at twice
+    /// the pixels).
+    pub tile_size: u32,
 }
+
+/// Pixel size of the images drawn by `export` / `exportImage`: one
+/// high-resolution image per grid cell, so a Hi-DPI display needs one
+/// request per cell rather than four a zoom deeper.
+pub const EXPORT_TILE_SIZE: u32 = 512;
+
+/// The `dpi` asked of a MapServer `export` at [`EXPORT_TILE_SIZE`]: twice
+/// ArcGIS's 96, so symbols and labels come out at their usual size on a
+/// 256-point grid cell and the map scale (which ArcGIS works out from the
+/// image size and dpi) is that of a 256-pixel tile, keeping scale-dependent
+/// layers switching at their usual zooms.
+const EXPORT_DPI: u32 = 192;
 
 /// What a MapServer or ImageServer says about itself.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -503,8 +519,9 @@ const ZOOM0_RESOLUTION: f64 = 156_543.033_928_040_97;
 const WEB_MERCATOR_WKIDS: [i64; 4] = [102100, 102113, 3857, 900913];
 
 /// The zoom range of `tileInfo` when it is the standard grid: Web Mercator,
-/// 256-pixel tiles, origin at the world's north-west corner, and each level
-/// numbered by its standard zoom.
+/// 256- or 512-pixel tiles, origin at the world's north-west corner, and
+/// each level's tiles covering the cells of the standard zoom it is
+/// numbered by.
 fn web_mercator_cache(tile_info: &serde_json::Value) -> Option<WebMercatorCache> {
     let sr = tile_info.get("spatialReference")?;
     let wkid_ok = ["wkid", "latestWkid"]
@@ -516,9 +533,10 @@ fn web_mercator_cache(tile_info: &serde_json::Value) -> Option<WebMercatorCache>
     }
     let rows = tile_info.get("rows")?.as_u64()?;
     let cols = tile_info.get("cols")?.as_u64()?;
-    if rows != 256 || cols != 256 {
+    if rows != cols || !(rows == 256 || rows == 512) {
         return None;
     }
+    let tile_size = rows as u32;
     let origin = tile_info.get("origin")?;
     let ox = origin.get("x")?.as_f64()?;
     let oy = origin.get("y")?.as_f64()?;
@@ -531,7 +549,8 @@ fn web_mercator_cache(tile_info: &serde_json::Value) -> Option<WebMercatorCache>
     for lod in lods {
         let level = u32::try_from(lod.get("level")?.as_i64()?).ok()?;
         let resolution = lod.get("resolution")?.as_f64()?;
-        let expected = ZOOM0_RESOLUTION / 2f64.powi(level as i32);
+        // A tile of `tile_size` pixels spans the cell of a 256-pixel one.
+        let expected = ZOOM0_RESOLUTION * 256.0 / f64::from(tile_size) / 2f64.powi(level as i32);
         if ((resolution - expected) / expected).abs() > 1e-3 {
             return None;
         }
@@ -540,6 +559,7 @@ fn web_mercator_cache(tile_info: &serde_json::Value) -> Option<WebMercatorCache>
     Some(WebMercatorCache {
         min_zoom: *levels.iter().min()?,
         max_zoom: *levels.iter().max()?,
+        tile_size,
     })
 }
 
@@ -574,6 +594,8 @@ pub struct TileSource {
     pub url_template: String,
     pub min_zoom: u32,
     pub max_zoom: u32,
+    /// Width of each tile image in pixels.
+    pub tile_size: u32,
 }
 
 /// The tile source for `service`, showing the MapServer `layers` given (or
@@ -603,15 +625,17 @@ pub fn tile_source(
             url_template,
             min_zoom: cache.min_zoom,
             max_zoom: cache.max_zoom,
+            tile_size: cache.tile_size,
         };
     }
+    let size = EXPORT_TILE_SIZE;
     let mut url_template = match service.kind {
         ServiceKind::MapServer => format!(
-            "{}/export?bbox={BBOX_3857_PLACEHOLDER}&bboxSR=3857&imageSR=3857&size=256,256&dpi=96&format=png32&transparent=true",
+            "{}/export?bbox={BBOX_3857_PLACEHOLDER}&bboxSR=3857&imageSR=3857&size={size},{size}&dpi={EXPORT_DPI}&format=png32&transparent=true",
             service.url
         ),
         ServiceKind::ImageServer => format!(
-            "{}/exportImage?bbox={BBOX_3857_PLACEHOLDER}&bboxSR=3857&imageSR=3857&size=256,256&format=jpgpng",
+            "{}/exportImage?bbox={BBOX_3857_PLACEHOLDER}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpgpng",
             service.url
         ),
     };
@@ -629,6 +653,7 @@ pub fn tile_source(
         url_template,
         min_zoom: DYNAMIC_MIN_ZOOM,
         max_zoom: DYNAMIC_MAX_ZOOM,
+        tile_size: size,
     }
 }
 
@@ -756,17 +781,25 @@ mod tests {
     }
 
     fn web_mercator_tile_info(levels: std::ops::RangeInclusive<u32>) -> serde_json::Value {
+        tile_info_of_size(levels, 256)
+    }
+
+    /// Esri's scheme for `size`-pixel tiles: level L's tiles cover the cells
+    /// of standard zoom L, so 512-pixel levels have half the resolution
+    /// number (level 0 at 78271.517 m/px).
+    fn tile_info_of_size(levels: std::ops::RangeInclusive<u32>, size: u32) -> serde_json::Value {
+        let factor = 256.0 / f64::from(size);
         let lods: Vec<serde_json::Value> = levels
             .map(|l| {
                 serde_json::json!({
                     "level": l,
-                    "resolution": ZOOM0_RESOLUTION / 2f64.powi(l as i32),
-                    "scale": 591657527.591555 / 2f64.powi(l as i32)
+                    "resolution": ZOOM0_RESOLUTION * factor / 2f64.powi(l as i32),
+                    "scale": 591657527.591555 * factor / 2f64.powi(l as i32)
                 })
             })
             .collect();
         serde_json::json!({
-            "rows": 256, "cols": 256, "dpi": 96,
+            "rows": size, "cols": size, "dpi": 96,
             "origin": {"x": -20037508.342787, "y": 20037508.342787},
             "spatialReference": {"wkid": 102100, "latestWkid": 3857},
             "lods": lods
@@ -810,10 +843,29 @@ mod tests {
             info.cache,
             Some(WebMercatorCache {
                 min_zoom: 0,
-                max_zoom: 19
+                max_zoom: 19,
+                tile_size: 256
             })
         );
         assert!(info.dynamic);
+    }
+
+    #[test]
+    fn a_512_pixel_cache_on_the_standard_grid_is_used_as_high_resolution_tiles() {
+        let mut v = sample_map_service(true);
+        v["tileInfo"] = tile_info_of_size(0..=18, 512);
+        let info = parse_service(&v, ServiceKind::MapServer);
+        assert_eq!(
+            info.cache,
+            Some(WebMercatorCache {
+                min_zoom: 0,
+                max_zoom: 18,
+                tile_size: 512
+            })
+        );
+        let src = tile_source(&service(ServiceKind::MapServer), &info, None, None);
+        assert!(src.url_template.ends_with("/tile/{z}/{y}/{x}"));
+        assert_eq!(src.tile_size, 512);
     }
 
     #[test]
@@ -822,9 +874,15 @@ mod tests {
         v["tileInfo"]["spatialReference"] = serde_json::json!({"wkid": 2263});
         assert_eq!(parse_service(&v, ServiceKind::MapServer).cache, None);
 
+        // 512-pixel tiles at the 256 grid's resolutions: each tile would
+        // cover four cells.
         let mut v = sample_map_service(true);
         v["tileInfo"]["rows"] = serde_json::json!(512);
         v["tileInfo"]["cols"] = serde_json::json!(512);
+        assert_eq!(parse_service(&v, ServiceKind::MapServer).cache, None);
+
+        let mut v = sample_map_service(true);
+        v["tileInfo"] = tile_info_of_size(0..=10, 1024);
         assert_eq!(parse_service(&v, ServiceKind::MapServer).cache, None);
 
         // Levels renumbered from 0 at a non-standard resolution.
@@ -856,6 +914,7 @@ mod tests {
             format!("{ROOT}/Ortho/MapServer/tile/{{z}}/{{y}}/{{x}}")
         );
         assert_eq!((src.min_zoom, src.max_zoom), (0, 19));
+        assert_eq!(src.tile_size, 256);
         // Naming exactly the default layers is the same thing.
         let src2 = tile_source(
             &service(ServiceKind::MapServer),
@@ -881,13 +940,14 @@ mod tests {
         assert_eq!(
             src.url_template,
             format!(
-                "{ROOT}/Ortho/MapServer/export?bbox={{bbox-epsg-3857}}&bboxSR=3857&imageSR=3857&size=256,256&dpi=96&format=png32&transparent=true&layers=show:0,3&f=image&token=tok"
+                "{ROOT}/Ortho/MapServer/export?bbox={{bbox-epsg-3857}}&bboxSR=3857&imageSR=3857&size=512,512&dpi=192&format=png32&transparent=true&layers=show:0,3&f=image&token=tok"
             )
         );
         assert_eq!(
             (src.min_zoom, src.max_zoom),
             (DYNAMIC_MIN_ZOOM, DYNAMIC_MAX_ZOOM)
         );
+        assert_eq!(src.tile_size, EXPORT_TILE_SIZE);
     }
 
     #[test]
@@ -914,7 +974,7 @@ mod tests {
         assert_eq!(
             src.url_template,
             format!(
-                "{ROOT}/Ortho/ImageServer/exportImage?bbox={{bbox-epsg-3857}}&bboxSR=3857&imageSR=3857&size=256,256&format=jpgpng&f=image"
+                "{ROOT}/Ortho/ImageServer/exportImage?bbox={{bbox-epsg-3857}}&bboxSR=3857&imageSR=3857&size=512,512&format=jpgpng&f=image"
             )
         );
         let url = crate::tiles::url_from_template(

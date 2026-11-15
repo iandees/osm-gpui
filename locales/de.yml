@@ -1065,8 +1065,8 @@ dialog:
     map_service: "Kartendienst"
     image_service: "Bilddienst"
     layers: "Ebenen"
-    cached: "Zwischengespeicherte Kacheln, Zoom %{min}–%{max}"
-    dynamic: "Vom Server für jede Kachel gezeichnet"
+    cached: "Zwischengespeicherte %{size}-px-Kacheln, Zoom %{min}–%{max}"
+    dynamic: "Vom Server als %{size}-px-Kacheln gezeichnet"
     copyright: "Quelle: %{text}"
     error:
       not_arcgis: "Das ist keine Adresse eines ArcGIS-REST-Dienstverzeichnisses, Ordners, MapServers oder ImageServers."

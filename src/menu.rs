@@ -329,6 +329,7 @@ pub(crate) fn add_imagery_layer(action: &AddImageryLayer, cx: &mut App) {
                 max_zoom: entry.max_zoom,
                 attribution: entry.attribution,
                 imagery_id: Some(entry.id),
+                tile_size: osm_gpui::layers::tile_layer::STANDARD_TILE_SIZE,
             },
             cx,
         );
@@ -364,6 +365,7 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
                 min_zoom: Some(entry.min_zoom),
                 max_zoom: Some(entry.max_zoom),
                 imagery_id: None,
+                tile_size: entry.tile_size,
             },
             cx,
         );
@@ -400,6 +402,7 @@ fn script_seed_custom_imagery(_: &ScriptSeedCustomImagery, cx: &mut App) {
             min_zoom: 0,
             max_zoom: 19,
             attribution: None,
+            tile_size: osm_gpui::layers::tile_layer::STANDARD_TILE_SIZE,
         });
     }
     rebuild_menus_for_live_viewer(cx);
