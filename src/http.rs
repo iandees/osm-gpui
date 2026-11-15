@@ -208,6 +208,21 @@ const MAX_ERROR_BODY_BYTES: u64 = 16 * 1024;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UreqClient;
 
+/// Longest wait for a TCP connection. Much shorter than a request's overall
+/// timeout: a server that accepts no connections should fail fast rather than
+/// hold a tile download slot for the whole timeout on every retry.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The one `ureq` agent every request goes through, so connections are pooled.
+fn ureq_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(CONNECT_TIMEOUT)
+            .build()
+    })
+}
+
 impl UreqClient {
     pub fn new() -> Self {
         UreqClient
@@ -227,10 +242,11 @@ impl HttpClient for UreqClient {
         use crate::transfer::{is_read_cancelled, CountingReader};
         use std::io::Read;
 
+        let agent = ureq_agent();
         let mut builder = match req.method {
-            Method::Get => ureq::get(&req.url),
-            Method::Post => ureq::post(&req.url),
-            Method::Put => ureq::put(&req.url),
+            Method::Get => agent.get(&req.url),
+            Method::Post => agent.post(&req.url),
+            Method::Put => agent.put(&req.url),
         };
         builder = builder.set("User-Agent", crate::USER_AGENT);
         for (name, value) in &req.headers {
@@ -369,8 +385,8 @@ fn is_denied(e: &HttpError) -> bool {
     matches!(e, HttpError::Transport(m) if m.starts_with(DENIED_PREFIX))
 }
 
-/// The host of an `http(s)` URL, lowercased and without port or userinfo.
-fn url_host(url: &str) -> Option<&str> {
+/// The host of an `http(s)` URL, without port or userinfo (case as given).
+pub(crate) fn url_host(url: &str) -> Option<&str> {
     let rest = url.split_once("://")?.1;
     let authority = rest.split(['/', '?', '#']).next()?;
     let host_port = authority.rsplit('@').next()?;

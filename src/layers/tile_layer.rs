@@ -319,6 +319,13 @@ impl ImageryLayer for TileLayer {
     }
 }
 
+impl Drop for TileLayer {
+    /// A removed layer's downloads are no longer wanted (see `set_visible`).
+    fn drop(&mut self) {
+        crate::tile_cache::release_wanted_tiles(&self.source_key);
+    }
+}
+
 impl MapLayer for TileLayer {
     fn name(&self) -> &str {
         &self.name
@@ -338,6 +345,11 @@ impl MapLayer for TileLayer {
 
     fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
+        // A hidden layer stops rendering, so its last wanted set would keep
+        // its downloads alive; drop them instead.
+        if !visible {
+            crate::tile_cache::release_wanted_tiles(&self.source_key);
+        }
     }
 
     fn as_imagery(&self) -> Option<&dyn ImageryLayer> {
