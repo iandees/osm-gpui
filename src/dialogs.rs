@@ -2,11 +2,11 @@
 
 use osm_gpui::ui::{
     about_dialog::AboutDialog, custom_imagery_dialog::CustomImageryDialog,
-    delete_layer_dialog::DeleteLayerDialog, find_dialog::FindDialog, notice_dialog::NoticeDialog,
-    nsi_dialog::NsiPresetDialog, parallel_dialog::ParallelDialog,
-    preset_picker_dialog::PresetPickerDialog, quit_confirm_dialog::QuitConfirmDialog,
-    relation_picker_dialog::RelationPickerDialog, restore_dialog::RestoreDialog,
-    sign_in_dialog::SignInDialog, upload_dialog::UploadDialog,
+    delete_layer_dialog::DeleteLayerDialog, esri_layer_dialog::EsriLayerDialog,
+    find_dialog::FindDialog, notice_dialog::NoticeDialog, nsi_dialog::NsiPresetDialog,
+    parallel_dialog::ParallelDialog, preset_picker_dialog::PresetPickerDialog,
+    quit_confirm_dialog::QuitConfirmDialog, relation_picker_dialog::RelationPickerDialog,
+    restore_dialog::RestoreDialog, sign_in_dialog::SignInDialog, upload_dialog::UploadDialog,
 };
 
 /// Each dialog is `Some` while it is open. `MapViewer::open_modals` lists them
@@ -15,6 +15,8 @@ use osm_gpui::ui::{
 pub(crate) struct Dialogs {
     /// Active custom imagery dialog, if open.
     pub(crate) custom_imagery_dialog: Option<gpui::Entity<CustomImageryDialog>>,
+    /// Active Esri (ArcGIS REST) layer browser, if open.
+    pub(crate) esri_layer_dialog: Option<gpui::Entity<EsriLayerDialog>>,
     /// Active "unsaved changes" quit-confirmation dialog, if open.
     pub(crate) quit_confirm_dialog: Option<gpui::Entity<QuitConfirmDialog>>,
     pub(crate) delete_layer_dialog: Option<gpui::Entity<DeleteLayerDialog>>,

@@ -32,6 +32,11 @@ fn openers() -> Vec<(&'static str, Opener)> {
             v.dialogs.custom_imagery_dialog =
                 Some(cx.new(|cx| ui::custom_imagery_dialog::CustomImageryDialog::new(w, cx)));
         }),
+        ("esri layer", |v, w, cx| {
+            let http = v.http.clone();
+            v.dialogs.esri_layer_dialog =
+                Some(cx.new(|cx| ui::esri_layer_dialog::EsriLayerDialog::new(http, w, cx)));
+        }),
         ("quit confirm", |v, w, cx| {
             v.dialogs.quit_confirm_dialog =
                 Some(cx.new(|cx| ui::quit_confirm_dialog::QuitConfirmDialog::new(w, cx)));
@@ -228,6 +233,12 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
         custom_imagery_dialog::CustomImageryDialog::new,
         custom_imagery_dialog::DialogEvent,
         custom_imagery_dialog::DialogEvent::Cancelled
+    );
+    closes_on_escape!(
+        cx,
+        |w, cx| esri_layer_dialog::EsriLayerDialog::new(osm_gpui::http::default_client(), w, cx),
+        esri_layer_dialog::DialogEvent,
+        esri_layer_dialog::DialogEvent::Cancelled
     );
     closes_on_escape!(
         cx,

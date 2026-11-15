@@ -804,7 +804,9 @@ impl SettingsWindow {
         let max_val = max_z.read(cx).value().to_string();
 
         match crate::ui::custom_imagery_dialog::validate(&name_val, &url_val, &min_val, &max_val) {
-            Ok(entry) => {
+            Ok(mut entry) => {
+                // The form does not edit the attribution; keep it.
+                entry.attribution = self.entries[idx].attribution.take();
                 self.entries[idx] = entry;
                 self.persist();
                 self.editing_index = None;
@@ -846,6 +848,7 @@ impl SettingsWindow {
             url_template: String::new(),
             min_zoom: 0,
             max_zoom: 19,
+            attribution: None,
         };
         self.entries.push(blank.clone());
         let new_idx = self.entries.len() - 1;

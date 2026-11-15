@@ -50,6 +50,22 @@ pub struct CustomImageryEntry {
     pub url_template: String,
     pub min_zoom: u32,
     pub max_zoom: u32,
+    /// Source credit shown with the tiles (an Esri service's copyright
+    /// text); absent from entries saved before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
+}
+
+impl CustomImageryEntry {
+    /// The attribution in the form a tile layer takes it.
+    pub fn attribution_info(&self) -> Option<crate::imagery::AttributionInfo> {
+        self.attribution
+            .as_ref()
+            .map(|text| crate::imagery::AttributionInfo {
+                text: text.clone(),
+                url: None,
+            })
+    }
 }
 
 /// Load entries from the given file path. Returns an empty vec on missing file,
@@ -125,14 +141,30 @@ mod tests {
                 url_template: "https://tile.example.com/{z}/{x}/{y}.png".into(),
                 min_zoom: 0,
                 max_zoom: 19,
+                attribution: None,
             },
             CustomImageryEntry {
                 name: "Other".into(),
                 url_template: "https://other.example.com/{z}/{x}/{-y}.png".into(),
                 min_zoom: 4,
                 max_zoom: 18,
+                attribution: Some("© Other".into()),
             },
         ]
+    }
+
+    #[test]
+    fn entries_saved_without_attribution_still_load() {
+        let dir = tmp_dir("no-attribution");
+        let path = dir.join("custom-imagery.json");
+        fs::write(
+            &path,
+            br#"[{"name":"A","url_template":"https://a/{z}/{x}/{y}","min_zoom":0,"max_zoom":19}]"#,
+        )
+        .unwrap();
+        let loaded = load_from(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].attribution, None);
     }
 
     #[test]

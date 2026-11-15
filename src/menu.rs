@@ -22,13 +22,13 @@ use crate::street_imagery_ui::{
     RefreshStreetImagery, ToggleFotoshi, ToggleMapillary, TogglePanoramax,
 };
 use crate::{
-    with_map_viewer, with_map_viewer_in, AddCustomImagery, AddImageryLayer, AddOsmCarto,
-    AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection, DeselectAll,
-    DownloadFromOsm, EditMode, ExportOsmFile, Find, HideApp, HideOtherApps, ImageryLoadState,
-    LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo, RunSelectionAction,
-    ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps, ToggleDebugOverlay,
-    ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut, ZoomToData,
-    ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
+    with_map_viewer, with_map_viewer_in, AddCustomImagery, AddEsriImagery, AddImageryLayer,
+    AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
+    DeselectAll, DownloadFromOsm, EditMode, ExportOsmFile, Find, HideApp, HideOtherApps,
+    ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
+    RunSelectionAction, ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps,
+    ToggleDebugOverlay, ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut,
+    ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
 
 /// The Settings window, once opened. Whether it is still open is read from
@@ -344,6 +344,11 @@ pub(crate) fn open_custom_imagery_dialog(_: &AddCustomImagery, cx: &mut App) {
     cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_custom_imagery_dialog(window, cx)));
 }
 
+// Global fallback, deferred; see `upload_to_osm`.
+pub(crate) fn open_esri_layer_dialog(_: &AddEsriImagery, cx: &mut App) {
+    cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_esri_layer_dialog(window, cx)));
+}
+
 pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut App) {
     let entries = custom_imagery_snapshot();
     let Some(entry) = entries.get(action.index).cloned() else {
@@ -353,11 +358,11 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
     with_map_viewer(cx, |v, cx| {
         v.apply_layer_request(
             LayerRequest::Imagery {
+                attribution: entry.attribution_info(),
                 name: entry.name,
                 url_template: entry.url_template,
                 min_zoom: Some(entry.min_zoom),
                 max_zoom: Some(entry.max_zoom),
-                attribution: None,
                 imagery_id: None,
             },
             cx,
@@ -394,6 +399,7 @@ fn script_seed_custom_imagery(_: &ScriptSeedCustomImagery, cx: &mut App) {
             url_template: "https://tile.example.invalid/{z}/{x}/{y}.png".into(),
             min_zoom: 0,
             max_zoom: 19,
+            attribution: None,
         });
     }
     rebuild_menus_for_live_viewer(cx);
@@ -730,10 +736,10 @@ fn build_menus(
 ) -> Vec<Menu> {
     use osm_gpui::street_imagery::Provider;
     let custom = custom_imagery_snapshot();
-    let mut custom_items: Vec<MenuItem> = vec![MenuItem::action(
-        tr!("menu.imagery.custom_add"),
-        AddCustomImagery,
-    )];
+    let mut custom_items: Vec<MenuItem> = vec![
+        MenuItem::action(tr!("menu.imagery.custom_add"), AddCustomImagery),
+        MenuItem::action(tr!("menu.imagery.esri_add"), AddEsriImagery),
+    ];
     if !custom.is_empty() {
         custom_items.push(MenuItem::separator());
         for (idx, entry) in custom.iter().enumerate() {

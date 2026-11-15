@@ -47,6 +47,8 @@ menu:
     available: "Available Imagery"
     custom: "Custom Imagery"
     custom_add: "Add…"
+    # Opens a browser for ArcGIS Server (Esri) map and image services.
+    esri_add: "Add Esri Layer…"
     osm_carto: "OpenStreetMap Carto"
     loading: "(Loading imagery index…)"
     unavailable: "(Imagery index unavailable)"
@@ -1080,11 +1082,34 @@ dialog:
     error:
       name_empty: "Name is required."
       template_empty: "URL template is required."
-      template_missing_placeholder: "URL template must contain {z}, {x}, and {y} (or {-y})."
+      template_missing_placeholder: "URL template must contain {z}, {x}, and {y} (or {-y}), or {bbox-epsg-3857}."
       template_y_and_minus_y: "URL template must use {y} or {-y}, not both."
       min_zoom_invalid: "Min zoom must be a whole number from 0 to 24."
       max_zoom_invalid: "Max zoom must be a whole number from 0 to 24."
       min_zoom_above_max: "Min zoom must be ≤ max zoom."
+  # Browser for ArcGIS Server (Esri) REST services. "MapServer" and
+  # "ImageServer" are Esri product terms.
+  esri:
+    title: "Add Esri Layer"
+    url: "ArcGIS REST address"
+    url_placeholder: "https://…/arcgis/rest/services"
+    open: "Open"
+    up: "Up"
+    hint: "Paste the address of an ArcGIS Server services directory, a folder in it, or a MapServer or ImageServer, then press Open."
+    loading: "Loading…"
+    empty_directory: "There are no map or image services here."
+    folder: "Folder"
+    map_service: "Map service"
+    image_service: "Image service"
+    layers: "Layers"
+    # How the layer's images will be fetched.
+    cached: "Cached tiles, zoom %{min}–%{max}"
+    dynamic: "Drawn by the server for each tile"
+    copyright: "Credit: %{text}"
+    error:
+      not_arcgis: "That is not the address of an ArcGIS REST services directory, folder, MapServer or ImageServer."
+      load: "Couldn't load it: %{error}"
+      no_layers: "Choose at least one layer."
   preset_picker:
     title: "Change Feature Type"
     close: "Close"

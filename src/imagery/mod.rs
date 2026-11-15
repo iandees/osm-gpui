@@ -5,6 +5,8 @@
 //! location for populating the Imagery menu. Only `tms` type entries are
 //! supported — WMS, Bing, and other types are filtered out.
 
+pub mod esri;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
