@@ -655,6 +655,9 @@ pub struct LayerManager {
     /// Monotonic counter backing `alloc_id`. Starts at 1 (0 is never handed
     /// out, so it's safe to use as a sentinel if ever needed).
     next_id: u64,
+    /// Screen space the layers' labels share, refilled in layer order by
+    /// every `render_all_labels` so labels of different layers never overlap.
+    label_space: std::sync::Mutex<labels::LabelSpace>,
 }
 
 impl Default for LayerManager {
@@ -668,6 +671,7 @@ impl LayerManager {
         Self {
             layers: Vec::new(),
             next_id: 1,
+            label_space: std::sync::Mutex::new(labels::LabelSpace::new(0.0, 0.0)),
         }
     }
 
@@ -922,10 +926,15 @@ impl LayerManager {
         window: &mut Window,
         cx: &App,
     ) {
+        let size = viewport.transform.screen_size;
+        let mut space = self.label_space.lock().unwrap_or_else(|e| e.into_inner());
+        *space = labels::LabelSpace::new(f32::from(size.width), f32::from(size.height));
         for layer in &self.layers {
             if layer.is_visible() {
                 if let Some(osm) = layer.as_osm() {
-                    osm.render_labels(viewport, bounds, selected, hovered, vis, window, cx);
+                    osm.render_labels(
+                        viewport, bounds, selected, hovered, vis, &mut space, window, cx,
+                    );
                 }
             }
         }

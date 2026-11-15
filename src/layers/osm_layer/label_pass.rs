@@ -363,6 +363,7 @@ impl OsmLayer {
         cam: labels::CameraSig,
         selected: &HashSet<i64>,
         forced_areas: &HashSet<labels::Key>,
+        space: &mut labels::LabelSpace,
         window: &mut Window,
     ) -> labels::Placement {
         let fs = crate::frame_stats::start();
@@ -448,12 +449,13 @@ impl OsmLayer {
         // Street names rank against the icons and texts in the same pass.
         let line_cands = self.line_label_candidates(viewport, zoom);
         let (line_slots, _) = self.line_label_slots(viewport, cam, &line_cands, cache);
-        let (out, line_ok) = labels::place_with_lines(
+        let (out, line_ok) = labels::place_with_lines_in(
             &items,
             &line_slots,
             &fixed,
             &prev,
             &labels::Config::for_view(cam.w, cam.h),
+            &mut space.grid,
         );
         self.store_line_labels(
             viewport,
@@ -526,7 +528,9 @@ impl OsmLayer {
     /// Paint labels and POI icons above everything `render_canvas` and the
     /// highlights drew; `selected` and `hovered` keep their labels even when
     /// collision would drop them. Places when the camera has settled (or the
-    /// data changed), otherwise just re-projects the last placement.
+    /// data changed), otherwise just re-projects the last placement. `space`
+    /// is shared by all layers, which call this in z-order: this layer's
+    /// labels yield to the ones already in it and then claim their share.
     #[allow(clippy::too_many_arguments)]
     pub fn render_labels(
         &self,
@@ -535,6 +539,7 @@ impl OsmLayer {
         selected: &[FeatureRef],
         hovered: Option<&FeatureRef>,
         vis: labels::LabelVisibility,
+        space: &mut labels::LabelSpace,
         window: &mut Window,
         cx: &App,
     ) {
@@ -584,8 +589,33 @@ impl OsmLayer {
                     FeatureKind::Node => None,
                 })
                 .collect();
-            let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
+            let p = self.place_labels(
+                &mut cache,
+                viewport,
+                cam,
+                &ids,
+                &forced_areas,
+                space,
+                window,
+            );
             cache.store(p, now);
+        } else if step != labels::Step::HideAndWait {
+            // The kept placement (points and street names) still occupies
+            // its space for the layers above.
+            let to_screen = |mx: f64, my: f64| {
+                let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
+                (f32::from(sp.x), f32::from(sp.y))
+            };
+            if let Some(p) = &cache.placement {
+                space.take(&p.occupied(to_screen));
+            }
+            let lines = self
+                .render
+                .line_placed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .occupied(to_screen);
+            space.take(&lines);
         }
         // Frames are requested only while something is in flight: waiting to
         // settle, or a fade-in running.
@@ -842,14 +872,25 @@ impl OsmLayer {
             let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             (f32::from(sp.x), f32::from(sp.y))
         };
-        let placed: Vec<_> = match self.render.line_labels.lock() {
+        let (placed, boxes): (Vec<_>, Vec<_>) = match self.render.line_labels.lock() {
             Ok(lc) => slots
                 .iter()
                 .zip(ok)
                 .filter(|(_, &ok)| ok)
-                .map(|(s, _)| lc.finish(&cands[s.ci], s, to_screen))
-                .collect(),
-            Err(_) => Vec::new(),
+                .map(|(s, _)| {
+                    let p = lc.finish(&cands[s.ci], s, to_screen);
+                    // Boxes relative to the anchor, to re-project when kept.
+                    let (ax, ay) = to_screen(p.mx, p.my);
+                    let offs = s
+                        .rects
+                        .iter()
+                        .map(|r| labels::Rect::new(r.x0 - ax, r.y0 - ay, r.x1 - ax, r.y1 - ay))
+                        .collect();
+                    let anchor = (p.mx, p.my);
+                    (p, (anchor.0, anchor.1, offs))
+                })
+                .unzip(),
+            Err(_) => (Vec::new(), Vec::new()),
         };
         crate::frame_stats::count("linelabels.candidates", cands.len());
         crate::frame_stats::count("linelabels.placed", placed.len());
@@ -858,6 +899,13 @@ impl OsmLayer {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .store(placed, cam.zoom, now, labels::ZOOM_KEEP, labels::FADE);
+        // The boxes are keyed by their own anchor, so `store`'s reordering of
+        // `placed` does not matter.
+        self.render
+            .line_placed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .boxes = boxes;
     }
 
     /// Paint the placed street-name labels: halos first, then glyph fills.

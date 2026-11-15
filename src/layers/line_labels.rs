@@ -779,6 +779,10 @@ pub struct LineState {
     pub fade_end: Option<Instant>,
     /// By `(way, slot)`.
     fade: FadeSet<(i64, usize)>,
+    /// The collision boxes of the placed labels as offsets from their
+    /// anchor's screen position, with the anchor in Mercator, so a kept
+    /// placement can keep claiming its space in the shared label space.
+    pub boxes: Vec<(f64, f64, Vec<Rect>)>,
 }
 
 impl LineState {
@@ -803,6 +807,19 @@ impl LineState {
             |p, born| p.born = born,
         );
         self.placed = placed;
+    }
+
+    /// The screen boxes of the placed labels for the current camera.
+    pub fn occupied(&self, to_screen: impl Fn(f64, f64) -> Pt) -> Vec<Rect> {
+        let mut out = Vec::new();
+        for (mx, my, offs) in &self.boxes {
+            let (ax, ay) = to_screen(*mx, *my);
+            out.extend(
+                offs.iter()
+                    .map(|r| Rect::new(r.x0 + ax, r.y0 + ay, r.x1 + ax, r.y1 + ay)),
+            );
+        }
+        out
     }
 }
 
