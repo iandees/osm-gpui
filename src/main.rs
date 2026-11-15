@@ -70,8 +70,8 @@ mod welcome;
 
 use crate::menu::{
     add_imagery_layer, add_osm_carto, add_saved_custom_imagery, download_from_osm,
-    no_op_imagery_info, open_custom_imagery_dialog, open_osm_file, open_settings, quit,
-    rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
+    no_op_imagery_info, open_custom_imagery_dialog, open_esri_layer_dialog, open_osm_file,
+    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
@@ -113,6 +113,7 @@ actions!(
         ToggleDebugOverlay,
         ToggleDownloadedArea,
         AddCustomImagery,
+        AddEsriImagery,
         ScriptSeedCustomImagery,
         OpenSettings,
         Undo,
@@ -443,6 +444,9 @@ enum LayerRequest {
         /// Stable id of the source (the ELI id) that imagery offsets are
         /// remembered under; `None` for a custom template.
         imagery_id: Option<String>,
+        /// Width of the source's tile images in pixels (256, or 512 for
+        /// high-resolution tiles).
+        tile_size: u32,
     },
 }
 
@@ -3146,6 +3150,7 @@ impl MapViewer {
         use osm_gpui::ui::modal::open_modal;
         [
             open_modal(&self.dialogs.custom_imagery_dialog, cx),
+            open_modal(&self.dialogs.esri_layer_dialog, cx),
             open_modal(&self.dialogs.quit_confirm_dialog, cx),
             open_modal(&self.dialogs.delete_layer_dialog, cx),
             open_modal(&self.dialogs.restore_dialog, cx),
@@ -4190,6 +4195,7 @@ impl MapViewer {
                 max_zoom,
                 attribution,
                 imagery_id,
+                tile_size,
             } => {
                 let candidate = self.layer_manager.unique_name(&name);
                 let layer_id = self.layer_manager.alloc_id();
@@ -4205,7 +4211,8 @@ impl MapViewer {
                 .with_max_zoom(max_zoom)
                 .with_attribution(attribution)
                 .with_imagery_id(imagery_id)
-                .with_offset(offset);
+                .with_offset(offset)
+                .with_tile_size(tile_size);
                 self.layer_manager.add_layer(Box::new(layer));
             }
         }
@@ -4356,27 +4363,65 @@ impl MapViewer {
                         cx.notify();
                     }
                     DialogEvent::Submitted(entry) => {
-                        append_custom_imagery(entry.clone());
-                        this.apply_layer_request(
-                            LayerRequest::Imagery {
-                                name: entry.name.clone(),
-                                url_template: entry.url_template.clone(),
-                                min_zoom: Some(entry.min_zoom),
-                                max_zoom: Some(entry.max_zoom),
-                                attribution: None,
-                                imagery_id: None,
-                            },
-                            cx,
-                        );
                         this.dialogs.custom_imagery_dialog = None;
-                        this.menu_sync.last_menu_center = None;
-                        cx.notify();
+                        this.add_custom_imagery(entry.clone(), cx);
                     }
                 }
             },
         )
         .detach();
         self.dialogs.custom_imagery_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Save a new custom imagery source, show it as a layer, and have the
+    /// Imagery menu list it.
+    fn add_custom_imagery(&mut self, entry: CustomImageryEntry, cx: &mut Context<Self>) {
+        self.apply_layer_request(
+            LayerRequest::Imagery {
+                name: entry.name.clone(),
+                url_template: entry.url_template.clone(),
+                min_zoom: Some(entry.min_zoom),
+                max_zoom: Some(entry.max_zoom),
+                attribution: entry.attribution_info(),
+                imagery_id: None,
+                tile_size: entry.tile_size,
+            },
+            cx,
+        );
+        append_custom_imagery(entry);
+        self.menu_sync.last_menu_center = None;
+        cx.notify();
+    }
+
+    /// Window-scoped handler for the `AddEsriImagery` action; see
+    /// `on_upload_to_osm` for why the global handler alone is not enough.
+    fn on_open_esri_layer_dialog(
+        &mut self,
+        _: &AddEsriImagery,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_esri_layer_dialog(window, cx);
+    }
+
+    /// Open the Esri (ArcGIS REST) layer browser, if it isn't already open.
+    pub(crate) fn open_esri_layer_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::esri_layer_dialog::{DialogEvent, EsriLayerDialog};
+        if self.dialogs.esri_layer_dialog.is_some() {
+            return;
+        }
+        let http = self.http.clone();
+        let dialog = cx.new(|cx| EsriLayerDialog::new(http, window, cx));
+        cx.subscribe(&dialog, |this, _entity, event: &DialogEvent, cx| {
+            this.dialogs.esri_layer_dialog = None;
+            match event {
+                DialogEvent::Cancelled => cx.notify(),
+                DialogEvent::Submitted(entry) => this.add_custom_imagery(entry.clone(), cx),
+            }
+        })
+        .detach();
+        self.dialogs.esri_layer_dialog = Some(dialog);
         cx.notify();
     }
 
@@ -6183,6 +6228,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_upload_to_osm))
             .on_action(cx.listener(Self::on_validate))
             .on_action(cx.listener(Self::on_open_custom_imagery_dialog))
+            .on_action(cx.listener(Self::on_open_esri_layer_dialog))
             .on_action(cx.listener(Self::on_show_about))
             .children(self.open_modals(cx).into_iter().map(|m| m.view))
             .children(self.render_photo_fullscreen(window, cx))
@@ -6354,6 +6400,7 @@ fn main() {
         cx.on_action(add_saved_custom_imagery);
         cx.on_action(no_op_imagery_info);
         cx.on_action(open_custom_imagery_dialog);
+        cx.on_action(open_esri_layer_dialog);
         cx.on_action(open_settings);
         cx.on_action(upload_to_osm);
         cx.on_action(validate);

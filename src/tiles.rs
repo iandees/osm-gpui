@@ -62,6 +62,9 @@ impl TileCoord {
     }
 }
 
+/// The URL-template placeholder for a tile's Web Mercator bounding box.
+pub const BBOX_3857_PLACEHOLDER: &str = "{bbox-epsg-3857}";
+
 /// The `{switch:a,b,c}` placeholder of a URL template.
 struct SwitchSpan<'a> {
     /// Byte range of the whole `{switch:...}` text in the template.
@@ -101,6 +104,9 @@ pub(crate) fn collapse_switch(template: &str, marker: &str) -> String {
 /// `{switch:a,b,c}` / `{s}` subdomain placeholders. A `{s}` placeholder is
 /// only substituted when a `{switch:...}` list also appears in the template
 /// (that list becomes the subdomain pool); otherwise `{s}` is left as-is.
+/// `{bbox-epsg-3857}` becomes the tile's Web Mercator box as
+/// `min_x,min_y,max_x,max_y` in metres, for servers that render an image of
+/// any box asked for (WMS, ArcGIS `export`).
 pub fn url_from_template(template: &str, tile: &TileCoord) -> String {
     let TileCoord { x, y, z } = *tile;
     let n = 1u32.checked_shl(z).unwrap_or(0);
@@ -116,6 +122,14 @@ pub fn url_from_template(template: &str, tile: &TileCoord) -> String {
         s = s.replace("{s}", &subdomain);
     }
 
+    if s.contains(BBOX_3857_PLACEHOLDER) {
+        let b = tile.mercator_bounds();
+        let bbox = format!(
+            "{:.3},{:.3},{:.3},{:.3}",
+            b.min_x, b.min_y, b.max_x, b.max_y
+        );
+        s = s.replace(BBOX_3857_PLACEHOLDER, &bbox);
+    }
     s = s.replace("{zoom}", &z.to_string());
     s = s.replace("{z}", &z.to_string());
     s = s.replace("{x}", &x.to_string());
@@ -456,6 +470,19 @@ mod tests {
         let inner = u.trim_start_matches("https://");
         let first = inner.split('.').next().unwrap();
         assert!(u.contains(&format!("/{}/", first)), "got {}", u);
+    }
+
+    #[test]
+    fn bbox_placeholder_is_the_tiles_mercator_box() {
+        let h = MERCATOR_HALF_WORLD_M;
+        let u = url_from_template(
+            "https://e/export?bbox={bbox-epsg-3857}&f=image",
+            &TileCoord::new(1, 0, 1),
+        );
+        assert_eq!(
+            u,
+            format!("https://e/export?bbox=0.000,0.000,{h:.3},{h:.3}&f=image")
+        );
     }
 
     #[test]

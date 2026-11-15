@@ -804,7 +804,11 @@ impl SettingsWindow {
         let max_val = max_z.read(cx).value().to_string();
 
         match crate::ui::custom_imagery_dialog::validate(&name_val, &url_val, &min_val, &max_val) {
-            Ok(entry) => {
+            Ok(mut entry) => {
+                // The form edits neither the attribution nor the tile size;
+                // keep them.
+                entry.attribution = self.entries[idx].attribution.take();
+                entry.tile_size = self.entries[idx].tile_size;
                 self.entries[idx] = entry;
                 self.persist();
                 self.editing_index = None;
@@ -846,6 +850,8 @@ impl SettingsWindow {
             url_template: String::new(),
             min_zoom: 0,
             max_zoom: 19,
+            attribution: None,
+            tile_size: crate::layers::tile_layer::STANDARD_TILE_SIZE,
         };
         self.entries.push(blank.clone());
         let new_idx = self.entries.len() - 1;

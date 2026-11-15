@@ -40,7 +40,9 @@ pub fn validate(
     let has_x = template.contains("{x}");
     let has_y = template.contains("{y}");
     let has_minus_y = template.contains("{-y}");
-    if !has_z || !has_x || (!has_y && !has_minus_y) {
+    // A box-rendering server (WMS, ArcGIS export) needs no tile indices.
+    let has_bbox = template.contains(crate::tiles::BBOX_3857_PLACEHOLDER);
+    if !has_bbox && (!has_z || !has_x || (!has_y && !has_minus_y)) {
         return Err(ValidationError::TemplateMissingPlaceholder);
     }
     if has_y && has_minus_y {
@@ -56,6 +58,8 @@ pub fn validate(
         url_template: template.to_string(),
         min_zoom,
         max_zoom,
+        attribution: None,
+        tile_size: crate::layers::tile_layer::STANDARD_TILE_SIZE,
     })
 }
 
@@ -274,6 +278,18 @@ mod tests {
             validate("Example", "https://example.com/a/b/c.png", "", ""),
             Err(ValidationError::TemplateMissingPlaceholder)
         );
+    }
+
+    #[test]
+    fn a_bbox_template_needs_no_tile_indices() {
+        let e = validate(
+            "Export",
+            "https://gis.example.com/arcgis/rest/services/A/MapServer/export?bbox={bbox-epsg-3857}&f=image",
+            "",
+            "22",
+        )
+        .unwrap();
+        assert_eq!(e.max_zoom, 22);
     }
 
     #[test]
