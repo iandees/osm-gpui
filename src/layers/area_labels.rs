@@ -71,7 +71,7 @@ pub fn resolve_area_label(style: &TextStyle, tags: &Tags, zoom: f64) -> Option<A
     Some(AreaLabel {
         text: text.into(),
         look: TextLook::resolve(style, TextLook::AREA),
-        priority: LabelPriority::of(LabelClass::Area, tags),
+        priority: LabelPriority::of(LabelClass::Area, tags).with_style(style),
     })
 }
 

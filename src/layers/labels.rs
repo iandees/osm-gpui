@@ -25,7 +25,7 @@
 //! tests use.
 
 use crate::layers::area_labels::AreaCaches;
-use crate::layers::line_labels::{parse_bench, BenchKnobs};
+use crate::layers::line_labels::{parse_bench, BenchKnobs, LineSlot};
 use crate::presets;
 use crate::style::{TextPosition, TextStyle};
 use crate::tags::Tags;
@@ -92,8 +92,12 @@ pub enum LabelClass {
 /// tier. Area tiers sit below named nodes (400) and above house numbers
 /// (100), 20+ apart, so the 40-point hysteresis bonus may reorder neighbours
 /// but the size bonus (<= 30) keeps classes apart. Street tiers (20..=90) are
-/// on a scale of their own: line labels are placed in a pass after the
-/// points and never compete with them.
+/// on a scale of their own by default, below every point label; they take
+/// part in [`place_with_lines`] with the points, so a stylesheet can lift them
+/// (or lower an icon) with `label-priority`.
+///
+/// `label-priority` ([`LabelPriority::with_style`]) replaces the tier (and the
+/// area size bonus) outright.
 ///
 /// Ordering is `forced`, then `tier + size + hysteresis`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -106,6 +110,8 @@ pub struct LabelPriority {
     pub size: i32,
     /// Placed last time (see [`HYSTERESIS_BONUS`]).
     pub recent: bool,
+    /// The tier came from `label-priority`: no size bonus.
+    pub custom: bool,
 }
 
 impl LabelPriority {
@@ -116,6 +122,20 @@ impl LabelPriority {
             LabelClass::Street => street_tier(tags),
         };
         Self::from(tier)
+    }
+
+    /// The priority the stylesheet's `label-priority` asks for, if it sets
+    /// one; otherwise `self` unchanged.
+    pub fn with_style(self, style: &TextStyle) -> Self {
+        match style.label_priority {
+            Some(tier) => Self {
+                tier,
+                size: 0,
+                custom: true,
+                ..self
+            },
+            None => self,
+        }
     }
 
     pub fn with_forced(self, forced: bool) -> Self {
@@ -129,6 +149,9 @@ impl LabelPriority {
     /// The size bonus for an area whose polygon's screen bounding box has a
     /// larger side of `bbox_px`.
     pub fn with_size_px(self, bbox_px: f32) -> Self {
+        if self.custom {
+            return self;
+        }
         Self {
             size: ((bbox_px / 20.0) as i32).clamp(0, 30),
             ..self
@@ -545,6 +568,29 @@ pub fn place(
     prev: &HashMap<Key, Prev>,
     cfg: &Config,
 ) -> Vec<Placed> {
+    place_with_lines(items, &[], fixed, prev, cfg).0
+}
+
+/// Line labels (street names) with a score of at least this are placed in the
+/// icon pass, competing with icons by priority and beating any text. The rest
+/// are placed in the text pass, competing with text by priority. The default
+/// street tiers (20..=90) are below text (400) and icons (500), so a street
+/// name yields to both unless the stylesheet gives it a `label-priority`; one
+/// between a text-only label (400) and an icon (500) beats the text but not
+/// the icon. A tie with an icon goes to the icon.
+pub const LINE_ICON_PASS_SCORE: i32 = 450;
+
+/// [`place`] with line labels ranked in the same pass. `lines` are the
+/// laid-out street-name slots ([`LineSlot`]); the second result says which
+/// were placed (same indexing). A line label is all-or-nothing: every one of
+/// its rectangles is inside the view and clear of what was placed before it.
+pub fn place_with_lines(
+    items: &[Item],
+    lines: &[LineSlot],
+    fixed: &[Rect],
+    prev: &HashMap<Key, Prev>,
+    cfg: &Config,
+) -> (Vec<Placed>, Vec<bool>) {
     let mut order: Vec<usize> = (0..items.len()).collect();
     let eff = |i: usize| {
         let it = &items[i];
@@ -565,9 +611,47 @@ pub fn place(
         }
     }
 
+    // Line labels by priority, split by the pass they are placed in.
+    let mut line_order: Vec<usize> = (0..lines.len()).collect();
+    line_order.sort_by(|&a, &b| lines[b].priority.cmp(&lines[a].priority).then(a.cmp(&b)));
+    let (early, late): (Vec<usize>, Vec<usize>) = line_order
+        .into_iter()
+        .partition(|&l| lines[l].priority.score() >= LINE_ICON_PASS_SCORE);
+    let line_inner = Rect::new(
+        cfg.view.x0 + cfg.edge_pad,
+        cfg.view.y0 + cfg.edge_pad,
+        cfg.view.x1 - cfg.edge_pad,
+        cfg.view.y1 - cfg.edge_pad,
+    );
+    let mut line_placed = vec![false; lines.len()];
+    let mut n_lines = 0usize;
+    let mut try_line = |l: usize, grid: &mut CollisionGrid| {
+        if n_lines >= crate::layers::line_labels::MAX_PLACED {
+            return;
+        }
+        let rects = &lines[l].rects;
+        let pad = crate::layers::line_labels::COLLIDE_PAD;
+        if rects
+            .iter()
+            .any(|r| !line_inner.contains(r) || grid.collides(&r.inflate(pad), NO_OWNER - 1))
+        {
+            return;
+        }
+        for r in rects {
+            grid.insert(*r, NO_OWNER);
+        }
+        line_placed[l] = true;
+        n_lines += 1;
+    };
+
     let mut icon_placed = vec![false; items.len()];
+    let mut next_early = 0;
     for &i in &order {
         let it = &items[i];
+        while next_early < early.len() && lines[early[next_early]].priority > eff(i) {
+            try_line(early[next_early], &mut grid);
+            next_early += 1;
+        }
         let Some(r) = it.icon_r else { continue };
         let rect = Rect::around(it.center.0, it.center.1, r, r);
         let padded = rect.inflate(cfg.icon_pad);
@@ -575,6 +659,10 @@ pub fn place(
             grid.insert(rect, i as u32);
             icon_placed[i] = true;
         }
+    }
+
+    for &l in &early[next_early..] {
+        try_line(l, &mut grid);
     }
 
     let mut text_placed: Vec<Option<(Anchor, Rect)>> = vec![None; items.len()];
@@ -585,8 +673,13 @@ pub fn place(
         cfg.view.y1 - cfg.edge_pad,
     );
     let mut n_text = 0usize;
+    let mut next_late = 0;
     for &i in &order {
         let it = &items[i];
+        while next_late < late.len() && lines[late[next_late]].priority > eff(i) {
+            try_line(late[next_late], &mut grid);
+            next_late += 1;
+        }
         let Some((w, h, pref)) = it.text else {
             continue;
         };
@@ -612,7 +705,11 @@ pub fn place(
         }
     }
 
-    order
+    for &l in &late[next_late..] {
+        try_line(l, &mut grid);
+    }
+
+    let placed = order
         .into_iter()
         .filter(|&i| icon_placed[i] || text_placed[i].is_some())
         .map(|i| Placed {
@@ -620,7 +717,8 @@ pub fn place(
             icon: icon_placed[i],
             text: text_placed[i],
         })
-        .collect()
+        .collect();
+    (placed, line_placed)
 }
 
 /// The icon a node gets.
@@ -773,7 +871,8 @@ pub fn resolve_node_label(
                 named,
             },
             tags,
-        ),
+        )
+        .with_style(style),
         text: text.map(SharedString::from),
         look: TextLook::resolve(style, TextLook::POINT),
         pref: Anchor::from_position(style.position),
@@ -1617,6 +1716,85 @@ mod tests {
         .into();
         let out = place(&[hi0, lo0], &fixed, &prev, &cfg());
         assert_eq!(out[0].item, 0);
+    }
+
+    fn icon_item(id: i64, x: f32, y: f32, priority: i32) -> Item {
+        Item {
+            icon_r: Some(8.0),
+            marker_r: 0.0,
+            text: None,
+            ..item(id, x, y, 0.0, priority)
+        }
+    }
+
+    /// A street-name slot over `x0..x1` at `y`.
+    fn line_slot(x0: f32, x1: f32, y: f32, priority: i32) -> LineSlot {
+        LineSlot {
+            ci: 0,
+            slot: 0,
+            priority: priority.into(),
+            rects: vec![Rect::new(x0, y - 6.0, x1, y + 6.0)],
+        }
+    }
+
+    #[test]
+    fn label_priority_replaces_the_tier_and_the_area_size_bonus() {
+        let tags = Tags::default();
+        let style = TextStyle {
+            label_priority: Some(600),
+            ..TextStyle::default()
+        };
+        let p = LabelPriority::of(LabelClass::Street, &tags).with_style(&style);
+        assert_eq!(p.score(), 600);
+        let area = LabelPriority::of(LabelClass::Area, &tags);
+        assert_eq!(area.with_size_px(1000.0).score(), 280 + 30);
+        assert_eq!(area.with_style(&style).with_size_px(1000.0).score(), 600);
+        // No property: unchanged.
+        let none = TextStyle::default();
+        assert_eq!(area.with_style(&none).tier, 280);
+    }
+
+    #[test]
+    fn street_names_yield_to_icons_unless_given_a_higher_priority() {
+        // The icon sits on the street name.
+        let icons = [icon_item(1, 100.0, 100.0, 500)];
+        let lines = |p| [line_slot(60.0, 160.0, 100.0, p)];
+        let (placed, ok) = place_with_lines(&icons, &lines(90), &[], &HashMap::new(), &cfg());
+        assert!(placed[0].icon);
+        assert_eq!(ok, [false], "default street tier loses to an icon");
+        let (placed, ok) = place_with_lines(&icons, &lines(600), &[], &HashMap::new(), &cfg());
+        assert!(
+            placed.is_empty(),
+            "the icon yields to the higher-ranked street"
+        );
+        assert_eq!(ok, [true]);
+        // A tie goes to the icon (placed first).
+        let (placed, ok) = place_with_lines(&icons, &lines(500), &[], &HashMap::new(), &cfg());
+        assert!(placed[0].icon);
+        assert_eq!(ok, [false]);
+    }
+
+    #[test]
+    fn street_names_and_texts_compete_by_priority() {
+        // The text's box lands on the street name.
+        let texts = [item(1, 100.0, 100.0, 60.0, 400)];
+        let at = |p| [line_slot(110.0, 170.0, 100.0, p)];
+        let (placed, ok) = place_with_lines(&texts, &at(90), &[], &HashMap::new(), &cfg());
+        assert!(placed[0].text.is_some());
+        assert_eq!(ok, [false]);
+        let (_, ok) = place_with_lines(&texts, &at(420), &[], &HashMap::new(), &cfg());
+        assert_eq!(ok, [true], "a street ranked above the text takes the spot");
+    }
+
+    #[test]
+    fn a_street_name_must_fit_in_the_view_and_clear_other_streets() {
+        let lines = [
+            line_slot(10.0, 90.0, 50.0, 80),
+            line_slot(50.0, 130.0, 50.0, 70),
+            line_slot(-20.0, 40.0, 200.0, 90),
+        ];
+        let (_, ok) = place_with_lines(&[], &lines, &[], &HashMap::new(), &cfg());
+        assert_eq!(ok, [true, false, false]);
     }
 
     #[test]

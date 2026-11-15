@@ -852,6 +852,17 @@ fn style_sig(s: &LabelStyle) -> [u32; 3] {
     ]
 }
 
+/// One label slot of a candidate, laid out and ready to be ranked: the
+/// screen rectangles it would occupy and its priority.
+#[derive(Debug, Clone)]
+pub struct LineSlot {
+    /// Index into the candidates passed to [`LineLabelCache::prepare`].
+    pub ci: usize,
+    pub slot: usize,
+    pub priority: LabelPriority,
+    pub rects: Vec<Rect>,
+}
+
 impl LineLabelCache {
     pub fn new(tuning: Tuning) -> Self {
         Self {
@@ -1008,7 +1019,9 @@ impl LineLabelCache {
     }
 
     /// Choose the labels to show (the expensive half; run when the camera
-    /// settles). `to_screen` maps mercator meters to screen pixels; `view`
+    /// settles). Lays out (or reuses) every candidate, then ranks the slots
+    /// against `obstacles` only; [`Self::prepare`] and [`Self::finish`] are
+    /// the halves for a caller that ranks them against other labels itself. `to_screen` maps mercator meters to screen pixels; `view`
     /// is the canvas size. `obstacles` are screen rectangles already taken
     /// (point labels, icons): line labels yield to all of them. `prev` holds
     /// the `(way, slot)` pairs placed last time: they get a priority bonus
@@ -1037,9 +1050,66 @@ impl LineLabelCache {
             self.layouts.clear();
             self.zoom_bits = zoom.to_bits();
         }
+        let (mut slots, built) = self.prepare(cands, zoom, knobs, &to_screen, prev);
+        slots.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then(cands[a.ci].way_id.cmp(&cands[b.ci].way_id))
+                .then(a.slot.cmp(&b.slot))
+        });
+
+        let mut grid = CollisionGrid::new(
+            Rect::new(0.0, 0.0, view.0, view.1).inflate(GRID_CELL),
+            GRID_CELL,
+        );
+        for r in obstacles {
+            grid.insert(*r, NO_OWNER);
+        }
+        let inner = Rect::new(2.0, 2.0, view.0 - 2.0, view.1 - 2.0);
+        let mut out = Vec::new();
+        for s in &slots {
+            if out.len() >= MAX_PLACED {
+                break;
+            }
+            if s.rects
+                .iter()
+                .any(|r| !inner.contains(r) || grid.collides(&r.inflate(COLLIDE_PAD), NO_OWNER - 1))
+            {
+                continue;
+            }
+            for r in &s.rects {
+                grid.insert(*r, out.len() as u32);
+            }
+            out.push(self.finish(&cands[s.ci], s, &to_screen));
+        }
+        (out, built)
+    }
+
+    /// Lay out the candidates (reusing cached layouts) and return one
+    /// [`LineSlot`] per label slot, with its screen rectangles and its
+    /// priority (hysteresis bonus applied for the `prev` pairs). Unsorted.
+    pub fn prepare(
+        &mut self,
+        cands: &[Candidate<'_>],
+        zoom: f64,
+        knobs: &BenchKnobs,
+        to_screen: impl Fn(f64, f64) -> Pt,
+        prev: &HashSet<(i64, usize)>,
+    ) -> (Vec<LineSlot>, usize) {
+        if zoom < MIN_ZOOM || !knobs.labels {
+            return (Vec::new(), 0);
+        }
+        if knobs.halo != self.tuning.halo_mode {
+            self.tuning.halo_mode = knobs.halo;
+            self.glyphs.clear();
+            self.layouts.clear();
+        }
+        if zoom.to_bits() != self.zoom_bits {
+            self.layouts.clear();
+            self.zoom_bits = zoom.to_bits();
+        }
         let mut built = 0;
-        // (candidate index, slot, effective priority, screen reference)
-        let mut order: Vec<(usize, usize, LabelPriority, Pt)> = Vec::new();
+        let mut order: Vec<LineSlot> = Vec::new();
         for (ci, c) in cands.iter().enumerate() {
             if c.verts.len() < 2 {
                 continue;
@@ -1081,44 +1151,32 @@ impl LineLabelCache {
             let n = self.layouts[&c.way_id].labels.len();
             for slot in 0..n {
                 let priority = c.priority.with_recent(prev.contains(&(c.way_id, slot)));
-                order.push((ci, slot, priority, (rx, ry)));
+                let rects = self.layouts[&c.way_id].labels[slot]
+                    .boxes
+                    .iter()
+                    .map(|b| Rect::new(rx + b[0], ry + b[1], rx + b[2], ry + b[3]))
+                    .collect();
+                order.push(LineSlot {
+                    ci,
+                    slot,
+                    priority,
+                    rects,
+                });
             }
         }
-        order.sort_by(|a, b| {
-            b.2.cmp(&a.2)
-                .then(cands[a.0].way_id.cmp(&cands[b.0].way_id))
-                .then(a.1.cmp(&b.1))
-        });
+        (order, built)
+    }
 
-        let mut grid = CollisionGrid::new(
-            Rect::new(0.0, 0.0, view.0, view.1).inflate(GRID_CELL),
-            GRID_CELL,
-        );
-        for r in obstacles {
-            grid.insert(*r, NO_OWNER);
-        }
-        let inner = Rect::new(2.0, 2.0, view.0 - 2.0, view.1 - 2.0);
-        let mut out = Vec::new();
-        for (ci, slot, _, (rx, ry)) in order {
-            if out.len() >= MAX_PLACED {
-                break;
-            }
-            let c = &cands[ci];
+    /// The placed label for an accepted [`LineSlot`] of candidate `c`.
+    pub fn finish(
+        &self,
+        c: &Candidate<'_>,
+        s: &LineSlot,
+        to_screen: impl Fn(f64, f64) -> Pt,
+    ) -> LinePlaced {
+        let slot = s.slot;
+        {
             let label = self.layouts[&c.way_id].labels[slot].clone();
-            let rects: Vec<Rect> = label
-                .boxes
-                .iter()
-                .map(|b| Rect::new(rx + b[0], ry + b[1], rx + b[2], ry + b[3]))
-                .collect();
-            if rects
-                .iter()
-                .any(|r| !inner.contains(r) || grid.collides(&r.inflate(COLLIDE_PAD), NO_OWNER - 1))
-            {
-                continue;
-            }
-            for r in rects {
-                grid.insert(r, out.len() as u32);
-            }
             // Mercator position of the label's anchor: the way's first vertex
             // plus the anchor's pixel offset (screen y points down).
             let (x0, y0) = (c.verts[0].1, c.verts[0].2);
@@ -1131,7 +1189,7 @@ impl LineLabelCache {
             } else {
                 (x0, y0)
             };
-            out.push(LinePlaced {
+            LinePlaced {
                 way_id: c.way_id,
                 slot,
                 mx,
@@ -1139,9 +1197,8 @@ impl LineLabelCache {
                 label,
                 look: c.style.look,
                 born: None,
-            });
+            }
         }
-        (out, built)
     }
 
     /// Place and emit in one go, with no obstacles and no hysteresis: what

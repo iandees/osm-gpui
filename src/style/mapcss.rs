@@ -20,6 +20,8 @@
 //!   e.g. `name`, or `none`), `font-size`, `text-color`, `text-halo-color`,
 //!   `text-halo-radius`, `text-offset` (pixels; line labels only: perpendicular
 //!   shift from the way, positive above the text, negative below it),
+//!   `label-priority` (a number; bigger wins when labels and icons collide,
+//!   replacing the built-in rank; street names compete with icons too),
 //!   `text-position` (`center` | `line` | `right` | `left` | `above` | `below`), `icon-image`
 //!   and `icon-width`. They are parsed and resolved into [`TextStyle`] (see
 //!   [`Stylesheet::way_text_style`] / [`Stylesheet::node_text_style`]).
@@ -307,6 +309,11 @@ pub struct TextStyle {
     /// `text-offset`: perpendicular shift of a line label from its way, in
     /// pixels. Positive is above the text, negative below it.
     pub offset: Option<f32>,
+    /// `label-priority`: how important the label (and its icon) is when
+    /// labels collide; bigger wins. Replaces the built-in tier (node labels
+    /// 100..=1000, areas 250..=340, street names 20..=90) and, for areas,
+    /// the size bonus.
+    pub label_priority: Option<i32>,
     pub icon_image: Option<String>,
     pub icon_width: Option<f32>,
 }
@@ -327,6 +334,7 @@ impl TextStyle {
             Declaration::TextHaloRadius(v) => self.halo_radius = Some(*v),
             Declaration::TextPosition(p) => self.position = Some(*p),
             Declaration::TextOffset(v) => self.offset = Some(*v),
+            Declaration::LabelPriority(v) => self.label_priority = Some(*v),
             Declaration::IconImage(i) => self.icon_image = i.clone(),
             Declaration::IconWidth(v) => self.icon_width = Some(*v),
             Declaration::Color(_)
@@ -470,6 +478,8 @@ enum Declaration {
     TextHaloRadius(f32),
     TextPosition(TextPosition),
     TextOffset(f32),
+    /// `label-priority`: rank of the label when labels collide.
+    LabelPriority(i32),
     /// `icon-image: <path or url>`; `None` for `icon-image: none`.
     IconImage(Option<String>),
     IconWidth(f32),
@@ -516,6 +526,7 @@ impl Declaration {
             | Declaration::TextHaloRadius(_)
             | Declaration::TextPosition(_)
             | Declaration::TextOffset(_)
+            | Declaration::LabelPriority(_)
             | Declaration::IconImage(_)
             | Declaration::IconWidth(_) => DeclTarget::Text,
             Declaration::SymbolSize(_) | Declaration::SymbolShape(_) => DeclTarget::Node,
@@ -756,6 +767,7 @@ impl Stylesheet {
                     | Declaration::TextHaloRadius(_)
                     | Declaration::TextPosition(_)
                     | Declaration::TextOffset(_)
+                    | Declaration::LabelPriority(_)
                     | Declaration::IconImage(_)
                     | Declaration::IconWidth(_) => {}
                 }
@@ -924,6 +936,7 @@ impl Stylesheet {
                     | Declaration::TextHaloRadius(_)
                     | Declaration::TextPosition(_)
                     | Declaration::TextOffset(_)
+                    | Declaration::LabelPriority(_)
                     | Declaration::IconImage(_)
                     | Declaration::IconWidth(_) => {}
                 }
@@ -970,6 +983,7 @@ fn resolve_canvas(rules: &[Rule]) -> CanvasStyle {
                 | Declaration::TextHaloRadius(_)
                 | Declaration::TextPosition(_)
                 | Declaration::TextOffset(_)
+                | Declaration::LabelPriority(_)
                 | Declaration::IconImage(_)
                 | Declaration::IconWidth(_) => {}
             }
@@ -1406,6 +1420,12 @@ impl<'a> Parser<'a> {
                     Ok(v) if v.is_finite() => decls.push(Declaration::TextOffset(v)),
                     _ => warn_once(warned, "text-offset", &value),
                 },
+                "label-priority" => match value.trim().parse::<f32>() {
+                    Ok(v) if v.is_finite() && v.abs() <= 100_000.0 => {
+                        decls.push(Declaration::LabelPriority(v.round() as i32))
+                    }
+                    _ => warn_once(warned, "label-priority", &value),
+                },
                 "icon-image" => {
                     let v = unquote(&value);
                     let v = v
@@ -1680,6 +1700,7 @@ mod tests {
             Declaration::TextHaloRadius(2.0),
             Declaration::TextPosition(TextPosition::Above),
             Declaration::TextOffset(4.0),
+            Declaration::LabelPriority(450),
             Declaration::IconImage(Some("preset".into())),
             Declaration::IconWidth(16.0),
             Declaration::SymbolShape(NodeShape::Square),
@@ -1956,7 +1977,7 @@ mod tests {
         let t = text_of(
             "way[highway] { text: name; font-size: 11; text-color: #112233; \
              text-halo-color: rgba(255,255,255,0.8); text-halo-radius: 2; \
-             text-position: line; text-offset: -4.5; icon-image: \"icons/shield.svg\"; icon-width: 16; }",
+             text-position: line; text-offset: -4.5; label-priority: 450; icon-image: \"icons/shield.svg\"; icon-width: 16; }",
         );
         assert_eq!(
             t,
@@ -1969,6 +1990,7 @@ mod tests {
                 halo_opacity: Some(0.8),
                 position: Some(TextPosition::Line),
                 offset: Some(-4.5),
+                label_priority: Some(450),
                 icon_image: Some("icons/shield.svg".into()),
                 icon_width: Some(16.0),
             }
@@ -2029,7 +2051,7 @@ mod tests {
     fn invalid_label_values_are_ignored() {
         let t = text_of(
             "way { font-size: 0; text-color: nope; text-halo-radius: -1; text-position: sideways; \
-             text-offset: far; icon-width: big; text: ; icon-image: ; }",
+             text-offset: far; label-priority: high; icon-width: big; text: ; icon-image: ; }",
         );
         assert!(t.is_empty());
     }

@@ -409,11 +409,23 @@ impl OsmLayer {
         cands.extend(self.area_items(cache, viewport, cam, forced_areas, &node_texts, window));
         let items: Vec<labels::Item> = cands.iter().map(|c| c.item.clone()).collect();
         let prev = cache.prev_state();
-        let out = labels::place(
+        // Street names rank against the icons and texts in the same pass.
+        let line_cands = self.line_label_candidates(viewport, zoom);
+        let (line_slots, _) = self.line_label_slots(viewport, cam, &line_cands, cache);
+        let (out, line_ok) = labels::place_with_lines(
             &items,
+            &line_slots,
             &fixed,
             &prev,
             &labels::Config::for_view(cam.w, cam.h),
+        );
+        self.store_line_labels(
+            viewport,
+            cam,
+            &line_cands,
+            &line_slots,
+            &line_ok,
+            std::time::Instant::now(),
         );
         let mut placed = Vec::with_capacity(out.len());
         let mut by_id = HashMap::with_capacity(out.len());
@@ -533,7 +545,6 @@ impl OsmLayer {
                 })
                 .collect();
             let p = self.place_labels(&mut cache, viewport, cam, &ids, &forced_areas, window);
-            self.place_line_labels(viewport, cam, &p, &cache.tuning.line_knobs(), now);
             cache.store(p, now);
         }
         // Frames are requested only while something is in flight: waiting to
@@ -730,35 +741,27 @@ impl OsmLayer {
                 text,
                 verts: &self.derived.way_vertices[i],
                 style: LabelStyle::resolve(&st, half_width),
-                priority: labels::LabelPriority::of(labels::LabelClass::Street, &way.tags),
+                priority: labels::LabelPriority::of(labels::LabelClass::Street, &way.tags)
+                    .with_style(&st),
             });
         }
         cands
     }
 
-    /// Choose the street-name labels for the current camera, yielding to
-    /// the point labels and icons in `points`. Stores the result for
-    /// `paint_line_labels`.
-    pub(super) fn place_line_labels(
+    /// Lay out the street-name candidates for the current camera, ready to
+    /// be ranked with the point labels in [`labels::place_with_lines`].
+    pub(super) fn line_label_slots(
         &self,
         viewport: &Viewport,
         cam: labels::CameraSig,
-        points: &labels::Placement,
-        knobs: &crate::layers::line_labels::BenchKnobs,
-        now: std::time::Instant,
-    ) {
-        let fs = crate::frame_stats::start();
-        let obstacles = points.occupied(|mx, my| {
-            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
-            (f32::from(sp.x), f32::from(sp.y))
-        });
-        let cands = self.line_label_candidates(viewport, cam.zoom);
-        let mut placed_slot = self
+        cands: &[crate::layers::line_labels::Candidate<'_>],
+        cache: &labels::LabelCache,
+    ) -> (Vec<crate::layers::line_labels::LineSlot>, usize) {
+        let prev: HashSet<(i64, usize)> = self
             .render
             .line_placed
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let prev: HashSet<(i64, usize)> = placed_slot
+            .unwrap_or_else(|e| e.into_inner())
             .placed
             .iter()
             .map(|p| (p.way_id, p.slot))
@@ -767,22 +770,50 @@ impl OsmLayer {
             let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             (f32::from(sp.x), f32::from(sp.y))
         };
-        let (placed, _built) = match self.render.line_labels.lock() {
-            Ok(mut cache) => cache.place(
-                &cands,
+        match self.render.line_labels.lock() {
+            Ok(mut lc) => lc.prepare(
+                cands,
                 cam.zoom,
-                knobs,
+                &cache.tuning.line_knobs(),
                 to_screen,
-                (cam.w, cam.h),
-                &obstacles,
                 &prev,
             ),
             Err(_) => (Vec::new(), 0),
+        }
+    }
+
+    /// Keep the street names `place_with_lines` accepted (`ok[i]` for
+    /// `slots[i]`) for `paint_line_labels`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn store_line_labels(
+        &self,
+        viewport: &Viewport,
+        cam: labels::CameraSig,
+        cands: &[crate::layers::line_labels::Candidate<'_>],
+        slots: &[crate::layers::line_labels::LineSlot],
+        ok: &[bool],
+        now: std::time::Instant,
+    ) {
+        let to_screen = |mx: f64, my: f64| {
+            let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
+            (f32::from(sp.x), f32::from(sp.y))
+        };
+        let placed: Vec<_> = match self.render.line_labels.lock() {
+            Ok(lc) => slots
+                .iter()
+                .zip(ok)
+                .filter(|(_, &ok)| ok)
+                .map(|(s, _)| lc.finish(&cands[s.ci], s, to_screen))
+                .collect(),
+            Err(_) => Vec::new(),
         };
         crate::frame_stats::count("linelabels.candidates", cands.len());
         crate::frame_stats::count("linelabels.placed", placed.len());
-        placed_slot.store(placed, cam.zoom, now, labels::ZOOM_KEEP, labels::FADE);
-        crate::frame_stats::lap("linelabels.place", fs);
+        self.render
+            .line_placed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .store(placed, cam.zoom, now, labels::ZOOM_KEEP, labels::FADE);
     }
 
     /// Paint the placed street-name labels: halos first, then glyph fills.
