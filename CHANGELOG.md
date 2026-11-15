@@ -7,6 +7,43 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.12.0
+
+### Layers
+
+- PMTiles vector-tile overlay layers can be added from a web address or a local file, drawn with a colour per source layer. ([#317](https://github.com/iandees/osm-gpui/pull/317))
+- Esri MapServer and ImageServer imagery layers can be added through a new layer browser. ([#316](https://github.com/iandees/osm-gpui/pull/316))
+- Mapillary and Fotoshi street imagery layers open photos in a zoomable photo viewer. ([#258](https://github.com/iandees/osm-gpui/pull/258))
+- Panoramax imagery is available, street imagery loads from vector tiles, and an opt-in Fotoshi lookup shows imagery for the selected feature. ([#259](https://github.com/iandees/osm-gpui/pull/259))
+- Public GPS traces are downloaded from OSM and drawn on the map. ([#257](https://github.com/iandees/osm-gpui/pull/257))
+- The coordinate grid layer is removed. ([#296](https://github.com/iandees/osm-gpui/pull/296))
+
+### Editing
+
+- A new Extract Point action moves POI tags from a closed way onto a new node. ([#255](https://github.com/iandees/osm-gpui/pull/255))
+- Redo recreates drawn buildings, arcs, extrusions and Add-mode clicks with their original ids. ([#263](https://github.com/iandees/osm-gpui/pull/263))
+- Edits are recorded as replayable operations, failed actions roll back, and way length and relation membership limits are enforced. ([#292](https://github.com/iandees/osm-gpui/pull/292), [#305](https://github.com/iandees/osm-gpui/pull/305))
+- A deleted relation is written without its tags, like a deleted node or way, and purging relations no longer removes the wrong ones. ([#279](https://github.com/iandees/osm-gpui/pull/279), [#280](https://github.com/iandees/osm-gpui/pull/280))
+
+### Upload and sign-in
+
+- An upload-in-progress marker is recorded before each changeset is sent, including the objects in flight and the changeset id. Restoring a session and the upload dialog warn about it, and every crashed session's marker is carried forward. ([#284](https://github.com/iandees/osm-gpui/pull/284), [#299](https://github.com/iandees/osm-gpui/pull/299))
+- After an upload with an unknown outcome the app asks before uploading again, and autosaves from other formats are kept. ([#265](https://github.com/iandees/osm-gpui/pull/265))
+- Token refresh is single-flight, settings writes are serialised, save failures are reported, upload results are parsed more strictly and provider secrets are kept out of settings.json. ([#301](https://github.com/iandees/osm-gpui/pull/301))
+- Signing in costs one Keychain prompt: only the changed login's item is written, and it is replaced without being read first. ([#314](https://github.com/iandees/osm-gpui/pull/314))
+
+### Map
+
+- Each tile host gets its own download slots, a hidden or removed layer's downloads are cancelled, and connections fail after 10 seconds, so a dead imagery server no longer stalls every layer. ([#315](https://github.com/iandees/osm-gpui/pull/315))
+- Tiles wrap across the antimeridian, and very wide views count only real tiles. ([#295](https://github.com/iandees/osm-gpui/pull/295), [#273](https://github.com/iandees/osm-gpui/pull/273))
+
+### Settings and app
+
+- Settings writes go through one update function, tolerate unknown or missing fields, back up unreadable files, and the Settings window honors `--api-server`. ([#261](https://github.com/iandees/osm-gpui/pull/261))
+- Find history recall no longer depends on input change events, and API URLs without a host are rejected. ([#294](https://github.com/iandees/osm-gpui/pull/294))
+- Focus returns to the map when the last modal dialog closes with focus still in it. ([#313](https://github.com/iandees/osm-gpui/pull/313))
+- New `--offline` and `--http-fixtures` options support scripted runs. ([#295](https://github.com/iandees/osm-gpui/pull/295))
+
 ## 0.11.0
 
 ### Editing
