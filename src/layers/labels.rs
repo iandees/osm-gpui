@@ -845,18 +845,46 @@ pub struct PlacedText {
     pub dx: f32,
     pub dy: f32,
     pub look: TextLook,
+    /// A second line below `line` (a wrapped area label), centred under it.
+    pub line2: Option<Arc<ShapedLine>>,
 }
 
 impl PlacedText {
     /// Every placed text is built here: `line` with its box's top-left `(dx,
     /// dy)` from the feature's screen position.
     pub fn new(line: Arc<ShapedLine>, dx: f32, dy: f32, look: TextLook) -> Self {
-        Self { line, dx, dy, look }
+        Self {
+            line,
+            dx,
+            dy,
+            look,
+            line2: None,
+        }
+    }
+
+    /// This text with `line2` as its second line.
+    pub fn with_second(mut self, line2: Option<Arc<ShapedLine>>) -> Self {
+        self.line2 = line2;
+        self
+    }
+
+    /// Size of the whole text box: the wider line, the lines stacked.
+    pub fn size(&self) -> (f32, f32) {
+        text_size(&self.line, self.line2.as_deref())
     }
 
     /// `line` in the box `rect`, for a feature drawn at `center`.
     pub fn in_rect(line: Arc<ShapedLine>, rect: &Rect, center: (f32, f32), look: TextLook) -> Self {
         Self::new(line, rect.x0 - center.0, rect.y0 - center.1, look)
+    }
+}
+
+/// Size of one or two stacked lines of text.
+pub fn text_size(line: &ShapedLine, line2: Option<&ShapedLine>) -> (f32, f32) {
+    let h = f32::from(line.ascent + line.descent);
+    match line2 {
+        Some(l2) => (f32::from(line.width).max(f32::from(l2.width)), h * 2.0),
+        None => (f32::from(line.width), h),
     }
 }
 
@@ -1028,10 +1056,7 @@ impl Placement {
                 out.push(Rect::around(cx, cy, r, r));
             }
             if let Some(t) = &l.text {
-                let (w, h) = (
-                    f32::from(t.line.width),
-                    f32::from(t.line.ascent + t.line.descent),
-                );
+                let (w, h) = t.size();
                 out.push(Rect::new(
                     cx + t.dx,
                     cy + t.dy,
@@ -1359,35 +1384,40 @@ pub fn paint_text(
     alpha: f32,
     mode: HaloMode,
 ) {
-    let baseline = point(top_left.x, top_left.y + t.line.ascent);
     let look = &t.look;
+    let (box_w, box_h) = t.size();
+    let line_h = t.line.ascent + t.line.descent;
+    // Each line's baseline origin; a second line is centred under the first.
+    let baselines: Vec<(&ShapedLine, Point<Pixels>)> = std::iter::once(&t.line)
+        .chain(t.line2.as_ref())
+        .enumerate()
+        .map(|(i, l)| {
+            let x = top_left.x + (px(box_w) - l.width) / 2.0;
+            let y = top_left.y + line_h * i as f32 + l.ascent;
+            (&**l, point(x, y))
+        })
+        .collect();
     if look.halo_radius > 0.0 {
         let halo = rgb_hsla(look.halo_color, look.halo_alpha * alpha);
         match mode {
             HaloMode::Offsets => {
                 for (ox, oy) in halo_offsets(look.halo_radius) {
-                    paint_glyphs(
-                        window,
-                        &t.line,
-                        point(baseline.x + px(ox), baseline.y + px(oy)),
-                        halo,
-                    );
+                    for (l, b) in &baselines {
+                        paint_glyphs(window, l, point(b.x + px(ox), b.y + px(oy)), halo);
+                    }
                 }
             }
             HaloMode::Shadow => {
                 let d = look.halo_radius * std::f32::consts::FRAC_1_SQRT_2;
-                paint_glyphs(
-                    window,
-                    &t.line,
-                    point(baseline.x + px(d), baseline.y + px(d)),
-                    halo,
-                );
+                for (l, b) in &baselines {
+                    paint_glyphs(window, l, point(b.x + px(d), b.y + px(d)), halo);
+                }
             }
             HaloMode::Quad => {
                 let pad = look.halo_radius + 1.0;
                 let b = Bounds {
                     origin: point(top_left.x - px(pad), top_left.y),
-                    size: size(t.line.width + px(2.0 * pad), t.line.ascent + t.line.descent),
+                    size: size(px(box_w + 2.0 * pad), px(box_h)),
                 };
                 let mut c = halo;
                 c.a *= 0.6;
@@ -1396,7 +1426,9 @@ pub fn paint_text(
             HaloMode::Off => {}
         }
     }
-    paint_glyphs(window, &t.line, baseline, rgb_hsla(look.color, alpha));
+    for (l, b) in &baselines {
+        paint_glyphs(window, l, *b, rgb_hsla(look.color, alpha));
+    }
 }
 
 /// Paint an icon centred on `center`: a round backing in `fill` with a dark

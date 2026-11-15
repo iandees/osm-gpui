@@ -21,8 +21,11 @@
 //! The placed label goes through the same collision grid as point labels
 //! (`labels::place`) as a [`labels::Anchor::Center`] item.
 //!
-//! Limits: the text is a single line (no wrapping onto a second line), and
-//! the fit test uses the text's predicted size at the shrunk step.
+//! A name that does not fit on one line is tried on two ([`split_two_lines`],
+//! at a space), at each font scale in turn: one line, then two, then the
+//! next smaller scale.
+//!
+//! Limits: the fit test uses the text's predicted size at the shrunk step.
 
 use crate::polylabel::{self, Pole, Pt};
 use crate::style::{TextPosition, TextStyle};
@@ -262,6 +265,8 @@ pub struct Located {
     pub my: f64,
     /// The font scale chosen (1.0 = the style's size).
     pub scale: f32,
+    /// Lines of text the label is laid out on (1, or 2 when wrapped).
+    pub lines: u8,
     /// Placed at the pole of the visible part rather than the whole
     /// polygon's pole.
     pub clipped: bool,
@@ -315,11 +320,28 @@ fn fit_at(
 pub fn locate(
     geom: &AreaGeom,
     v: &AreaView,
-    (tw, th): (f32, f32),
+    size: (f32, f32),
     scales: &[f32],
     forced: bool,
     budget: &mut usize,
 ) -> Option<Located> {
+    locate_wrapped(geom, v, size, None, scales, forced, budget)
+}
+
+/// [`locate`], also trying the text on two lines of `wrapped` pixels (at
+/// scale 1; see [`split_two_lines`]) at each scale after the single line.
+pub fn locate_wrapped(
+    geom: &AreaGeom,
+    v: &AreaView,
+    (tw, th): (f32, f32),
+    wrapped: Option<(f32, f32)>,
+    scales: &[f32],
+    forced: bool,
+    budget: &mut usize,
+) -> Option<Located> {
+    let layouts: Vec<(u8, (f32, f32))> = std::iter::once((1, (tw, th)))
+        .chain(wrapped.map(|w| (2, w)))
+        .collect();
     let win = v.inner_merc();
     let view_bbox = (
         v.min_x,
@@ -337,16 +359,19 @@ pub fn locate(
         let refs: Vec<&[Pt]> = poly.rings.iter().map(Vec::as_slice).collect();
         // Whole-polygon pole first (stable while panning).
         for &s in scales {
-            if bw < tw * s || bh < th * s {
-                continue;
-            }
-            if let Some((mx, my)) = fit_at(&refs, &poly.pole, (tw, th), s, v.ppm, win) {
-                return Some(Located {
-                    mx,
-                    my,
-                    scale: s,
-                    clipped: false,
-                });
+            for &(lines, (lw, lh)) in &layouts {
+                if bw < lw * s || bh < lh * s {
+                    continue;
+                }
+                if let Some((mx, my)) = fit_at(&refs, &poly.pole, (lw, lh), s, v.ppm, win) {
+                    return Some(Located {
+                        mx,
+                        my,
+                        scale: s,
+                        lines,
+                        clipped: false,
+                    });
+                }
             }
         }
         // The polygon pokes out of the window: label the visible part.
@@ -383,13 +408,16 @@ pub fn locate(
                 continue;
             }
             for &s in scales {
-                if let Some((mx, my)) = fit_at(&crefs, &cp, (tw, th), s, v.ppm, win) {
-                    return Some(Located {
-                        mx,
-                        my,
-                        scale: s,
-                        clipped: true,
-                    });
+                for &(lines, size) in &layouts {
+                    if let Some((mx, my)) = fit_at(&crefs, &cp, size, s, v.ppm, win) {
+                        return Some(Located {
+                            mx,
+                            my,
+                            scale: s,
+                            lines,
+                            clipped: true,
+                        });
+                    }
                 }
             }
             if forced {
@@ -397,6 +425,7 @@ pub fn locate(
                     mx: cp.x,
                     my: cp.y,
                     scale: scales.first().copied().unwrap_or(1.0),
+                    lines: 1,
                     clipped: true,
                 });
             }
@@ -409,10 +438,22 @@ pub fn locate(
             mx: p.x,
             my: p.y,
             scale: scales.first().copied().unwrap_or(1.0),
+            lines: 1,
             clipped: false,
         });
     }
     None
+}
+
+/// Split `text` at the space that makes the two lines closest in length, or
+/// `None` when there is no space to split at.
+pub fn split_two_lines(text: &str) -> Option<(&str, &str)> {
+    let total = text.chars().count();
+    text.char_indices()
+        .filter(|&(_, c)| c == ' ')
+        .map(|(i, _)| (text[..i].trim_end(), text[i..].trim_start()))
+        .filter(|(a, b)| !a.is_empty() && !b.is_empty())
+        .min_by_key(|(a, _)| (2 * a.chars().count()).abs_diff(total))
 }
 
 /// The font scales to try for a label of `font_px`: the full size, then one
@@ -458,6 +499,36 @@ mod tests {
         );
         assert!(!at.clipped && at.scale == 1.0);
         assert!(locate(&small, &view(), (60.0, 14.0), &[1.0, 0.85], false, &mut b).is_none());
+    }
+
+    #[test]
+    fn a_long_name_wraps_onto_two_lines_when_one_does_not_fit() {
+        // 60 x 40 interior: 100 px of text on one line is too wide, but two
+        // 50 x 13 lines (26 px tall) fit.
+        let g = geom(vec![sq(400.0, 300.0, 60.0, 40.0)]);
+        let mut b = CLIP_BUDGET;
+        let one = (100.0, 13.0);
+        assert!(locate(&g, &view(), one, &[1.0], false, &mut b).is_none());
+        let two = Some((50.0, 26.0));
+        let at = locate_wrapped(&g, &view(), one, two, &[1.0], false, &mut b).unwrap();
+        assert_eq!((at.lines, at.scale), (2, 1.0));
+        // A single line is preferred when it fits.
+        let at = locate_wrapped(&g, &view(), (40.0, 13.0), two, &[1.0], false, &mut b).unwrap();
+        assert_eq!(at.lines, 1);
+        // Too short for two lines: nothing.
+        let flat = geom(vec![sq(400.0, 300.0, 60.0, 20.0)]);
+        assert!(locate_wrapped(&flat, &view(), one, two, &[1.0], false, &mut b).is_none());
+    }
+
+    #[test]
+    fn names_split_at_the_space_nearest_the_middle() {
+        assert_eq!(split_two_lines("Central Park"), Some(("Central", "Park")));
+        assert_eq!(
+            split_two_lines("Lake of the Woods"),
+            Some(("Lake of", "the Woods"))
+        );
+        assert_eq!(split_two_lines("Fountain"), None);
+        assert_eq!(split_two_lines(" Fountain "), None);
     }
 
     #[test]
