@@ -783,6 +783,10 @@ struct MapViewer {
     /// Whether the window has been drawn once, so there is a dispatch tree to
     /// ask whether focus is inside a dialog (see `keep_dialog_focus`).
     drawn_once: bool,
+    /// The focus handles of the modal dialogs open at the last render, so the
+    /// frame in which they have all closed can tell focus was left in one
+    /// (see `refocus_map_after_modals`).
+    last_modal_focus: Vec<gpui::FocusHandle>,
     /// The "Adjust imagery offset" mode, while it is on (see
     /// `imagery_offset_ui`).
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
@@ -992,6 +996,7 @@ impl MapViewer {
             mode_state: modes::ModeState::fresh(EditMode::Select),
             active_layer: None,
             drawn_once: false,
+            last_modal_focus: Vec::new(),
             offset_adjust: None,
             notes: Default::default(),
             gps_traces: Default::default(),
@@ -3105,6 +3110,33 @@ impl MapViewer {
         }
         let open = self.open_modals(cx);
         osm_gpui::ui::modal::ensure_modal_focus(&open, window, cx)
+    }
+
+    /// When the last open modal dialog has closed, give focus back to the map
+    /// if it was left in the dialog. Closes from a task without a `Window`
+    /// (a finished upload) cannot move focus themselves, and the dialog's
+    /// focused input can outlive it, so `window.focused` would still be `Some`
+    /// and the map view's actions would be off the dispatch path. Focus that
+    /// went anywhere else (an input a close focused on purpose) is left alone.
+    fn refocus_map_after_modals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let open = self.open_modals(cx);
+        if !open.is_empty() {
+            self.last_modal_focus = open
+                .iter()
+                .flat_map(|m| [m.container.clone(), m.initial.clone()])
+                .collect();
+            return;
+        }
+        if self.last_modal_focus.is_empty() || menu::in_window_menu_open(window) {
+            return;
+        }
+        let held = std::mem::take(&mut self.last_modal_focus);
+        if held
+            .iter()
+            .any(|h| h.is_focused(window) || h.contains_focused(window, cx))
+        {
+            window.focus(&self.focus_handle, cx);
+        }
     }
 
     /// Every open modal dialog, in mount order, so the last one is the one
@@ -5689,6 +5721,7 @@ impl Render for MapViewer {
         self.drop_stale_offset_adjust();
 
         self.keep_dialog_focus(window, cx);
+        self.refocus_map_after_modals(window, cx);
 
         // Keyboard shortcuts scoped to this view only match while focus is
         // somewhere inside it. With nothing focused at all — at launch, or
