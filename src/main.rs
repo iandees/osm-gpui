@@ -1031,6 +1031,7 @@ impl MapViewer {
         menu::MenuToggles {
             show_downloaded_area: self.shows_downloaded_area(),
             show_notes: self.shows_notes(),
+            labels: osm_gpui::settings_store::snapshot().label_visibility(),
             show_imagery: osm_gpui::street_imagery::Provider::ALL.map(|p| self.shows_imagery(p)),
             can_upload: self.has_uploadable_changes(),
         }
@@ -4555,6 +4556,18 @@ impl MapViewer {
         }
     }
 
+    /// Keep the View > label checkmarks in step with the settings (changed
+    /// from the menu, Settings or a script). Rebuilds the menus, deferred as
+    /// this runs during a render, only when the toggles differ from the ones
+    /// they were last built for.
+    fn sync_label_menu(&mut self, cx: &mut Context<Self>) {
+        let vis = osm_gpui::settings_store::snapshot().label_visibility();
+        if vis != self.menu_sync.label_visibility {
+            self.menu_sync.label_visibility = vis;
+            cx.defer(menu::rebuild_menus_for_live_viewer);
+        }
+    }
+
     /// Window-scoped handler for the `UploadToOsm` action (File > Upload to
     /// OSM and its shortcut). Registered on the render tree like `on_quit`:
     /// the global `menu::upload_to_osm` handler runs while this window is
@@ -5742,6 +5755,7 @@ impl Render for MapViewer {
         // Consume any pending script command first.
         self.process_script_command(window, cx);
         self.sync_upload_menu(cx);
+        self.sync_label_menu(cx);
 
         // Requests that need a render pass (they need the `Window`, or, for
         // inline edits, their inputs must be built in the pass that first
@@ -6019,6 +6033,7 @@ impl Render for MapViewer {
                                             bounds,
                                             &selected,
                                             hovered.as_ref(),
+                                            osm_gpui::settings_store::snapshot().label_visibility(),
                                             window,
                                             cx,
                                         );

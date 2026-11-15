@@ -449,6 +449,8 @@ pub(crate) fn rebuild_menus_for_live_viewer(cx: &mut App) {
 pub(crate) struct MenuToggles {
     pub(crate) show_downloaded_area: bool,
     pub(crate) show_notes: bool,
+    /// The View > Show Labels / POI Icons / Street Names / Area Labels checks.
+    pub(crate) labels: osm_gpui::layers::labels::LabelVisibility,
     /// Indexed by `Provider::index`.
     pub(crate) show_imagery: [bool; 3],
     pub(crate) can_upload: bool,
@@ -460,6 +462,7 @@ impl Default for MenuToggles {
         Self {
             show_downloaded_area: true,
             show_notes: false,
+            labels: Default::default(),
             show_imagery: [false; 3],
             can_upload: false,
         }
@@ -951,6 +954,15 @@ fn build_menus(
                 MenuItem::action(tr!("notes.menu.show"), ToggleNotes).checked(toggles.show_notes),
                 MenuItem::action(tr!("notes.menu.refresh"), RefreshNotes),
                 MenuItem::separator(),
+                MenuItem::action(tr!("menu.view.show_labels"), ToggleLabels)
+                    .checked(toggles.labels.labels),
+                MenuItem::action(tr!("menu.view.show_poi_icons"), TogglePoiIcons)
+                    .checked(toggles.labels.poi_icons),
+                MenuItem::action(tr!("menu.view.show_street_names"), ToggleStreetNames)
+                    .checked(toggles.labels.street_names),
+                MenuItem::action(tr!("menu.view.show_area_labels"), ToggleAreaLabels)
+                    .checked(toggles.labels.area_labels),
+                MenuItem::separator(),
                 MenuItem::action(tr!("street_imagery.menu.mapillary"), ToggleMapillary)
                     .checked(toggles.show_imagery[Provider::Mapillary.index()]),
                 MenuItem::action(tr!("street_imagery.menu.fotoshi"), ToggleFotoshi)
@@ -1008,10 +1020,43 @@ pub(crate) fn register_app_actions(cx: &mut App) {
         // in-memory setting and the file write is skipped.
         osm_gpui::appearance::set_preference(action.mode, true, cx);
     });
+    // The menus follow the settings on the next frame (`sync_label_menu`).
+    cx.on_action(|_: &ToggleLabels, cx: &mut App| {
+        let on = !osm_gpui::settings_store::snapshot().show_labels;
+        osm_gpui::settings_store::set_show_labels(on, true);
+        cx.refresh_windows();
+    });
+    cx.on_action(|_: &TogglePoiIcons, cx: &mut App| {
+        let on = !osm_gpui::settings_store::snapshot().show_poi_icons;
+        osm_gpui::settings_store::set_show_poi_icons(on, true);
+        cx.refresh_windows();
+    });
+    cx.on_action(|_: &ToggleStreetNames, cx: &mut App| {
+        let on = !osm_gpui::settings_store::snapshot().show_street_names;
+        osm_gpui::settings_store::set_show_street_names(on, true);
+        cx.refresh_windows();
+    });
+    cx.on_action(|_: &ToggleAreaLabels, cx: &mut App| {
+        let on = !osm_gpui::settings_store::snapshot().show_area_labels;
+        osm_gpui::settings_store::set_show_area_labels(on, true);
+        cx.refresh_windows();
+    });
     cx.on_action(|action: &SetInvertScrollZoom, _cx: &mut App| {
         osm_gpui::settings_store::set_invert_scroll_zoom(action.on, true);
     });
 }
+
+// View > Show Labels / POI Icons / Street Names / Area Labels: flip the
+// matching setting (also in Settings > Appearance).
+actions!(
+    osm_gpui,
+    [
+        ToggleLabels,
+        TogglePoiIcons,
+        ToggleStreetNames,
+        ToggleAreaLabels
+    ]
+);
 
 // Run-only theme switches with no menu item: reachable from the script
 // harness (`action SetThemeDark`) and mirrored by the `--theme` flag. They

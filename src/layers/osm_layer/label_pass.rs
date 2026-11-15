@@ -50,13 +50,19 @@ impl OsmLayer {
         id: NodeId,
         zoom: f64,
     ) -> Option<Arc<labels::NodeLabel>> {
-        let labels::LabelCache { nodes, icons, .. } = cache;
+        let labels::LabelCache {
+            nodes,
+            icons,
+            tuning,
+            ..
+        } = cache;
+        let vis = tuning.vis;
         nodes
             .entry(id.get())
             .or_insert_with(|| {
                 let tags = &self.store.osm_data.as_ref()?.nodes.get(&id)?.tags;
                 let st = self.store.stylesheet.node_text_style(tags, zoom);
-                labels::resolve_node_label(&st, tags, icons, zoom).map(Arc::new)
+                labels::resolve_node_label_with(&st, tags, icons, zoom, vis).map(Arc::new)
             })
             .clone()
     }
@@ -195,6 +201,9 @@ impl OsmLayer {
         node_texts: &HashMap<SharedString, Vec<(f64, f64)>>,
         window: &mut Window,
     ) -> Vec<Candidate> {
+        if !cache.tuning.vis.area_labels {
+            return Vec::new();
+        }
         let zoom = cam.zoom;
         let (vmin_x, vmax_x, vmin_y, vmax_y) = viewport.mercator_view_bounds();
         let view = area_labels::AreaView::new(vmin_x, vmax_x, vmax_y, cam.w, cam.h);
@@ -484,6 +493,7 @@ impl OsmLayer {
         bounds: Bounds<Pixels>,
         selected: &[FeatureRef],
         hovered: Option<&FeatureRef>,
+        vis: labels::LabelVisibility,
         window: &mut Window,
         cx: &App,
     ) {
@@ -511,6 +521,7 @@ impl OsmLayer {
             .label_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        cache.tuning.vis = vis;
         let sheet = self.label_sheet_id(&cache.tuning);
         cache.validate(self.store.revision, sheet, zoom.floor() as i32);
         let now = std::time::Instant::now();
@@ -646,6 +657,7 @@ impl OsmLayer {
                 FeatureKind::Node => continue,
             };
             if f.layer_id != self.id
+                || !vis.area_labels
                 || placement
                     .labels
                     .iter()

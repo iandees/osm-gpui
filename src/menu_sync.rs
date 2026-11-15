@@ -13,6 +13,8 @@ pub(crate) struct MenuSync {
     pub(crate) last_imagery_load_state: Option<ImageryLoadState>,
     /// Whether the menus were last built with File > Upload to OSM enabled.
     pub(crate) upload_menu_enabled: bool,
+    /// The label toggles the View menu's checkmarks were last built with.
+    pub(crate) label_visibility: osm_gpui::layers::labels::LabelVisibility,
 }
 
 impl Default for MenuSync {
@@ -22,6 +24,7 @@ impl Default for MenuSync {
             imagery_load_state: ImageryLoadState::Loading,
             last_imagery_load_state: None,
             upload_menu_enabled: false,
+            label_visibility: Default::default(),
         }
     }
 }
