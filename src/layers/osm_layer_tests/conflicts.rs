@@ -10,6 +10,7 @@ use crate::osm::{OsmNode, OsmWay};
 use crate::osm_api::{fetch_element_with, ServerElement};
 use crate::osm_upload::{run_upload, ConflictKind, UploadConflict, UploadError};
 use crate::selection::{FeatureKind, FeatureRef};
+use crate::tags::Tags;
 
 const BASE: &str = "https://osm.test";
 const MISMATCH: &str = "Version mismatch: Provided 1, server had: 2 of Node 1";
@@ -106,7 +107,7 @@ fn keep_mine_makes_the_retry_overwrite_the_servers_version() {
             kind,
             id
         }),
-        Some(vec![("amenity".to_string(), "cafe".to_string())])
+        Some(Tags::from([("amenity", "cafe")]))
     );
     let retry = FakeClient::new(vec![
         ok(200, "43"),
@@ -149,7 +150,7 @@ fn use_theirs_replaces_the_object_and_the_retry_leaves_it_out() {
             id,
         })
         .unwrap();
-    assert_eq!(tags, vec![("shop".to_string(), "bakery".to_string())]);
+    assert_eq!(tags, Tags::from([("shop", "bakery")]));
     assert_eq!(layer.node_lat_lon(NodeId(1)), Some((40.5, -74.0)));
 
     let retry = FakeClient::new(vec![

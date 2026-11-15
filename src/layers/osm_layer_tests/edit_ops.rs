@@ -8,6 +8,7 @@ use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::{MemberType, OsmData, OsmMember};
 use crate::selection::{DeletedFeatureSnapshot, FeatureKind};
+use crate::tags::Tags;
 
 fn data(l: &OsmLayer) -> OsmData {
     l.store.osm_data.as_deref().cloned().unwrap()
@@ -34,7 +35,7 @@ fn way_snapshot() -> DeletedFeatureSnapshot {
     DeletedFeatureSnapshot {
         kind: FeatureKind::Way,
         id: -50,
-        tags: vec![("highway".into(), "path".into())],
+        tags: Tags::from([("highway", "path")]),
         way_nodes: vec![NodeId(8), NodeId(9)],
         node_lat_lon: None,
         version: 0,
@@ -55,7 +56,7 @@ fn put_and_remove_a_node() {
         snapshot: DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
             id: -7,
-            tags: vec![("a".into(), "b".into())],
+            tags: Tags::from([("a", "b")]),
             way_nodes: Vec::new(),
             node_lat_lon: Some((40.5, -74.5)),
             version: 0,
@@ -66,7 +67,7 @@ fn put_and_remove_a_node() {
         snapshot: DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
             id: 8,
-            tags: Vec::new(),
+            tags: Tags::new(),
             way_nodes: Vec::new(),
             node_lat_lon: Some((40.001, -73.999)),
             version: 1,
@@ -76,7 +77,7 @@ fn put_and_remove_a_node() {
         snapshot: DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
             id: 7,
-            tags: vec![("amenity".into(), "bench".into())],
+            tags: Tags::from([("amenity", "bench")]),
             way_nodes: Vec::new(),
             node_lat_lon: Some((40.001, -74.0)),
             version: 1,
@@ -93,7 +94,7 @@ fn put_and_remove_a_way() {
         snapshot: DeletedFeatureSnapshot {
             kind: FeatureKind::Way,
             id: 105,
-            tags: vec![("highway".into(), "footway".into())],
+            tags: Tags::from([("highway", "footway")]),
             way_nodes: vec![NodeId(4), NodeId(15)],
             node_lat_lon: None,
             version: 1,
@@ -194,7 +195,7 @@ fn a_recording_replays_both_ways_and_rolls_back() {
         let mut rec = Recording::new(LayerId(1), &mut l);
         let a = rec.add_node(40.5, -74.5);
         let b = rec.add_node(40.6, -74.6);
-        let way = rec.add_way(vec![a, b], vec![("highway".into(), "path".into())]);
+        let way = rec.add_way(vec![a, b], Tags::from([("highway", "path")]));
         rec.insert_node_into_way(WayId(100), 1, 40.1, -74.1)
             .unwrap();
         rec.extend_way(way, NodeId(8)).unwrap();
@@ -207,7 +208,7 @@ fn a_recording_replays_both_ways_and_rolls_back() {
         rec.commit_node_moves(&[(NodeId(7), 41.0, -75.0)]).unwrap();
         rec.set_relation_members(RelationId(201), vec![member(100)])
             .unwrap();
-        let relation = rec.create_relation(vec![], vec![member(101)]).unwrap();
+        let relation = rec.create_relation(Tags::new(), vec![member(101)]).unwrap();
         rec.delete_relation(relation).unwrap();
         let removed = rec.delete_relation(RelationId(202)).unwrap();
         assert_eq!(removed.relation.id, RelationId(202));

@@ -3,6 +3,7 @@
 //! deliberately change a feature's type, not just accept whatever
 //! `PresetIndex::match_feature` auto-matched.
 
+use crate::tags::Tags;
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
     Window,
@@ -13,7 +14,6 @@ use gpui_component::{
     label::Label,
     v_flex, ActiveTheme as _, IconName, Sizable as _,
 };
-use std::collections::HashMap;
 
 use crate::catalogue::Catalogue;
 use crate::preset_recents::{self, Section};
@@ -37,7 +37,7 @@ fn icon_for_preset(icon_name: Option<&str>, geometry: Geometry) -> Option<gpui::
 /// sorted by key for determinism. Same as
 /// `crate::ui::nsi_dialog::format_tag_preview`, which takes an `NsiEntry`
 /// rather than a tag map.
-pub fn format_tag_preview(tags: &HashMap<String, String>) -> String {
+pub fn format_tag_preview(tags: &Tags) -> String {
     let mut kv: Vec<(&String, &String)> = tags.iter().collect();
     kv.sort_by(|a, b| a.0.cmp(b.0));
     kv.into_iter()
@@ -51,7 +51,7 @@ pub enum DialogEvent {
     /// The chosen preset's tags and the geometries it applies to (the
     /// caller needs the latter to keep a closed way's `area=yes` right).
     Submitted {
-        tags: HashMap<String, String>,
+        tags: Tags,
         geometry: Vec<Geometry>,
         /// The chosen preset's schema id, remembered as a recent use.
         preset_id: String,
@@ -65,7 +65,7 @@ pub enum DialogEvent {
 struct PickerRow {
     id: String,
     name: String,
-    tags: HashMap<String, String>,
+    tags: Tags,
     geometry: Vec<Geometry>,
     icon: Option<String>,
     section: Option<Section>,
@@ -319,11 +319,8 @@ impl Render for PresetPickerDialog {
 mod tests {
     use super::*;
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]

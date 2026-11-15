@@ -2,7 +2,8 @@
 //! (NSI) indexes, in the terms the UI asks its questions in. Every method
 //! delegates to the existing index; nothing here caches or decides matching.
 
-use std::collections::{HashMap, HashSet};
+use crate::tags::Tags;
+use std::collections::HashSet;
 
 use crate::fields::{Field, FieldIndex, FieldOption, Widget};
 use crate::nsi::NsiEntry;
@@ -65,11 +66,7 @@ impl<'a> Catalogue<'a> {
     }
 
     /// The preset that best matches a feature's tags and geometry kind.
-    pub fn match_preset(
-        &self,
-        tags: &HashMap<String, String>,
-        geometry: Geometry,
-    ) -> Option<&'a Preset> {
+    pub fn match_preset(&self, tags: &Tags, geometry: Geometry) -> Option<&'a Preset> {
         self.presets.match_feature(tags, geometry)
     }
 
@@ -86,7 +83,7 @@ impl<'a> Catalogue<'a> {
     /// name says less than the relation's own `type` tag, so that wins.
     pub fn describe(
         &self,
-        tags: &HashMap<String, String>,
+        tags: &Tags,
         geometry: Geometry,
         kind: FeatureKind,
     ) -> (String, Option<String>) {
@@ -98,7 +95,7 @@ impl<'a> Catalogue<'a> {
                 .is_none_or(|p| p.id == "relation")
         {
             if let Some(kind) = tags.get("type").filter(|t| !t.trim().is_empty()) {
-                name = kind.clone();
+                name = kind.to_string();
             }
         }
         (name, icon)
@@ -111,7 +108,7 @@ impl<'a> Catalogue<'a> {
         &self,
         preset: &Preset,
         geometry: Geometry,
-        tags: &HashMap<String, String>,
+        tags: &Tags,
         promoted: &HashSet<String>,
     ) -> FeatureFields<'a> {
         let resolved = self.fields.for_feature(preset, geometry, tags, promoted);
@@ -155,7 +152,7 @@ impl<'a> Catalogue<'a> {
     }
 
     /// The per-key rows of a [`Widget::MultiKey`] field.
-    pub fn sub_fields(&self, field: &Field, tags: &HashMap<String, String>) -> Vec<Field> {
+    pub fn sub_fields(&self, field: &Field, tags: &Tags) -> Vec<Field> {
         field.sub_fields(tags, self.translations)
     }
 
@@ -225,11 +222,8 @@ mod tests {
     const DE: &str = r#"{"presets":{"building":{"name":"Gebäude"}},
       "fields":{"name":{"label":"Name (de)"}}}"#;
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]
@@ -271,7 +265,7 @@ mod tests {
         assert_eq!(cat.preset_name(building), "Gebäude");
         let house = cat.preset("building/house").unwrap();
         assert_eq!(cat.preset_name(house), "House");
-        let got = cat.fields_for(building, Geometry::Area, &HashMap::new(), &HashSet::new());
+        let got = cat.fields_for(building, Geometry::Area, &Tags::new(), &HashSet::new());
         let labels: Vec<_> = got.shown.iter().map(|v| v.label).collect();
         assert_eq!(labels, vec!["Name (de)", "Levels"]);
         let surface = fields.get("surface").unwrap();

@@ -6,13 +6,11 @@ use crate::layers::labels::{
     place, Anchor, Config, Item, LabelClass, LabelPriority, Prev, HYSTERESIS_BONUS, KIND_NODE,
     KIND_WAY,
 };
+use crate::tags::Tags;
 use std::collections::HashMap;
 
-fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+fn tags(pairs: &[(&str, &str)]) -> Tags {
+    Tags::from(pairs)
 }
 
 #[derive(Clone)]
@@ -31,7 +29,7 @@ struct Feat {
     name: &'static str,
     id: i64,
     class: Class,
-    tags: HashMap<String, String>,
+    tags: Tags,
     forced: bool,
 }
 

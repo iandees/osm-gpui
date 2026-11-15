@@ -1,6 +1,7 @@
 //! Modal dialog to search NSI brand presets and apply the matched tags to
 //! the single currently-selected feature.
 
+use crate::tags::Tags;
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
     Window,
@@ -10,7 +11,6 @@ use gpui_component::{
     label::Label,
     v_flex, ActiveTheme as _,
 };
-use std::collections::HashMap;
 
 use crate::catalogue::Catalogue;
 use crate::nsi::NsiEntry;
@@ -35,7 +35,7 @@ pub fn format_tag_preview(entry: &NsiEntry) -> String {
 }
 
 pub enum DialogEvent {
-    Submitted(HashMap<String, String>),
+    Submitted(Tags),
     Cancelled,
 }
 

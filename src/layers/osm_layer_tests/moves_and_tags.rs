@@ -178,7 +178,7 @@ fn set_tag_inserts_and_overwrites_on_node() {
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
         updated.nodes.get(&NodeId(1)).unwrap().tags.get("highway"),
-        Some(&"residential".to_string())
+        Some("residential")
     );
 
     layer
@@ -187,7 +187,7 @@ fn set_tag_inserts_and_overwrites_on_node() {
     let updated = layer.get_osm_data().unwrap();
     assert_eq!(
         updated.nodes.get(&NodeId(1)).unwrap().tags.get("highway"),
-        Some(&"trunk".to_string())
+        Some("trunk")
     );
 }
 
@@ -221,10 +221,7 @@ fn set_tag_on_way() {
         .unwrap();
     assert!(layer.is_modified());
     let updated = layer.get_osm_data().unwrap();
-    assert_eq!(
-        updated.ways[&WayId(10)].tags.get("surface"),
-        Some(&"paved".to_string())
-    );
+    assert_eq!(updated.ways[&WayId(10)].tags.get("surface"), Some("paved"));
 }
 
 #[test]
@@ -249,7 +246,7 @@ fn set_tag_missing_feature_id_is_noop() {
 #[test]
 fn remove_tag_removes_existing_key() {
     let mut tags = empty_tags();
-    tags.insert("highway".to_string(), "residential".to_string());
+    tags.insert("highway", "residential");
     let n1 = OsmNode {
         id: NodeId(1),
         lat: 40.0,
@@ -384,8 +381,7 @@ fn snapshot_taken_before_edit_is_unaffected_by_make_mut() {
         updated2
             .nodes
             .get(&NodeId(1))
-            .and_then(|n| n.tags.get("name"))
-            .map(String::as_str),
+            .and_then(|n| n.tags.get("name")),
         Some("Test")
     );
 }

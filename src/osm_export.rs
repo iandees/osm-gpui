@@ -18,7 +18,8 @@ use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::diff::diff_osm_data;
 use crate::osm::{OsmData, OsmNode, OsmRelation, OsmWay};
 use crate::osm_upload::xml_escape;
-use std::collections::{HashMap, HashSet};
+use crate::tags::Tags;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 /// The `action` attribute to write for an element, if any.
@@ -50,10 +51,8 @@ fn version_attr(id: i64, version: i32) -> String {
 }
 
 /// `<tag>` children in key order, so output is deterministic.
-fn write_tags(out: &mut String, tags: &HashMap<String, String>) {
-    let mut sorted: Vec<(&String, &String)> = tags.iter().collect();
-    sorted.sort();
-    for (key, value) in sorted {
+fn write_tags(out: &mut String, tags: &Tags) {
+    for (key, value) in tags.sorted() {
         let _ = writeln!(
             out,
             "    <tag k=\"{}\" v=\"{}\"/>",
@@ -256,11 +255,8 @@ mod tests {
     use crate::layers::diff::{baseline_for_loaded_file, LayerDiff};
     use crate::osm::{MemberType, OsmMember, OsmParser};
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     fn node(id: i64, lat: f64, lon: f64, version: i32, t: &[(&str, &str)]) -> OsmNode {

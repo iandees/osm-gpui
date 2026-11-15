@@ -6,7 +6,8 @@
 //! the object's life on the server. Nothing here touches the UI toolkit, so
 //! all of it is unit-testable.
 
-use std::collections::{BTreeMap, HashSet};
+use crate::tags::Tags;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use quick_xml::events::{BytesStart, Event};
@@ -31,7 +32,7 @@ const MOVE_THRESHOLD_M: f64 = 0.05;
 /// are both described this way so they can be diffed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ObjectState {
-    pub tags: BTreeMap<String, String>,
+    pub tags: Tags,
     /// `(lat, lon)` of a node.
     pub position: Option<(f64, f64)>,
     /// A way's node ids, in order.
@@ -345,21 +346,21 @@ pub fn diff_states(prev: Option<&ObjectState>, cur: &ObjectState) -> StateChange
     let before = prev.unwrap_or(&empty);
     let mut change = StateChange::default();
 
-    for (k, v) in &cur.tags {
+    for (k, v) in cur.tags.sorted() {
         match before.tags.get(k) {
             None => change.tags.push(TagChange::Added {
                 key: k.clone(),
                 value: v.clone(),
             }),
-            Some(old) if old != v => change.tags.push(TagChange::Changed {
+            Some(old) if old != v.as_str() => change.tags.push(TagChange::Changed {
                 key: k.clone(),
-                old: old.clone(),
+                old: old.to_string(),
                 new: v.clone(),
             }),
             Some(_) => change.unchanged_tags += 1,
         }
     }
-    for (k, v) in &before.tags {
+    for (k, v) in before.tags.sorted() {
         if !cur.tags.contains_key(k) {
             change.tags.push(TagChange::Removed {
                 key: k.clone(),
@@ -444,13 +445,17 @@ pub fn build_entries(history: &ObjectHistory, local: Option<&ObjectState>) -> Ve
 /// The tag edits that turn `current` into `target`: `(key, before, after)`
 /// for each key that differs, in key order.
 pub fn tag_revert_edits(
-    current: &BTreeMap<String, String>,
-    target: &BTreeMap<String, String>,
+    current: &Tags,
+    target: &Tags,
 ) -> Vec<(String, Option<String>, Option<String>)> {
     let mut edits = Vec::new();
     for (k, v) in target {
-        if current.get(k) != Some(v) {
-            edits.push((k.clone(), current.get(k).cloned(), Some(v.clone())));
+        if current.get(k) != Some(v.as_str()) {
+            edits.push((
+                k.clone(),
+                current.get(k).map(str::to_string),
+                Some(v.clone()),
+            ));
         }
     }
     for (k, v) in current {
@@ -867,8 +872,8 @@ mod tests {
         assert_eq!(build_entries(&h, Some(&latest)).len(), 2);
 
         let mut edited = latest.clone();
-        edited.tags.insert("surface".into(), "asphalt".into());
-        edited.tags.insert("highway".into(), "primary".into());
+        edited.tags.insert("surface", "asphalt");
+        edited.tags.insert("highway", "primary");
         edited.nodes.push(9);
         let entries = build_entries(&h, Some(&edited));
         assert_eq!(entries.len(), 3);

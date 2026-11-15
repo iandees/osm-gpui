@@ -18,14 +18,15 @@
 use crate::coordinates::{GeoBounds, LatLon};
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::{MemberType, OsmMember, OsmRelation};
+use crate::tags::Tags;
 use crate::tr;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// The roles every turn restriction needs.
 const RESTRICTION_ROLES: [&str; 3] = ["from", "via", "to"];
 
-fn relation_type(tags: &HashMap<String, String>) -> Option<&str> {
-    tags.get("type").map(String::as_str)
+fn relation_type(tags: &Tags) -> Option<&str> {
+    tags.get("type")
 }
 
 /// A turn restriction: `type=restriction` or one of its `restriction:*`
@@ -42,9 +43,9 @@ pub fn is_restriction(relation: &OsmRelation) -> bool {
 pub fn display_name(relation: &OsmRelation) -> String {
     ["name", "ref", "type"]
         .iter()
-        .filter_map(|key| relation.tags.get(*key))
+        .filter_map(|key| relation.tags.get(key))
         .find(|value| !value.trim().is_empty())
-        .cloned()
+        .map(str::to_string)
         .unwrap_or_else(|| relation.id.to_string())
 }
 
@@ -750,7 +751,7 @@ mod tests {
         OsmRelation {
             id: RelationId(900),
             version: 1,
-            tags: HashMap::from([("type".to_string(), kind.to_string())]),
+            tags: Tags::from([("type", kind)]),
             members,
         }
     }
@@ -789,11 +790,11 @@ mod tests {
     fn display_name_prefers_name_then_ref_then_type_then_id() {
         let mut r = relation("route", vec![]);
         assert_eq!(display_name(&r), "route");
-        r.tags.insert("ref".into(), "42".into());
+        r.tags.insert("ref", "42");
         assert_eq!(display_name(&r), "42");
-        r.tags.insert("name".into(), "Blue Line".into());
+        r.tags.insert("name", "Blue Line");
         assert_eq!(display_name(&r), "Blue Line");
-        r.tags.insert("name".into(), "  ".into());
+        r.tags.insert("name", "  ");
         assert_eq!(display_name(&r), "42");
         r.tags.clear();
         assert_eq!(display_name(&r), "900");
@@ -1286,11 +1287,11 @@ mod tests {
     #[test]
     fn relation_choices_sort_by_name_and_filter_by_name_or_id() {
         let mut named = rel(30, vec![way(1, "")]);
-        named.tags.insert("name".into(), "blue Line".into());
+        named.tags.insert("name", "blue Line");
         let mut other = rel(20, vec![]);
-        other.tags.insert("name".into(), "Airport Loop".into());
+        other.tags.insert("name", "Airport Loop");
         let unnamed = OsmRelation {
-            tags: HashMap::new(),
+            tags: Tags::new(),
             ..rel(7, vec![way(1, ""), way(2, "")])
         };
         let choices = relation_choices(&[named, other, unnamed]);

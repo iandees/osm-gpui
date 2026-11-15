@@ -7,6 +7,7 @@ use osm_gpui::edit_mode::EditMode;
 use osm_gpui::ids::WayId;
 use osm_gpui::interaction::{self, Interaction};
 use osm_gpui::layers::LayerId;
+use osm_gpui::tags::Tags;
 
 use super::preview::{blue, fill_square, line_width, stroke_polyline, PreviewFrame};
 use crate::undo::{EditLabel, UndoableAction};
@@ -291,7 +292,7 @@ impl MapViewer {
         let mut rec = Recording::new(layer_id, editable);
 
         let [n0, n1, n2, n3] = corners.map(|(lat, lon)| rec.add_node(lat, lon));
-        let tags = vec![("building".to_string(), "yes".to_string())];
+        let tags = Tags::from([("building", "yes")]);
         let way_id = rec.add_way(vec![n0, n1, n2, n3, n0], tags);
 
         let way = osm_gpui::selection::FeatureRef {

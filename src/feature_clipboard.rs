@@ -27,6 +27,7 @@ use crate::limits::{self, Limits};
 use crate::osm::{MemberType, OsmMember};
 use crate::osm_upload::xml_escape;
 use crate::selection::{DeletedFeatureSnapshot, DeletedRelationSnapshot, FeatureKind, FeatureRef};
+use crate::tags::Tags;
 use crate::tr;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,21 +35,21 @@ pub struct ClipNode {
     pub id: NodeId,
     pub lat: f64,
     pub lon: f64,
-    pub tags: Vec<(String, String)>,
+    pub tags: Tags,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipWay {
     pub id: WayId,
     pub nodes: Vec<NodeId>,
-    pub tags: Vec<(String, String)>,
+    pub tags: Tags,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipRelation {
     pub id: RelationId,
     pub members: Vec<OsmMember>,
-    pub tags: Vec<(String, String)>,
+    pub tags: Tags,
 }
 
 /// Where a paste puts the copied features.
@@ -158,8 +159,7 @@ impl FeatureClipboard {
                         continue;
                     };
                     relation_ids.insert(id);
-                    let mut tags: Vec<(String, String)> = relation.tags.into_iter().collect();
-                    tags.sort();
+                    let tags = relation.tags;
                     clip.relations.push(ClipRelation {
                         id,
                         members: relation.members,
@@ -353,7 +353,7 @@ impl FeatureClipboard {
                 node_lat_lon: Some((lat, lon)),
                 version: 0,
             });
-            for (key, value) in &node.tags {
+            for (key, value) in node.tags.sorted() {
                 if editable
                     .set_tag(FeatureKind::Node, id.get(), key, value)
                     .is_err()
@@ -486,8 +486,8 @@ impl FeatureClipboard {
             "<osm version=\"0.6\" generator=\"{}\">",
             xml_escape(crate::CREATED_BY)
         );
-        let tags = |out: &mut String, tags: &[(String, String)]| {
-            for (k, v) in tags {
+        let tags = |out: &mut String, tags: &Tags| {
+            for (k, v) in tags.sorted() {
                 let _ = writeln!(
                     out,
                     "    <tag k=\"{}\" v=\"{}\"/>",
@@ -674,10 +674,8 @@ mod tests {
     const A: LayerId = LayerId(1);
     const B: LayerId = LayerId(2);
 
-    fn tags(list: &[(&str, &str)]) -> HashMap<String, String> {
-        list.iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(list: &[(&str, &str)]) -> Tags {
+        Tags::from(list)
     }
 
     fn node(id: i64, lat: f64, lon: f64, t: &[(&str, &str)]) -> OsmNode {
@@ -831,10 +829,7 @@ mod tests {
         assert_eq!(clip.ways()[0].nodes, [NodeId(1), NodeId(2), NodeId(3)]);
         assert_eq!(
             clip.ways()[0].tags,
-            [
-                ("highway".to_string(), "residential".to_string()),
-                ("name".to_string(), "Main".to_string())
-            ]
+            Tags::from([("highway", "residential"), ("name", "Main")])
         );
         assert_eq!(clip.selected, [(FeatureKind::Way, 10)]);
         assert!(clip.relations().is_empty());
@@ -870,10 +865,7 @@ mod tests {
         assert_eq!(way.version, 0);
         assert_eq!(
             way.tags,
-            [
-                ("highway".to_string(), "residential".to_string()),
-                ("name".to_string(), "Main".to_string())
-            ]
+            Tags::from([("highway", "residential"), ("name", "Main")])
         );
         let new_nodes = layer.way_node_ids(WayId(way.id)).unwrap();
         assert_eq!(new_nodes.len(), 3);
@@ -906,14 +898,11 @@ mod tests {
         let snapshot = &pasted.nodes[0];
         assert!(snapshot.id < 0);
         assert_eq!(snapshot.version, 0);
-        assert_eq!(
-            snapshot.tags,
-            [("amenity".to_string(), "bench".to_string())]
-        );
+        assert_eq!(snapshot.tags, Tags::from([("amenity", "bench")]));
         let tags = layer
             .feature_tags(&feature(FeatureKind::Node, snapshot.id))
             .unwrap();
-        assert_eq!(tags, [("amenity".to_string(), "bench".to_string())]);
+        assert_eq!(tags, Tags::from([("amenity", "bench")]));
     }
 
     #[test]
@@ -1023,13 +1012,13 @@ mod tests {
                 id: RelationId(30),
                 members: vec![member(MemberType::Relation, 31, "")],
                 version: 1,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             },
             OsmRelation {
                 id: RelationId(31),
                 members: vec![member(MemberType::Relation, 30, "")],
                 version: 1,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             },
         ];
         let mut layer = OsmLayer::new_with_data(A, "cycle", Arc::new(data));
@@ -1222,7 +1211,7 @@ mod tests {
                 id: WayId(-5),
                 nodes: vec![NodeId(1), NodeId(2)],
                 version: 0,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             },
         );
         data.relations.push(OsmRelation {
@@ -1233,7 +1222,7 @@ mod tests {
                 member(MemberType::Node, 1, "c"),
             ],
             version: 1,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         });
         let source = OsmLayer::new_with_data(A, "a", Arc::new(data));
         let mut other = layer(B);
@@ -1276,9 +1265,7 @@ mod tests {
         layer.delete_feature(FeatureKind::Way, 10).unwrap();
         let pasted = paste(&clip, &mut layer, A, PastePosition::Source);
         let way = &pasted.ways[0];
-        assert!(way
-            .tags
-            .contains(&("highway".to_string(), "residential".to_string())));
+        assert!(way.tags.is("highway", "residential"));
         let first = layer.way_node_ids(WayId(way.id)).unwrap()[0];
         assert_eq!(layer.node_lat_lon(first), Some((47.000, 8.000)));
 

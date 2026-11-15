@@ -28,6 +28,7 @@ use crate::layers::area_labels::AreaCaches;
 use crate::layers::line_labels::{parse_bench, BenchKnobs};
 use crate::presets;
 use crate::style::{TextPosition, TextStyle};
+use crate::tags::Tags;
 use gpui::{
     point, px, quad, size, BorderStyle, Bounds, Hsla, Pixels, Point, Rgba, ShapedLine,
     SharedString, TransformationMatrix, Window,
@@ -108,7 +109,7 @@ pub struct LabelPriority {
 }
 
 impl LabelPriority {
-    pub fn of(class: LabelClass, tags: &HashMap<String, String>) -> Self {
+    pub fn of(class: LabelClass, tags: &Tags) -> Self {
         let tier = match class {
             LabelClass::Node { has_icon, named } => node_tier(tags, has_icon, named),
             LabelClass::Area => area_tier(tags),
@@ -170,9 +171,9 @@ impl PartialEq for LabelPriority {
 
 impl Eq for LabelPriority {}
 
-fn node_tier(tags: &HashMap<String, String>, has_icon: bool, has_text_key_name: bool) -> i32 {
+fn node_tier(tags: &Tags, has_icon: bool, has_text_key_name: bool) -> i32 {
     if let Some(p) = tags.get("place") {
-        return match p.as_str() {
+        return match p {
             "city" => 1000,
             "town" => 950,
             "village" => 900,
@@ -190,11 +191,11 @@ fn node_tier(tags: &HashMap<String, String>, has_icon: bool, has_text_key_name: 
     }
 }
 
-fn area_tier(tags: &HashMap<String, String>) -> i32 {
+fn area_tier(tags: &Tags) -> i32 {
     if tags.contains_key("place") {
         return 340;
     }
-    let is = |k: &str, vs: &[&str]| tags.get(k).is_some_and(|v| vs.contains(&v.as_str()));
+    let is = |k: &str, vs: &[&str]| tags.get(k).is_some_and(|v| vs.contains(&v));
     if is("natural", &["water", "bay", "strait"])
         || is("waterway", &["riverbank", "dock"])
         || is("landuse", &["reservoir", "basin"])
@@ -216,8 +217,8 @@ fn area_tier(tags: &HashMap<String, String>) -> i32 {
     280
 }
 
-fn street_tier(tags: &HashMap<String, String>) -> i32 {
-    match tags.get("highway").map(String::as_str) {
+fn street_tier(tags: &Tags) -> i32 {
+    match tags.get("highway") {
         Some("motorway" | "trunk") => 90,
         Some("primary") => 80,
         Some("secondary") => 70,
@@ -671,10 +672,7 @@ fn is_map_icon(name: &str) -> bool {
 pub type IconCache = HashMap<String, Option<&'static str>>;
 
 /// The icon name of the preset matching a point's tags, if it is a map icon.
-pub fn preset_icon_name(
-    tags: &HashMap<String, String>,
-    cache: &mut IconCache,
-) -> Option<&'static str> {
+pub fn preset_icon_name(tags: &Tags, cache: &mut IconCache) -> Option<&'static str> {
     let keys = preset_keys();
     let mut sig: Vec<(&str, &str)> = tags
         .iter()
@@ -710,7 +708,7 @@ pub fn preset_icon_name(
 pub fn choose_icon(
     image: Option<&str>,
     width: Option<f32>,
-    tags: &HashMap<String, String>,
+    tags: &Tags,
     cache: &mut IconCache,
 ) -> Option<IconChoice> {
     let image = image?.trim();
@@ -732,7 +730,7 @@ pub fn choose_icon(
 }
 
 /// The label text for `keys` (`name` or `name, ref`): the first non-empty tag.
-pub fn label_text(keys: &str, tags: &HashMap<String, String>) -> Option<String> {
+pub fn label_text(keys: &str, tags: &Tags) -> Option<String> {
     let v = keys
         .split(',')
         .map(str::trim)
@@ -750,7 +748,7 @@ pub fn label_text(keys: &str, tags: &HashMap<String, String>) -> Option<String> 
 /// `None` when it has neither text nor an icon.
 pub fn resolve_node_label(
     style: &TextStyle,
-    tags: &HashMap<String, String>,
+    tags: &Tags,
     icons: &mut IconCache,
     zoom: f64,
 ) -> Option<NodeLabel> {
@@ -1442,11 +1440,8 @@ pub fn paint_icon(
 mod tests {
     use super::*;
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     fn cfg() -> Config {
@@ -1732,7 +1727,7 @@ mod tests {
         assert!(s.ends_with('\u{2026}'));
     }
 
-    fn style(css: &str, t: &HashMap<String, String>, zoom: f64) -> TextStyle {
+    fn style(css: &str, t: &Tags, zoom: f64) -> TextStyle {
         crate::style::Stylesheet::parse(css)
             .unwrap()
             .node_text_style(t, zoom)

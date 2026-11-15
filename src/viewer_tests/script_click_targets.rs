@@ -351,10 +351,10 @@ fn more_actions_script_targets_hit_their_features_and_actions_apply() {
         .unwrap()
         .feature_tags(&feature(Way, 5401))
         .unwrap();
-    assert!(tags.contains(&("lanes:forward".to_string(), "1".to_string())));
-    assert!(tags.contains(&("cycleway:right".to_string(), "lane".to_string())));
-    assert!(tags.contains(&("incline".to_string(), "-10%".to_string())));
-    assert!(tags.contains(&("oneway".to_string(), "yes".to_string())));
+    assert!(tags.is("lanes:forward", "1"));
+    assert!(tags.is("cycleway:right", "lane"));
+    assert!(tags.is("incline", "-10%"));
+    assert!(tags.is("oneway", "yes"));
     // Copy the driveway's tags and paste them onto the track.
     run(&mut layers, "copy_tags", &[feature(Way, 5501)]);
     run(&mut layers, "paste_tags", &[feature(Way, 5502)]);
@@ -365,7 +365,7 @@ fn more_actions_script_targets_hit_their_features_and_actions_apply() {
         .unwrap()
         .feature_tags(&feature(Way, 5502))
         .unwrap();
-    assert!(tags.contains(&("tracktype".to_string(), "grade4".to_string())));
-    assert!(tags.contains(&("surface".to_string(), "gravel".to_string())));
-    assert!(tags.contains(&("name".to_string(), "Back Lane".to_string())));
+    assert!(tags.is("tracktype", "grade4"));
+    assert!(tags.is("surface", "gravel"));
+    assert!(tags.is("name", "Back Lane"));
 }

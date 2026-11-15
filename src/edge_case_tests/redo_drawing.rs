@@ -8,6 +8,7 @@ use crate::{AddProgress, ExtrudeDrag, ExtrudeStyle};
 use gpui::{point, Pixels, Point, TestAppContext};
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, WayId};
+use osm_gpui::tags::Tags;
 
 const LAT: f64 = 40.0;
 const LON: f64 = -74.0;
@@ -25,7 +26,7 @@ fn data() -> OsmData {
                 lat: LAT,
                 lon,
                 version: 1,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             },
         );
     }

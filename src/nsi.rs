@@ -7,7 +7,7 @@
 //! tag-set entries ("presets"). No `locationSet` (country) filtering is
 //! applied — every entry is offered regardless of location.
 
-use std::collections::HashMap;
+use crate::tags::Tags;
 
 use crate::http::{fetch_with_retries, HttpClient, HttpError, HttpRequest, RetryPolicy};
 
@@ -42,7 +42,7 @@ impl std::error::Error for NsiError {}
 #[derive(Debug, Clone)]
 pub struct NsiEntry {
     pub display_name: String,
-    pub tags: HashMap<String, String>,
+    pub tags: Tags,
     pub match_names: Vec<String>,
 }
 
@@ -140,7 +140,7 @@ pub fn parse(body: &str) -> Result<Vec<NsiEntry>, NsiError> {
 fn parse_item(item: &serde_json::Value) -> Option<NsiEntry> {
     let display_name = item.get("displayName")?.as_str()?.to_string();
     let tags_obj = item.get("tags")?.as_object()?;
-    let mut tags = HashMap::with_capacity(tags_obj.len());
+    let mut tags = Tags::new();
     for (k, v) in tags_obj {
         if let Some(s) = v.as_str() {
             tags.insert(k.clone(), s.to_string());
@@ -340,8 +340,8 @@ mod tests {
             .iter()
             .find(|e| e.display_name == "McDonald's")
             .unwrap();
-        assert_eq!(mcd.tags.get("amenity"), Some(&"fast_food".to_string()));
-        assert_eq!(mcd.tags.get("brand:wikidata"), Some(&"Q38076".to_string()));
+        assert_eq!(mcd.tags.get("amenity"), Some("fast_food"));
+        assert_eq!(mcd.tags.get("brand:wikidata"), Some("Q38076"));
         assert_eq!(mcd.match_names, vec!["mcdonalds", "mickey d's"]);
     }
 
@@ -377,12 +377,12 @@ mod tests {
         let entries = vec![
             NsiEntry {
                 display_name: "The Coffee Bean".to_string(),
-                tags: HashMap::from([("shop".to_string(), "coffee".to_string())]),
+                tags: Tags::from([("shop", "coffee")]),
                 match_names: vec![],
             },
             NsiEntry {
                 display_name: "Coffee Bean & Tea Leaf".to_string(),
-                tags: HashMap::from([("shop".to_string(), "coffee".to_string())]),
+                tags: Tags::from([("shop", "coffee")]),
                 match_names: vec![],
             },
         ];
@@ -399,7 +399,7 @@ mod tests {
         let entries: Vec<NsiEntry> = (0..50)
             .map(|i| NsiEntry {
                 display_name: format!("Brand {}", i),
-                tags: HashMap::from([("shop".to_string(), "yes".to_string())]),
+                tags: Tags::from([("shop", "yes")]),
                 match_names: vec![],
             })
             .collect();
@@ -544,7 +544,7 @@ mod tests {
         init_store();
         set_index(NsiIndex::from_entries(vec![NsiEntry {
             display_name: "Test Brand".to_string(),
-            tags: HashMap::from([("shop".to_string(), "yes".to_string())]),
+            tags: Tags::from([("shop", "yes")]),
             match_names: vec![],
         }]));
         let idx = current().expect("index should be set after set_index");

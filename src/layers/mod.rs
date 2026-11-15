@@ -2,6 +2,7 @@ use gpui::*;
 use std::collections::HashSet;
 
 use crate::ids::{NodeId, RelationId, WayId};
+use crate::tags::Tags;
 use crate::viewport::Viewport;
 
 use osm_layer::OsmLayer;
@@ -428,8 +429,7 @@ pub trait EditableLayer {
     }
 
     /// Return key/value tags for the given feature if this layer owns it.
-    fn feature_tags(&self, feature: &crate::selection::FeatureRef)
-        -> Option<Vec<(String, String)>>;
+    fn feature_tags(&self, feature: &crate::selection::FeatureRef) -> Option<Tags>;
 
     /// Classify the geometry (point/vertex/line/area) of a feature this
     /// layer owns, for preset matching. Returns `None` if the feature
@@ -526,7 +526,7 @@ pub trait EditableLayer {
     ) -> Result<(), EditError>;
 
     /// Add a way over existing nodes with a fresh negative id and return it.
-    fn add_way(&mut self, node_ids: Vec<NodeId>, tags: Vec<(String, String)>) -> WayId;
+    fn add_way(&mut self, node_ids: Vec<NodeId>, tags: Tags) -> WayId;
 
     /// Append a node id to a way.
     fn extend_way(&mut self, way_id: WayId, node_id: NodeId) -> Result<(), EditError>;
@@ -590,7 +590,7 @@ pub trait EditableLayer {
     /// nodes and ways draw from) and return it. Member refs are not checked.
     fn create_relation(
         &mut self,
-        tags: Vec<(String, String)>,
+        tags: Tags,
         members: Vec<crate::osm::OsmMember>,
     ) -> Result<RelationId, EditError>;
 
@@ -1251,7 +1251,7 @@ mod tests {
             lat: center_lat,
             lon: center_lon,
             version: 1,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         };
         let mut nodes = HashMap::new();
         nodes.insert(NodeId(1), node);
@@ -1300,7 +1300,7 @@ mod tests {
             lat: center_lat,
             lon: center_lon,
             version: 1,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         };
         let mut nodes = HashMap::new();
         nodes.insert(NodeId(1), node);

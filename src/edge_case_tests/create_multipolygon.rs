@@ -4,6 +4,7 @@
 use super::*;
 use osm_gpui::ids::NodeId;
 use osm_gpui::osm::OsmNode;
+use osm_gpui::tags::Tags;
 
 /// Node id for grid point `(x, y)` (both 1..=98); placed about 100 m apart.
 fn n(x: i64, y: i64) -> i64 {
@@ -26,7 +27,7 @@ fn on_grid(mut b: Build, ways: &[GridWay]) -> Build {
                 lat: 40.0 + (node % 100) as f64 * 0.001,
                 lon: -74.0 + (node / 100) as f64 * 0.001,
                 version: 3,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             });
         }
         b = b.way(*id, nodes, tags);
@@ -378,7 +379,7 @@ fn a_ring_with_thousands_of_nodes_is_fine_the_node_limit_belongs_to_editing_ways
                 lat: 40.0 + 0.05 * a.sin(),
                 lon: -74.0 + 0.05 * a.cos(),
                 version: 3,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             },
         );
         ring.push(id);
@@ -467,7 +468,7 @@ fn new_ways_go_up_before_the_relation_that_names_them(cx: &mut TestAppContext) {
                 .restore_feature(osm_gpui::selection::DeletedFeatureSnapshot {
                     kind: W,
                     id: way_id,
-                    tags: Vec::new(),
+                    tags: Tags::new(),
                     way_nodes: nodes,
                     node_lat_lon: None,
                     version: 0,

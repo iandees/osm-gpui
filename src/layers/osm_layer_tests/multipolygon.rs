@@ -7,6 +7,7 @@ use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::multipolygon::Problem;
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::{resolve_hits, FeatureKind};
+use crate::tags::Tags;
 use crate::viewport::Viewport;
 use gpui::{point, px, size, Pixels, Point};
 use std::collections::HashMap;
@@ -37,7 +38,7 @@ fn way(id: i64, nodes: Vec<i64>) -> OsmWay {
         id: WayId(id),
         nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
         version: 1,
-        tags: HashMap::new(),
+        tags: Tags::new(),
     }
 }
 
@@ -78,7 +79,7 @@ fn layer() -> OsmLayer {
                     lat,
                     lon,
                     version: 1,
-                    tags: HashMap::new(),
+                    tags: Tags::new(),
                 },
             );
         }
@@ -346,10 +347,7 @@ fn changing_members_roles_and_tags_updates_the_relation() {
     // A newly created multipolygon appears at once.
     let id = layer
         .create_relation(
-            vec![
-                ("type".to_string(), "multipolygon".to_string()),
-                ("building".to_string(), "yes".to_string()),
-            ],
+            Tags::from([("type", "multipolygon"), ("building", "yes")]),
             vec![member(11, "outer")],
         )
         .unwrap();

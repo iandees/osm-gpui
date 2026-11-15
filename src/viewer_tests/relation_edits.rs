@@ -11,6 +11,7 @@ use gpui::{point, px, size, TestAppContext};
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::osm_layer::OsmLayer;
+use osm_gpui::tags::Tags;
 use osm_gpui::viewport::Viewport;
 use std::sync::Arc;
 
@@ -128,7 +129,7 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
             // Create a relation containing existing relation 900.
             let new_id = editable(view)
                 .create_relation(
-                    vec![("type".to_string(), "route".to_string())],
+                    Tags::from([("type", "route")]),
                     vec![
                         member(MemberType::Relation, 900),
                         member(MemberType::Way, 101),
@@ -158,7 +159,7 @@ fn create_and_delete_relation_undo_and_redo(cx: &mut TestAppContext) {
             assert_eq!(editable(view).relation(new_id).unwrap().members.len(), 2);
             assert_eq!(pending(view), (1, 0, 0));
             // A later allocation never reuses the id.
-            let other = editable(view).create_relation(vec![], vec![]).unwrap();
+            let other = editable(view).create_relation(Tags::new(), vec![]).unwrap();
             assert!(other < new_id);
             editable(view).delete_relation(other).unwrap();
 
@@ -424,7 +425,7 @@ fn deleting_a_relation_that_is_a_member_is_refused_until_its_parent_goes(cx: &mu
             let layer_id = view.active_layer.unwrap();
             let parent = editable(view)
                 .create_relation(
-                    vec![],
+                    Tags::new(),
                     vec![OsmMember {
                         member_type: MemberType::Relation,
                         reference: 900,

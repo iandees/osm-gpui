@@ -2,13 +2,11 @@ use super::*;
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind::{Node, Relation, Way};
+use crate::tags::Tags;
 use std::collections::{HashMap, HashSet};
 
-fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+fn tags(pairs: &[(&str, &str)]) -> Tags {
+    Tags::from(pairs)
 }
 
 fn node(id: i64, lat: f64, lon: f64, t: &[(&str, &str)]) -> OsmNode {
@@ -246,10 +244,8 @@ fn modified_compares_with_the_baseline() {
         .get_mut(&WayId(10))
         .unwrap()
         .tags
-        .insert("name".into(), "Old Name".into());
-    original.relations[0]
-        .tags
-        .insert("route".into(), "tram".into());
+        .insert("name", "Old Name");
+    original.relations[0].tags.insert("route", "tram");
     let ctx = SearchContext {
         original: Some(&original),
         ..Default::default()

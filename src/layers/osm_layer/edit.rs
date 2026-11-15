@@ -1,5 +1,6 @@
 use super::*;
 use crate::osm::MemberType;
+use crate::tags::Tags;
 
 impl OsmLayer {
     /// Apply `edit` to the node list of way `way_id`, then bring the way's
@@ -77,7 +78,7 @@ impl OsmLayer {
         &mut self,
         kind: FeatureKind,
         id: i64,
-        edit: impl FnOnce(&mut HashMap<String, String>),
+        edit: impl FnOnce(&mut Tags),
     ) -> Result<(), EditError> {
         let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
         let tags = match kind {
@@ -109,7 +110,7 @@ impl OsmLayer {
         id: NodeId,
         lat: f64,
         lon: f64,
-        tags: HashMap<String, String>,
+        tags: Tags,
         version: i32,
         restored: bool,
     ) {
@@ -330,14 +331,14 @@ impl EditableLayer for OsmLayer {
         {
             return Err(EditError::IdInUse(FeatureKind::Node, id.get()));
         }
-        self.insert_node(id, lat, lon, HashMap::new(), 0, false);
+        self.insert_node(id, lat, lon, Tags::new(), 0, false);
         Ok(id)
     }
 
     fn add_node(&mut self, lat: f64, lon: f64) -> NodeId {
         let id = NodeId(self.store.next_new_id);
         self.store.next_new_id -= 1;
-        self.insert_node(id, lat, lon, HashMap::new(), 0, false);
+        self.insert_node(id, lat, lon, Tags::new(), 0, false);
         id
     }
 
@@ -355,7 +356,7 @@ impl EditableLayer for OsmLayer {
                 Ok(DeletedFeatureSnapshot {
                     kind,
                     id,
-                    tags: node.tags.into_iter().collect(),
+                    tags: node.tags,
                     way_nodes: Vec::new(),
                     node_lat_lon: Some((node.lat, node.lon)),
                     version: node.version,
@@ -369,7 +370,7 @@ impl EditableLayer for OsmLayer {
                 Ok(DeletedFeatureSnapshot {
                     kind,
                     id,
-                    tags: way.tags.into_iter().collect(),
+                    tags: way.tags,
                     way_nodes: way.nodes,
                     node_lat_lon: None,
                     version: way.version,
@@ -395,14 +396,7 @@ impl EditableLayer for OsmLayer {
                 {
                     return Err(EditError::IdInUse(FeatureKind::Node, id));
                 }
-                self.insert_node(
-                    NodeId(id),
-                    lat,
-                    lon,
-                    snapshot.tags.into_iter().collect(),
-                    snapshot.version,
-                    true,
-                );
+                self.insert_node(NodeId(id), lat, lon, snapshot.tags, snapshot.version, true);
                 Ok(())
             }
             FeatureKind::Way => {
@@ -413,7 +407,7 @@ impl EditableLayer for OsmLayer {
                     id: WayId(id),
                     nodes: snapshot.way_nodes,
                     version: snapshot.version,
-                    tags: snapshot.tags.into_iter().collect(),
+                    tags: snapshot.tags,
                 });
                 Ok(())
             }
@@ -421,14 +415,14 @@ impl EditableLayer for OsmLayer {
         }
     }
 
-    fn add_way(&mut self, node_ids: Vec<NodeId>, tags: Vec<(String, String)>) -> WayId {
+    fn add_way(&mut self, node_ids: Vec<NodeId>, tags: Tags) -> WayId {
         let id = WayId(self.store.next_placeholder_way_id);
         self.store.next_placeholder_way_id -= 1;
         self.insert_way(OsmWay {
             id,
             nodes: node_ids,
             version: 0,
-            tags: tags.into_iter().collect(),
+            tags,
         });
         id
     }
@@ -573,7 +567,7 @@ impl EditableLayer for OsmLayer {
 
     fn create_relation(
         &mut self,
-        tags: Vec<(String, String)>,
+        tags: Tags,
         members: Vec<crate::osm::OsmMember>,
     ) -> Result<RelationId, EditError> {
         let lowest_relation = self
@@ -599,7 +593,7 @@ impl EditableLayer for OsmLayer {
             id,
             members,
             version: 0,
-            tags: tags.into_iter().collect(),
+            tags,
         });
         self.apply_change(&Change {
             relations: vec![id],
@@ -950,28 +944,20 @@ impl EditableLayer for OsmLayer {
             .collect()
     }
 
-    fn feature_tags(&self, feature: &FeatureRef) -> Option<Vec<(String, String)>> {
+    fn feature_tags(&self, feature: &FeatureRef) -> Option<Tags> {
         if feature.layer_id != self.id {
             return None;
         }
         let data = self.store.osm_data.as_ref()?;
-        let tags = match feature.kind {
-            FeatureKind::Node => {
-                let n = data.nodes.get(&NodeId(feature.id))?;
-                n.tags.clone()
-            }
-            FeatureKind::Way => {
-                let w = data.ways.get(&WayId(feature.id))?;
-                w.tags.clone()
-            }
-            FeatureKind::Relation => {
-                let r = data.relations.iter().find(|r| r.id.get() == feature.id)?;
-                r.tags.clone()
-            }
-        };
-        let mut kv: Vec<(String, String)> = tags.into_iter().collect();
-        kv.sort_by(|a, b| a.0.cmp(&b.0));
-        Some(kv)
+        match feature.kind {
+            FeatureKind::Node => data.nodes.get(&NodeId(feature.id)).map(|n| n.tags.clone()),
+            FeatureKind::Way => data.ways.get(&WayId(feature.id)).map(|w| w.tags.clone()),
+            FeatureKind::Relation => data
+                .relations
+                .iter()
+                .find(|r| r.id.get() == feature.id)
+                .map(|r| r.tags.clone()),
+        }
     }
 
     fn feature_geometry(

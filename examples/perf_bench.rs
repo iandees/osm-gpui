@@ -14,6 +14,7 @@ use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::{EditableLayer, LayerId};
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
 use osm_gpui::style::Stylesheet;
+use osm_gpui::tags::Tags;
 use osm_gpui::viewport::Viewport;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,11 +38,8 @@ impl Lcg {
     }
 }
 
-fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+fn tags(pairs: &[(&str, &str)]) -> Tags {
+    Tags::from(pairs)
 }
 
 /// Ways are spatially compact chains (random anchor + ~10m steps), like real
@@ -67,7 +65,7 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
                     id: NodeId(id),
                     lat,
                     lon,
-                    tags: HashMap::new(),
+                    tags: Tags::new(),
                     version: 1,
                 },
             );
@@ -80,7 +78,7 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
             4 => tags(&[("highway", "footway")]),
             5..=7 => tags(&[("building", "yes")]),
             8 => tags(&[("waterway", "stream")]),
-            _ => HashMap::new(),
+            _ => Tags::new(),
         };
         ways.insert(
             WayId(wid),
@@ -100,7 +98,7 @@ fn build_dataset(n_ways: usize, nodes_per_way: usize, n_poi_nodes: usize) -> Arc
         let t = match id % 3 {
             0 => tags(&[("amenity", "cafe"), ("name", "Cafe")]),
             1 => tags(&[("shop", "convenience")]),
-            _ => HashMap::new(),
+            _ => Tags::new(),
         };
         nodes.insert(
             NodeId(id),
@@ -571,7 +569,7 @@ fn build_street_dataset() -> Arc<OsmData> {
                     id: NodeId(id),
                     lat: cl + t * ang.sin() + wob,
                     lon: co + t * ang.cos() / 0.7 + wob,
-                    tags: HashMap::new(),
+                    tags: Tags::new(),
                     version: 1,
                 },
             );
@@ -869,7 +867,7 @@ fn ring_nodes(
                 id: NodeId(first_id + i as i64),
                 lat: lat + r * a.sin(),
                 lon: lon + r * a.cos() * 1.3,
-                tags: HashMap::new(),
+                tags: Tags::new(),
                 version: 1,
             }
         })
@@ -921,7 +919,7 @@ fn with_multipolygons(base: &OsmData) -> OsmData {
                 OsmWay {
                     id: WayId(id),
                     nodes: way_nodes,
-                    tags: HashMap::new(),
+                    tags: Tags::new(),
                     version: 1,
                 },
             );
@@ -1117,14 +1115,14 @@ fn labels_section() {
         ("amenity", "bank"),
         ("leisure", "playground"),
     ];
-    let mut pois: Vec<(i64, f64, f64, HashMap<String, String>)> = Vec::new();
+    let mut pois: Vec<(i64, f64, f64, Tags)> = Vec::new();
     for id in 0..450i64 {
         let lat = CENTER_LAT + (rng.f64() - 0.5) * 0.0105;
         let lon = CENTER_LON + (rng.f64() - 0.5) * 0.0168;
         let (k, v) = kinds[(rng.next() % kinds.len() as u64) as usize];
         let mut t = tags(&[(k, v)]);
         if rng.next() % 10 < 8 {
-            t.insert("name".into(), format!("Place number {id}"));
+            t.insert("name", format!("Place number {id}"));
         }
         let Mercator { x: mx, y: my } = lat_lon_to_mercator(LatLon::new(lat, lon));
         pois.push((id, mx, my, t));

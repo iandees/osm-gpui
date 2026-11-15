@@ -8,12 +8,13 @@ use crate::{side_panel, MemberRef, TagEditContext};
 use gpui::TestAppContext;
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::RelationId;
+use osm_gpui::tags::Tags;
 
 #[gpui::test]
 fn side_panel_lists_the_relations_of_the_one_selected_feature(cx: &mut TestAppContext) {
     use osm_gpui::selection::FeatureKind::{Node, Way};
     let window = setup_network_with(cx, |data| {
-        data.relations[0].tags.insert("ref".into(), "7B".into());
+        data.relations[0].tags.insert("ref", "7B");
     });
     window
         .update(cx, |view, _window, _cx| {
@@ -307,7 +308,7 @@ fn removing_a_restrictions_from_via_or_to_member_is_refused(cx: &mut TestAppCont
         data.relations = vec![OsmRelation {
             id: RelationId(900),
             version: 1,
-            tags: [("type".to_string(), "restriction".to_string())].into(),
+            tags: Tags::from([("type", "restriction")]),
             members: vec![
                 member(MemberType::Way, 100, "from"),
                 member(MemberType::Node, 3, "via"),

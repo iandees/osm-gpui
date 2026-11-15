@@ -8,6 +8,7 @@ use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::WayId;
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::osm_upload;
+use osm_gpui::tags::Tags;
 use osm_gpui::viewport::Viewport;
 use std::sync::Arc;
 
@@ -184,7 +185,7 @@ fn script_set_tag_and_remove_tag_edit_the_selection_in_one_undo_step_each(cx: &m
         view.script_set_tag("name", value, cx).unwrap();
         assert_eq!(
             view.selected_feature_tag_snapshots()[0].1,
-            vec![("name".to_string(), value.to_string())]
+            Tags::from([("name", value)])
         );
         assert_eq!(view.undo_stack.actions.len(), 1);
         assert_eq!(view.active_layer_pending(), Some(1));

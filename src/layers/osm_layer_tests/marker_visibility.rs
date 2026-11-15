@@ -7,6 +7,7 @@ use crate::layers::EditableLayer;
 use crate::layers::{node_markers, LayerId};
 use crate::selection::{FeatureKind, FeatureRef};
 use crate::style::Stylesheet;
+use crate::tags::Tags;
 use gpui::{point, px, size, Bounds};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -239,7 +240,7 @@ fn relation_membership_restyles_ways_when_a_relation_changes() {
         reference: 100,
         role: String::new(),
     }];
-    let rel = layer.create_relation(vec![], members.clone()).unwrap();
+    let rel = layer.create_relation(Tags::new(), members.clone()).unwrap();
     assert!(layer.render.way_styles[idx].casing_width > 0.0);
     let snapshot = layer.delete_relation(rel).unwrap();
     assert_eq!(layer.render.way_styles[idx].casing_width, 0.0);

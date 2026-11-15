@@ -10,6 +10,7 @@ use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::{EditableLayer, LayerId};
 use osm_gpui::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use osm_gpui::selection::{FeatureKind, FeatureRef};
+use osm_gpui::tags::Tags;
 use osm_gpui::viewport::Viewport;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -24,10 +25,8 @@ pub(crate) struct Build {
     pub(crate) data: Option<OsmData>,
 }
 
-pub(crate) fn tag_map(tags: &[(&str, &str)]) -> HashMap<String, String> {
-    tags.iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+pub(crate) fn tag_map(tags: &[(&str, &str)]) -> Tags {
+    Tags::from(tags)
 }
 
 impl Build {
@@ -68,7 +67,7 @@ impl Build {
                 lat,
                 lon,
                 version: 3,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             },
         );
         self
@@ -289,13 +288,13 @@ pub(crate) fn sorted_tags(
     kind: FeatureKind,
     id: i64,
 ) -> Option<Vec<(String, String)>> {
-    let mut tags = editable_layer(view, layer).feature_tags(&FeatureRef {
-        layer_id: layer,
-        kind,
-        id,
-    })?;
-    tags.sort();
-    Some(tags)
+    editable_layer(view, layer)
+        .feature_tags(&FeatureRef {
+            layer_id: layer,
+            kind,
+            id,
+        })
+        .map(|tags| tags.to_sorted_vec())
 }
 
 /// The ids of the ways in `layer` that use node `node`.
@@ -423,9 +422,9 @@ impl Session<'_, '_> {
     pub(crate) fn snap(&self) -> Snap {
         let e = self.editable();
         let tags = |kind, id| {
-            let mut t = e.feature_tags(&self.feature(kind, id)).unwrap_or_default();
-            t.sort();
-            t
+            e.feature_tags(&self.feature(kind, id))
+                .unwrap_or_default()
+                .to_sorted_vec()
         };
         let mut s = Snap {
             nodes: BTreeMap::new(),

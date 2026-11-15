@@ -187,6 +187,7 @@ mod tests {
     use crate::ids::{NodeId, RelationId, WayId};
     use crate::layers::diff::diff_osm_data;
     use crate::osm::{OsmNode, OsmWay};
+    use crate::tags::Tags;
 
     fn node(id: i64, lat: f64, version: i32) -> OsmNode {
         OsmNode {
@@ -194,7 +195,7 @@ mod tests {
             lat,
             lon: 0.0,
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 
@@ -203,7 +204,7 @@ mod tests {
             id: WayId(id),
             nodes: nodes.into_iter().map(NodeId).collect::<Vec<_>>(),
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         }
     }
 
@@ -369,7 +370,7 @@ mod tests {
             id,
             members: Vec::new(),
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         };
         let mut original = data(vec![], vec![]);
         original.relations.push(relation(RelationId(1), 1));
@@ -400,7 +401,7 @@ mod tests {
             id,
             members,
             version,
-            tags: HashMap::new(),
+            tags: Tags::new(),
         };
         let mut original = data(vec![], vec![]);
         original.relations = vec![

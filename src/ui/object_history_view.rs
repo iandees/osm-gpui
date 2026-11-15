@@ -9,7 +9,7 @@
 //!
 //! Not the app's undo history (the side panel's "History" section).
 
-use std::collections::BTreeMap;
+use crate::tags::Tags;
 
 use gpui::{
     div, prelude::*, px, relative, AnyElement, App, Context, ElementId, EventEmitter, FocusHandle,
@@ -39,10 +39,7 @@ pub enum ViewEvent {
     /// The Retry button after a network failure.
     Retry,
     /// "Revert tags to this version": set the object's tags to these.
-    RevertTags {
-        version: u32,
-        tags: BTreeMap<String, String>,
-    },
+    RevertTags { version: u32, tags: Tags },
 }
 
 /// Where the view is in loading the history.

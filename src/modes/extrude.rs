@@ -7,6 +7,7 @@ use osm_gpui::edit_mode::EditMode;
 use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::interaction;
 use osm_gpui::layers::LayerId;
+use osm_gpui::tags::Tags;
 
 use super::preview::{blue, line_width, stroke_polyline, PreviewFrame};
 use crate::undo::{roll_back_recording, EditLabel, UndoableAction};
@@ -235,7 +236,7 @@ impl MapViewer {
         let new_a = rec.add_node(far_a.0, far_a.1);
         let new_b = rec.add_node(far_b.0, far_b.1);
         let way_nodes = vec![drag.node_a, drag.node_b, new_b, new_a, drag.node_a];
-        let way_id = rec.add_way(way_nodes, Vec::new());
+        let way_id = rec.add_way(way_nodes, Tags::new());
 
         let way = osm_gpui::selection::FeatureRef {
             layer_id: drag.layer,

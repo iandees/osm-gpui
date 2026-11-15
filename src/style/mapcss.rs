@@ -56,6 +56,7 @@
 //! for one zoom bucket (cached until the bucket changes) and the renderer
 //! indexes that table by `sig`.
 
+use crate::tags::Tags;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -207,16 +208,16 @@ pub enum Direction {
 impl Direction {
     /// The direction implied by a way's tags: an explicit `oneway`, a
     /// roundabout, or a flowing waterway.
-    pub fn from_tags(tags: &HashMap<String, String>) -> Self {
-        match tags.get("oneway").map(String::as_str) {
+    pub fn from_tags(tags: &Tags) -> Self {
+        match tags.get("oneway") {
             Some("yes" | "1" | "true") => return Direction::Forward,
             Some("-1" | "reverse") => return Direction::Reverse,
             Some("no" | "0" | "false") => return Direction::None,
             _ => {}
         }
-        let roundabout = tags.get("junction").map(String::as_str) == Some("roundabout");
+        let roundabout = tags.get("junction") == Some("roundabout");
         let flowing = matches!(
-            tags.get("waterway").map(String::as_str),
+            tags.get("waterway"),
             Some("river" | "stream" | "canal" | "drain" | "ditch")
         );
         if roundabout || flowing {
@@ -402,7 +403,7 @@ enum TagTest {
 }
 
 impl TagTest {
-    fn matches(&self, tags: &HashMap<String, String>) -> bool {
+    fn matches(&self, tags: &Tags) -> bool {
         match self {
             TagTest::Present(k) => tags.contains_key(k),
             TagTest::Equals(k, v) => tags.get(k).map(|s| s == v).unwrap_or(false),
@@ -424,13 +425,7 @@ struct Selector {
 impl Selector {
     /// Kind and tag tests only; the zoom range is checked separately so a
     /// feature's matches can be cached independent of zoom.
-    fn matches(
-        &self,
-        kind: TargetKind,
-        closed: bool,
-        tags: &HashMap<String, String>,
-        ctx: Context,
-    ) -> bool {
+    fn matches(&self, kind: TargetKind, closed: bool, tags: &Tags, ctx: Context) -> bool {
         let kind_ok = match self.kind {
             TargetKind::Area => kind == TargetKind::Way && closed,
             k => k == kind,
@@ -537,13 +532,7 @@ struct Rule {
 
 impl Rule {
     /// Bitmask of the selectors (first 64) whose kind and tags match.
-    fn tag_mask(
-        &self,
-        kind: TargetKind,
-        closed: bool,
-        tags: &HashMap<String, String>,
-        ctx: Context,
-    ) -> u64 {
+    fn tag_mask(&self, kind: TargetKind, closed: bool, tags: &Tags, ctx: Context) -> u64 {
         let mut mask = 0u64;
         for (i, sel) in self.selectors.iter().enumerate().take(64) {
             if sel.matches(kind, closed, tags, ctx) {
@@ -700,7 +689,7 @@ impl Stylesheet {
     }
 
     /// Resolve a style for a node given its OSM tags at `zoom`.
-    pub fn node_style(&self, tags: &HashMap<String, String>, zoom: f64) -> NodeStyle {
+    pub fn node_style(&self, tags: &Tags, zoom: f64) -> NodeStyle {
         let bucket = zoom_bucket(zoom);
         let one = self.node_visual(tags, bucket, 1);
         let (junction, unconnected) = if self.node_context {
@@ -721,7 +710,7 @@ impl Stylesheet {
         }
     }
 
-    fn node_visual(&self, tags: &HashMap<String, String>, bucket: i32, ways: usize) -> NodeVisual {
+    fn node_visual(&self, tags: &Tags, bucket: i32, ways: usize) -> NodeVisual {
         let ctx = Context {
             node_ways: ways,
             in_relation: false,
@@ -791,7 +780,7 @@ impl Stylesheet {
     /// closed ring, at `zoom`. `area` and `way:closed` rules only match when
     /// `closed`; fill declarations only take effect on closed ways (JOSM
     /// semantics).
-    pub fn way_style(&self, tags: &HashMap<String, String>, closed: bool, zoom: f64) -> WayStyle {
+    pub fn way_style(&self, tags: &Tags, closed: bool, zoom: f64) -> WayStyle {
         let matches = self.match_way(tags, closed, false);
         self.resolve_way(&matches, closed, Some(zoom_bucket(zoom)), tags)
     }
@@ -803,12 +792,7 @@ impl Stylesheet {
     ///
     /// `in_relation` is whether the way is a member of any relation, for
     /// `way:in-relation` rules.
-    pub fn way_style_cached(
-        &self,
-        tags: &HashMap<String, String>,
-        closed: bool,
-        in_relation: bool,
-    ) -> WayStyle {
+    pub fn way_style_cached(&self, tags: &Tags, closed: bool, in_relation: bool) -> WayStyle {
         let matches = self.match_way(tags, closed, in_relation);
         let mut s = self.resolve_way(&matches, closed, None, tags);
         s.sig = self.intern(closed, matches);
@@ -827,7 +811,7 @@ impl Stylesheet {
                 return t.clone();
             }
         }
-        let no_tags = HashMap::new();
+        let no_tags = Tags::new();
         let table: Vec<WayStyle> = cache
             .sigs
             .iter()
@@ -845,27 +829,16 @@ impl Stylesheet {
     }
 
     /// The label/icon properties that apply to a node at `zoom`.
-    pub fn node_text_style(&self, tags: &HashMap<String, String>, zoom: f64) -> TextStyle {
+    pub fn node_text_style(&self, tags: &Tags, zoom: f64) -> TextStyle {
         self.text_style(TargetKind::Node, false, tags, zoom)
     }
 
     /// The label/icon properties that apply to a way at `zoom`.
-    pub fn way_text_style(
-        &self,
-        tags: &HashMap<String, String>,
-        closed: bool,
-        zoom: f64,
-    ) -> TextStyle {
+    pub fn way_text_style(&self, tags: &Tags, closed: bool, zoom: f64) -> TextStyle {
         self.text_style(TargetKind::Way, closed, tags, zoom)
     }
 
-    fn text_style(
-        &self,
-        kind: TargetKind,
-        closed: bool,
-        tags: &HashMap<String, String>,
-        zoom: f64,
-    ) -> TextStyle {
+    fn text_style(&self, kind: TargetKind, closed: bool, tags: &Tags, zoom: f64) -> TextStyle {
         let bucket = zoom_bucket(zoom);
         let mut out = TextStyle::default();
         for &ri in &self.label_rules {
@@ -893,12 +866,7 @@ impl Stylesheet {
         id
     }
 
-    fn match_way(
-        &self,
-        tags: &HashMap<String, String>,
-        closed: bool,
-        in_relation: bool,
-    ) -> Matches {
+    fn match_way(&self, tags: &Tags, closed: bool, in_relation: bool) -> Matches {
         let ctx = Context {
             node_ways: 0,
             in_relation,
@@ -919,7 +887,7 @@ impl Stylesheet {
         matches: &Matches,
         closed: bool,
         zoom: Option<i32>,
-        tags: &HashMap<String, String>,
+        tags: &Tags,
     ) -> WayStyle {
         let mut s = WayStyle {
             direction: Direction::from_tags(tags),
@@ -1735,11 +1703,8 @@ mod tests {
         }
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]

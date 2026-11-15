@@ -34,6 +34,7 @@
 //! anything (and only the disable modifier stops it).
 
 use crate::geometry::{LatLon, LocalProjection};
+use crate::tags::Tags;
 
 /// Pixel distance within which a pointer snaps onto a way segment.
 pub const WAY_SNAP_TOLERANCE_PX: f32 = 6.0;
@@ -127,7 +128,7 @@ fn ignored(key: &str) -> bool {
 
 /// The class of a feature with these tags, or `None` if it has nothing but
 /// ignorable tags (such as an untagged way).
-pub fn classify(tags: &[(String, String)]) -> Option<SnapClass> {
+pub fn classify(tags: &Tags) -> Option<SnapClass> {
     for &(key, values, class) in CLASS_RULES {
         if tags
             .iter()
@@ -142,7 +143,7 @@ pub fn classify(tags: &[(String, String)]) -> Option<SnapClass> {
 }
 
 /// A node that stands for a road / rail crossing, which may join the two.
-fn is_crossing_node(tags: &[(String, String)]) -> bool {
+fn is_crossing_node(tags: &Tags) -> bool {
     tags.iter()
         .any(|(k, v)| k == "railway" && (v == "level_crossing" || v == "crossing"))
 }
@@ -170,7 +171,7 @@ fn classes_compatible(a: SnapClass, b: SnapClass, crossing: bool) -> bool {
 /// - A tagged node with no way of its own (a point of interest) is a source
 ///   of class `Other` unless its tags are a recognised vertex kind, so it
 ///   only matches `Other` ways: it will not be glued to roads or buildings.
-pub fn may_snap(sources: &[&[(String, String)]], target: &[(String, String)]) -> bool {
+pub fn may_snap(sources: &[&Tags], target: &Tags) -> bool {
     let classes: Vec<SnapClass> = sources.iter().filter_map(|t| classify(t)).collect();
     if classes.is_empty() {
         return true;
@@ -279,16 +280,10 @@ pub fn plan_join_nearest(
 mod tests {
     use super::*;
 
-    fn t(list: &[(&str, &str)]) -> Vec<(String, String)> {
-        list.iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
     fn ok(sources: &[&[(&str, &str)]], target: &[(&str, &str)]) -> bool {
-        let owned: Vec<Vec<(String, String)>> = sources.iter().map(|s| t(s)).collect();
-        let refs: Vec<&[(String, String)]> = owned.iter().map(|v| v.as_slice()).collect();
-        may_snap(&refs, &t(target))
+        let owned: Vec<Tags> = sources.iter().map(|s| Tags::from(*s)).collect();
+        let refs: Vec<&Tags> = owned.iter().collect();
+        may_snap(&refs, &Tags::from(target))
     }
 
     #[test]
@@ -301,21 +296,30 @@ mod tests {
     #[test]
     fn classification_uses_the_first_matching_rule() {
         assert_eq!(
-            classify(&t(&[("highway", "service")])),
+            classify(&Tags::from([("highway", "service")])),
             Some(SnapClass::Highway)
         );
         assert_eq!(
-            classify(&t(&[("building", "yes"), ("amenity", "cafe")])),
+            classify(&Tags::from([("building", "yes"), ("amenity", "cafe")])),
             Some(SnapClass::Building)
         );
         assert_eq!(
-            classify(&t(&[("natural", "coastline")])),
+            classify(&Tags::from([("natural", "coastline")])),
             Some(SnapClass::Coastline)
         );
-        assert_eq!(classify(&t(&[("natural", "wood")])), Some(SnapClass::Area));
-        assert_eq!(classify(&t(&[("shop", "bakery")])), Some(SnapClass::Other));
-        assert_eq!(classify(&t(&[("name", "Elm"), ("source", "survey")])), None);
-        assert_eq!(classify(&[]), None);
+        assert_eq!(
+            classify(&Tags::from([("natural", "wood")])),
+            Some(SnapClass::Area)
+        );
+        assert_eq!(
+            classify(&Tags::from([("shop", "bakery")])),
+            Some(SnapClass::Other)
+        );
+        assert_eq!(
+            classify(&Tags::from([("name", "Elm"), ("source", "survey")])),
+            None
+        );
+        assert_eq!(classify(&Tags::new()), None);
     }
 
     #[test]

@@ -16,6 +16,7 @@
 
 use crate::preset_translations::PresetTranslations;
 use crate::presets::{Geometry, Preset};
+use crate::tags::Tags;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -112,7 +113,7 @@ impl PrerequisiteTag {
     /// Same rules as iD's `field.isAllowed`: `key` needs the tag present (and
     /// equal to `value`, or different from `valueNot`, when given); `keyNot`
     /// needs the tag absent.
-    pub fn is_met(&self, tags: &HashMap<String, String>) -> bool {
+    pub fn is_met(&self, tags: &Tags) -> bool {
         if let Some(key) = &self.key {
             let Some(actual) = tags.get(key).filter(|v| !v.is_empty()) else {
                 return false;
@@ -262,19 +263,19 @@ impl Field {
     }
 
     /// Whether the feature has a value for any of this field's keys.
-    pub fn has_value(&self, tags: &HashMap<String, String>) -> bool {
+    pub fn has_value(&self, tags: &Tags) -> bool {
         match self.widget() {
             Widget::PrefixMulti => tags.keys().any(|k| k.starts_with(&self.key)),
             _ if self.field_type == FieldType::Address => {
                 self.keys.iter().any(|k| tags.contains_key(k))
             }
-            _ => self.all_keys().iter().any(|k| tags.contains_key(*k)),
+            _ => self.all_keys().iter().any(|k| tags.contains_key(k)),
         }
     }
 
     /// Whether the field may be shown for a feature of `geometry` with
     /// `tags`: editable, within its own geometry limit, prerequisite met.
-    pub fn is_allowed(&self, geometry: Geometry, tags: &HashMap<String, String>) -> bool {
+    pub fn is_allowed(&self, geometry: Geometry, tags: &Tags) -> bool {
         self.is_editable()
             && (self.geometry.is_empty() || self.geometry.contains(&geometry))
             && self
@@ -288,15 +289,11 @@ impl Field {
     /// `structureRadio` a checkbox per key, `address` a text input per common
     /// key (plus any other `addr:*` key already set), a directional combo a
     /// select per side.
-    pub fn sub_fields(
-        &self,
-        tags: &HashMap<String, String>,
-        translations: Option<&PresetTranslations>,
-    ) -> Vec<Field> {
+    pub fn sub_fields(&self, tags: &Tags, translations: Option<&PresetTranslations>) -> Vec<Field> {
         let keys: Vec<&String> = if self.field_type == FieldType::Address {
             self.keys
                 .iter()
-                .filter(|k| COMMON_ADDRESS_KEYS.contains(&k.as_str()) || tags.contains_key(*k))
+                .filter(|k| COMMON_ADDRESS_KEYS.contains(&k.as_str()) || tags.contains_key(k))
                 .collect()
         } else {
             self.keys.iter().collect()
@@ -456,7 +453,7 @@ impl FieldIndex {
         &self,
         preset: &Preset,
         geometry: Geometry,
-        tags: &HashMap<String, String>,
+        tags: &Tags,
         promoted: &HashSet<String>,
     ) -> ResolvedFields<'_> {
         let mut seen: HashSet<&str> = HashSet::new();
@@ -796,11 +793,8 @@ mod tests {
     ]
     "#;
 
-    fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     fn ids(fields: &[&Field]) -> Vec<String> {

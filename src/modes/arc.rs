@@ -321,7 +321,7 @@ impl MapViewer {
             .zip(&points)
             .map(|(id, &(lat, lon))| id.unwrap_or_else(|| rec.add_node(lat, lon)))
             .collect();
-        let way_id = rec.add_way(all_ids, Vec::new());
+        let way_id = rec.add_way(all_ids, Tags::new());
         selects.push(feature(osm_gpui::selection::FeatureKind::Way, way_id.get()));
         // The whole arc, splices included, is one undo step: undoing removes
         // the arc first, then the splices.

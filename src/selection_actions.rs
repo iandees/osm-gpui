@@ -17,6 +17,7 @@ use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::{EditError, EditableLayer, LayerId, LayerManager};
 use osm_gpui::osm::MemberType;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
+use osm_gpui::tags::Tags;
 use osm_gpui::topology::{self, JoinWay};
 use osm_gpui::{tr, tr_count};
 
@@ -1376,8 +1377,8 @@ fn apply_join(
     let ((), ops) = record_edit(layer_id, editable, |rec| {
         rec.set_way_nodes(keep_way, NodeId::from_raw_vec(&plan.nodes))
             .map_err(refused)?;
-        for (key, value) in &plan.tags {
-            if !kept.tags.iter().any(|(k, _)| k == key) {
+        for (key, value) in plan.tags.sorted() {
+            if !kept.tags.contains_key(key) {
                 rec.set_tag(FeatureKind::Way, plan.keep, key, value)
                     .map_err(refused)?;
             }
@@ -1468,10 +1469,16 @@ fn apply_extract(
         for plan in &plans {
             let (lat, lon) = plan.at;
             let id = rec.add_node(lat, lon);
-            for (key, value) in plan.split.moved.iter().chain(&plan.split.copied) {
+            for (key, value) in plan
+                .split
+                .moved
+                .sorted()
+                .into_iter()
+                .chain(plan.split.copied.sorted())
+            {
                 write_tag(rec, FeatureKind::Node, id.get(), key, Some(value.as_str()))?;
             }
-            for (key, _) in &plan.split.moved {
+            for (key, _) in plan.split.moved.sorted() {
                 write_tag(rec, FeatureKind::Way, plan.way.id, key, None)?;
             }
             if plan.split.add_area {
@@ -1655,7 +1662,7 @@ fn copy_source(
     editable: &dyn EditableLayer,
     layer_id: LayerId,
     selection: &[FeatureRef],
-) -> Option<Vec<(String, String)>> {
+) -> Option<Tags> {
     let [feature] = selection else {
         return None;
     };
@@ -1729,8 +1736,8 @@ fn apply_paste_tags(
                 continue;
             };
             let before = rec.mark();
-            for (key, value) in &clipboard {
-                if existing.iter().find(|(k, _)| k == key).map(|(_, v)| v) == Some(value) {
+            for (key, value) in clipboard.sorted() {
+                if existing.get(key) == Some(value.as_str()) {
                     continue;
                 }
                 rec.set_tag(feature.kind, feature.id, key, value)
@@ -2281,8 +2288,8 @@ pub(crate) fn apply_merge(
     let keep_node = NodeId(plan.keep);
     let removed_nodes = NodeId::from_raw_vec(&plan.remove);
     let ((), ops) = record_edit(layer_id, editable, |rec| {
-        for (key, value) in &plan.tags {
-            if !kept.tags.iter().any(|(k, _)| k == key) {
+        for (key, value) in plan.tags.sorted() {
+            if !kept.tags.contains_key(key) {
                 rec.set_tag(FeatureKind::Node, plan.keep, key, value)
                     .map_err(refused)?;
             }
@@ -2567,7 +2574,7 @@ fn apply_new_relation(
     }
     let count = members.len();
     let (id, ops) = record_edit(layer_id, editable, |rec| {
-        rec.create_relation(Vec::new(), members)
+        rec.create_relation(Tags::new(), members)
             .map_err(|_| tr!("action.no_data").to_string())
     })?;
     Ok(ActionOutcome {
@@ -2695,7 +2702,7 @@ fn apply_create_multipolygon(
         .iter()
         .filter(|r| r.role == Role::Outer)
         .collect();
-    let mut relation_tags = vec![("type".to_string(), "multipolygon".to_string())];
+    let mut relation_tags = Tags::from([("type", "multipolygon")]);
     let mut moved_tags: Vec<(FeatureRef, String)> = Vec::new();
     if let [outer] = outers.as_slice() {
         if let [way] = outer.ways.as_slice() {
@@ -2709,10 +2716,10 @@ fn apply_create_multipolygon(
                 .iter()
                 .any(|(k, _)| AREA_TAG_KEYS.contains(&k.as_str()))
             {
-                for (k, v) in tags {
+                for (k, v) in tags.sorted() {
                     if AREA_TAG_KEYS.contains(&k.as_str()) || k == "name" {
                         moved_tags.push((feature, k.clone()));
-                        relation_tags.push((k, v));
+                        relation_tags.insert(k.clone(), v.clone());
                     }
                 }
             }
@@ -3472,7 +3479,7 @@ pub(crate) fn create_parallel_ways(
     let ways = selected_ways_in(editable, layer_id, selection);
 
     // Plan everything first, so a refusal leaves no trace.
-    type Plan = (Vec<LatLon>, Vec<(String, String)>);
+    type Plan = (Vec<LatLon>, Tags);
     let mut plans: Vec<Plan> = Vec::new();
     let mut seen: Vec<WayId> = Vec::new();
     for way in &ways {
@@ -3499,7 +3506,7 @@ pub(crate) fn create_parallel_ways(
             };
             editable.feature_tags(&way_ref).unwrap_or_default()
         } else {
-            Vec::new()
+            Tags::new()
         };
         plans.push((line, tags));
     }
@@ -3559,6 +3566,7 @@ pub(crate) fn create_parallel_ways(
 pub(crate) mod test_support {
     use osm_gpui::ids::{NodeId, RelationId, WayId};
     use osm_gpui::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
+    use osm_gpui::tags::Tags;
     use std::collections::HashMap;
 
     pub(crate) fn network_data() -> OsmData {
@@ -3570,9 +3578,9 @@ pub(crate) mod test_support {
                     lon: -74.0 + id as f64 * 0.001,
                     version: 1,
                     tags: if id == 4 {
-                        HashMap::from([("highway".to_string(), "crossing".to_string())])
+                        Tags::from([("highway", "crossing")])
                     } else {
-                        HashMap::new()
+                        Tags::new()
                     },
                 };
                 (NodeId(id), node)
@@ -3585,10 +3593,7 @@ pub(crate) mod test_support {
                     id: WayId(id),
                     nodes: NodeId::from_raw_vec(nodes),
                     version: 3,
-                    tags: tags
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
-                        .collect(),
+                    tags: Tags::from(tags),
                 },
             )
         };
@@ -3620,7 +3625,7 @@ pub(crate) mod test_support {
                     },
                 ],
                 version: 1,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             }],
             bounds: Vec::new(),
         }
@@ -3629,10 +3634,8 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    static NO_CLIPBOARDS: Clipboards = Clipboards {
-        tags: Vec::new(),
-        features: None,
-    };
+    static NO_CLIPBOARDS: std::sync::LazyLock<Clipboards> =
+        std::sync::LazyLock::new(Clipboards::default);
 
     use super::*;
     use osm_gpui::ids::{NodeId, RelationId, WayId};
@@ -3691,10 +3694,10 @@ mod tests {
         .collect();
         let mut ring = nodes.clone();
         ring.push(nodes[0]);
-        let rect = layer.add_way(ring, vec![("building".into(), "yes".into())]);
+        let rect = layer.add_way(ring, Tags::from([("building", "yes")]));
         let a = layer.add_node(42.37, -71.07);
         let b = layer.add_node(42.371, -71.07);
-        let line = layer.add_way(vec![a, b], vec![]);
+        let line = layer.add_way(vec![a, b], Tags::new());
         let mut layers = LayerManager::new();
         layers.add_layer(Box::new(layer));
         Fixture {
@@ -4302,8 +4305,8 @@ mod tests {
             .editable()
             .feature_tags(&n.feature(FeatureKind::Way, 100))
             .unwrap();
-        assert!(tags.contains(&("name".to_string(), "Main".to_string())));
-        assert!(tags.contains(&("highway".to_string(), "residential".to_string())));
+        assert!(tags.is("name", "Main"));
+        assert!(tags.is("highway", "residential"));
 
         // Marked modified, and the upload diff sees the survivor as changed
         // and the other way as deleted (nodes are untouched).
@@ -4454,7 +4457,7 @@ mod tests {
             .is_empty());
         assert_eq!(
             n.editable().feature_tags(&node4).unwrap(),
-            vec![("highway".to_string(), "crossing".to_string())]
+            Tags::from([("highway", "crossing")])
         );
 
         // One new node and one changed way show up in the upload diff.
@@ -4495,12 +4498,10 @@ mod tests {
                 .unwrap();
         }
         fn tags_of(&self, kind: FeatureKind, id: i64) -> Vec<(String, String)> {
-            let mut tags = self
-                .editable()
+            self.editable()
                 .feature_tags(&self.feature(kind, id))
-                .unwrap();
-            tags.sort();
-            tags
+                .unwrap()
+                .to_sorted_vec()
         }
     }
 
@@ -4659,13 +4660,13 @@ mod tests {
     #[test]
     fn copy_remembers_the_tags_of_exactly_one_tagged_feature() {
         let mut n = net();
-        assert_eq!(n.clipboards.tags, vec![]);
+        assert_eq!(n.clipboards.tags, Tags::new());
         let out = n.run("copy_tags", &n.ways(&[101])).unwrap();
         assert_eq!(out.status, "Copied 2 tags");
         assert!(out.undo.is_none() && out.select.is_none() && !out.clear_selection);
         assert_eq!(
             n.clipboards.tags,
-            pairs(&[("highway", "residential"), ("name", "Main")])
+            Tags::from(&[("highway", "residential"), ("name", "Main")])
         );
         // Copying changes no data.
         assert!(!n.layer().is_modified());
@@ -4679,7 +4680,7 @@ mod tests {
         assert!(n.run("copy_tags", &n.ways(&[100, 101])).is_err());
         assert!(n.run("copy_tags", &n.nodes(&[1])).is_err());
         assert!(n.run("copy_tags", &[]).is_err());
-        assert_eq!(n.clipboards.tags, pairs(&[("highway", "footway")]));
+        assert_eq!(n.clipboards.tags, Tags::from(&[("highway", "footway")]));
         assert!(n.applicable(&n.ways(&[101])).contains(&"copy_tags"));
         assert!(!n.applicable(&n.ways(&[100, 101])).contains(&"copy_tags"));
         assert!(!n.applicable(&n.nodes(&[1])).contains(&"copy_tags"));
@@ -4954,7 +4955,7 @@ mod tests {
         OsmRelation {
             id: RelationId(900),
             version: 1,
-            tags: HashMap::from([("type".to_string(), kind.to_string())]),
+            tags: Tags::from([("type", kind)]),
             members: members
                 .iter()
                 .map(|&(member_type, reference, role)| OsmMember {
@@ -5693,7 +5694,7 @@ mod tests {
             Some(vec![NodeId(1), NodeId(2), NodeId(3)])
         );
         let tags = n.editable().feature_tags(&select[0]).unwrap();
-        assert!(tags.contains(&("highway".to_string(), "residential".to_string())));
+        assert!(tags.is("highway", "residential"));
         // One undo step: nodes first, then the way.
         assert_eq!(shape(edit_of(&out).1), ["put", "put", "put", "put"]);
         let (_, ops) = edit_of(&out);

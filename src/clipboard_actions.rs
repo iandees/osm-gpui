@@ -18,6 +18,7 @@ use osm_gpui::{settings_store, tr, tr_count};
 use crate::selection_actions::ActionEnv;
 use crate::undo::UndoableAction;
 use crate::MapViewer;
+use osm_gpui::tags::Tags;
 
 /// The most objects whose OSM XML is also put on the system clipboard; a
 /// bigger copy stays app-internal, as building the text would stall the UI.
@@ -28,8 +29,8 @@ const MAX_OBJECTS_AS_TEXT: usize = 20_000;
 /// (`MapViewer::clipboards`) and reach the actions through `ActionEnv`.
 #[derive(Default)]
 pub(crate) struct Clipboards {
-    /// The tags Copy Tags took, sorted by key.
-    pub tags: Vec<(String, String)>,
+    /// The tags Copy Tags took.
+    pub tags: Tags,
     /// The features Copy took.
     pub features: Option<FeatureClipboard>,
 }
@@ -40,9 +41,8 @@ impl Clipboards {
         self.features.as_ref().is_some_and(|clip| !clip.is_empty())
     }
 
-    /// Replace the tag clipboard with `tags`, sorted by key.
-    pub(crate) fn set_tags(&mut self, mut tags: Vec<(String, String)>) {
-        tags.sort();
+    /// Replace the tag clipboard with `tags`.
+    pub(crate) fn set_tags(&mut self, tags: Tags) {
         self.tags = tags;
     }
 }

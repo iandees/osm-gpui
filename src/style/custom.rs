@@ -163,6 +163,7 @@ pub fn add_location(styles: &mut Vec<String>, location: &str) -> bool {
 mod tests {
     use super::*;
     use crate::http::fake::{ok, transport_err, FakeClient};
+    use crate::tags::Tags;
     use std::path::PathBuf;
 
     const SHEET: &str = "way[highway=residential] { color: #ff0000; width: 7; }";
@@ -289,11 +290,8 @@ mod tests {
         assert!(!add_location(&mut styles, "builtin:id"));
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]

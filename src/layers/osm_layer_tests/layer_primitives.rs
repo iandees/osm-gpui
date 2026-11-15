@@ -10,6 +10,7 @@ use crate::osm::{MemberType, OsmData, OsmMember, OsmNode, OsmRelation, OsmWay};
 use crate::osm_api::ServerElement;
 use crate::osm_upload::UploadResult;
 use crate::selection::FeatureKind::{Node, Relation, Way};
+use crate::tags::Tags;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -21,14 +22,12 @@ fn node(id: i64, lat: f64, lon: f64, version: i32) -> OsmNode {
         lat,
         lon,
         version,
-        tags: HashMap::new(),
+        tags: Tags::new(),
     }
 }
 
-fn tags(list: &[(&str, &str)]) -> HashMap<String, String> {
-    list.iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
+fn tags(list: &[(&str, &str)]) -> Tags {
+    Tags::from(list)
 }
 
 fn way_member(reference: i64) -> OsmMember {
@@ -136,10 +135,10 @@ fn has_pending_edit_follows_each_kind_of_edit_and_clears_when_the_edit_is_undone
 
     let created = l.add_node(40.2, -74.2);
     assert!(l.has_pending_edit(Node, created.get()), "a created node");
-    let way = l.add_way(vec![created, NodeId(1)], vec![]);
+    let way = l.add_way(vec![created, NodeId(1)], Tags::new());
     assert!(l.has_pending_edit(Way, way.get()), "a created way");
     let rel = l
-        .create_relation(vec![], vec![way_member(way.get())])
+        .create_relation(Tags::new(), vec![way_member(way.get())])
         .unwrap();
     assert!(
         l.has_pending_edit(Relation, rel.get()),
@@ -573,15 +572,9 @@ fn edited_layer() -> OsmLayer {
     l.delete_relation(RelationId(51)).unwrap();
     l.delete_feature(Node, 4).unwrap();
     let n = l.add_node(40.2, -74.2);
-    let w = l.add_way(
-        vec![n, NodeId(3)],
-        vec![("highway".to_string(), "path".to_string())],
-    );
-    l.create_relation(
-        vec![("type".to_string(), "route".to_string())],
-        vec![way_member(w.get())],
-    )
-    .unwrap();
+    let w = l.add_way(vec![n, NodeId(3)], Tags::from([("highway", "path")]));
+    l.create_relation(Tags::from([("type", "route")]), vec![way_member(w.get())])
+        .unwrap();
     l
 }
 

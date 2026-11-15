@@ -3,6 +3,7 @@
 use gpui::{point, px, Pixels, Point};
 
 use crate::layers::LayerId;
+use crate::tags::Tags;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FeatureKind {
@@ -36,8 +37,8 @@ pub struct HitCandidate {
 pub struct DeletedFeatureSnapshot {
     pub kind: FeatureKind,
     pub id: i64,
-    /// The feature's tags at the time of deletion, as (key, value) pairs.
-    pub tags: Vec<(String, String)>,
+    /// The feature's tags at the time of deletion.
+    pub tags: Tags,
     /// For a way: its ordered member node ids. Empty/unused for a node.
     pub way_nodes: Vec<crate::ids::NodeId>,
     /// For a node: its (lat, lon) at the time of deletion. `None` for a way.
@@ -290,7 +291,7 @@ pub enum TagValue {
 /// state yields `Multiple(distinct_count)`. A feature missing the key counts
 /// as its own distinct state, so a key present on some features and absent
 /// on others is `Multiple`, never `Single`. Sorted by key.
-pub fn aggregate_tags(per_feature: &[Vec<(String, String)>]) -> Vec<(String, TagValue)> {
+pub fn aggregate_tags(per_feature: &[Tags]) -> Vec<(String, TagValue)> {
     use std::collections::BTreeSet;
 
     let mut keys: BTreeSet<String> = BTreeSet::new();
@@ -304,7 +305,7 @@ pub fn aggregate_tags(per_feature: &[Vec<(String, String)>]) -> Vec<(String, Tag
         .map(|k| {
             let states: BTreeSet<Option<String>> = per_feature
                 .iter()
-                .map(|tags| tags.iter().find(|(tk, _)| *tk == k).map(|(_, v)| v.clone()))
+                .map(|tags| tags.get(&k).map(str::to_string))
                 .collect();
 
             let value = if states.len() == 1 {
@@ -322,7 +323,7 @@ pub fn aggregate_tags(per_feature: &[Vec<(String, String)>]) -> Vec<(String, Tag
 
 /// Computes the tag mutations to apply across `features` for a tag-edit
 /// dialog submission. Each feature's current tags are supplied as
-/// `(FeatureRef, Vec<(String, String)>)`. Returns one entry per feature per
+/// `(FeatureRef, Tags)`. Returns one entry per feature per
 /// key actually touched, as `(feature, key, before, after)` (`before`/
 /// `after` are `None` when the key is absent/removed); entries where
 /// `before == after` are omitted since they're no-ops.
@@ -341,7 +342,7 @@ pub fn aggregate_tags(per_feature: &[Vec<(String, String)>]) -> Vec<(String, Tag
 ///   feature, unless `new_value == original_value` (untouched), in which
 ///   case each feature keeps its own current value (a no-op, omitted).
 pub fn compute_tag_edit_entries(
-    features: &[(FeatureRef, Vec<(String, String)>)],
+    features: &[(FeatureRef, Tags)],
     original_key: &str,
     original_value: &str,
     new_key: &str,
@@ -352,7 +353,7 @@ pub fn compute_tag_edit_entries(
     let mut out = Vec::new();
 
     for (feature, tags) in features {
-        let current = |key: &str| tags.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let current = |key: &str| tags.get(key).map(str::to_string);
 
         if is_add {
             let before = current(new_key);
@@ -580,7 +581,7 @@ mod tests {
 
     #[test]
     fn aggregate_single_feature_single_value() {
-        let per_feature = vec![vec![("highway".to_string(), "residential".to_string())]];
+        let per_feature = vec![Tags::from([("highway", "residential")])];
         let result = aggregate_tags(&per_feature);
         assert_eq!(
             result,
@@ -594,9 +595,9 @@ mod tests {
     #[test]
     fn aggregate_multiple_distinct_values_counts_distinct_only() {
         let per_feature = vec![
-            vec![("name".to_string(), "Main St".to_string())],
-            vec![("name".to_string(), "Elm St".to_string())],
-            vec![("name".to_string(), "Main St".to_string())], // duplicate value
+            Tags::from([("name", "Main St")]),
+            Tags::from([("name", "Elm St")]),
+            Tags::from([("name", "Main St")]), // duplicate value
         ];
         let result = aggregate_tags(&per_feature);
         assert_eq!(result, vec![("name".to_string(), TagValue::Multiple(2))]);
@@ -605,8 +606,8 @@ mod tests {
     #[test]
     fn aggregate_missing_key_on_some_features_counts_as_distinct_value() {
         let per_feature = vec![
-            vec![("name".to_string(), "Main St".to_string())],
-            vec![], // no tags at all on this feature
+            Tags::from([("name", "Main St")]),
+            Tags::new(), // no tags at all on this feature
         ];
         let result = aggregate_tags(&per_feature);
         assert_eq!(result, vec![("name".to_string(), TagValue::Multiple(2))]);
@@ -618,8 +619,8 @@ mod tests {
         // "yes" — the untagged node's absence of the key counts as its own
         // distinct state, so this is Multiple(2), never Single.
         let per_feature = vec![
-            vec![], // untagged node
-            vec![("building".to_string(), "yes".to_string())],
+            Tags::new(), // untagged node
+            Tags::from([("building", "yes")]),
         ];
         let result = aggregate_tags(&per_feature);
         assert_eq!(
@@ -631,11 +632,8 @@ mod tests {
     #[test]
     fn aggregate_union_of_keys_across_features() {
         let per_feature = vec![
-            vec![
-                ("highway".to_string(), "residential".to_string()),
-                ("surface".to_string(), "paved".to_string()),
-            ],
-            vec![("highway".to_string(), "residential".to_string())],
+            Tags::from([("highway", "residential"), ("surface", "paved")]),
+            Tags::from([("highway", "residential")]),
         ];
         let result = aggregate_tags(&per_feature);
         assert_eq!(
@@ -656,11 +654,8 @@ mod tests {
         assert!(aggregate_tags(&[]).is_empty());
     }
 
-    fn tags(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        Tags::from(pairs)
     }
 
     #[test]

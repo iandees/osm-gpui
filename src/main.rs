@@ -96,6 +96,7 @@ use osm_gpui::osm_upload;
 use osm_gpui::persist;
 use osm_gpui::script::{self, runner::Runner};
 use osm_gpui::settings_store;
+use osm_gpui::tags::Tags;
 use osm_gpui::tile_cache::TileCache;
 use osm_gpui::tiles;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
@@ -302,8 +303,6 @@ enum SnapTarget {
     },
 }
 
-type Tags = Vec<(String, String)>;
-
 /// Tags used to classify way `way_id` as a snap target: its own, or, for a
 /// way with nothing recognisable (an untagged multipolygon member), those of
 /// the first classifiable relation that contains it.
@@ -326,7 +325,7 @@ fn snap_target_tags(
         .relations_containing_way(way_id)
         .into_iter()
         .filter_map(|r| editable.relation(r))
-        .map(|r| r.tags.into_iter().collect::<Tags>())
+        .map(|r| r.tags)
         .find(|t| osm_gpui::snap::classify(t).is_some())
         .unwrap_or(tags)
 }
@@ -369,7 +368,7 @@ fn snap_way_ok(
             return false;
         }
     }
-    let refs: Vec<&[(String, String)]> = sources.iter().map(|t| t.as_slice()).collect();
+    let refs: Vec<&Tags> = sources.iter().collect();
     osm_gpui::snap::may_snap(&refs, &snap_target_tags(editable, layer_id, way_id))
 }
 
@@ -385,7 +384,7 @@ fn snap_node_ok(
     if node == Some(target) {
         return false;
     }
-    let refs: Vec<&[(String, String)]> = sources.iter().map(|t| t.as_slice()).collect();
+    let refs: Vec<&Tags> = sources.iter().collect();
     editable
         .ways_using_node(target)
         .into_iter()
@@ -1546,12 +1545,12 @@ impl MapViewer {
     }
 
     /// Snapshot each of `features`' tags from its owning layer, as
-    /// `(FeatureRef, Vec<(String, String)>)` — the shape
+    /// `(FeatureRef, Tags)` — the shape
     /// `compute_tag_edit_entries` expects.
     fn feature_tag_snapshots(
         &self,
         features: &[osm_gpui::selection::FeatureRef],
-    ) -> Vec<(osm_gpui::selection::FeatureRef, Vec<(String, String)>)> {
+    ) -> Vec<(osm_gpui::selection::FeatureRef, Tags)> {
         features
             .iter()
             .filter_map(|sel| {
@@ -1566,9 +1565,7 @@ impl MapViewer {
 
     /// Snapshot every currently-selected feature's tags — see
     /// `feature_tag_snapshots`.
-    fn selected_feature_tag_snapshots(
-        &self,
-    ) -> Vec<(osm_gpui::selection::FeatureRef, Vec<(String, String)>)> {
+    fn selected_feature_tag_snapshots(&self) -> Vec<(osm_gpui::selection::FeatureRef, Tags)> {
         self.feature_tag_snapshots(&self.selected)
     }
 
@@ -2978,7 +2975,7 @@ impl MapViewer {
     fn apply_preset(
         &mut self,
         target: &osm_gpui::selection::FeatureRef,
-        preset_tags: &std::collections::HashMap<String, String>,
+        preset_tags: &Tags,
         preset_geometry: &[osm_gpui::presets::Geometry],
     ) {
         if self.refuse_edit_during_upload() {
@@ -2994,7 +2991,6 @@ impl MapViewer {
         let Some(existing) = editable.feature_tags(target) else {
             return;
         };
-        let existing: std::collections::HashMap<String, String> = existing.into_iter().collect();
         let closed = editable.feature_is_closed_way(target);
         let entries: Vec<_> = osm_gpui::presets::preset_tag_changes(
             preset_tags,
@@ -3005,7 +3001,7 @@ impl MapViewer {
         )
         .into_iter()
         .map(|(key, after)| {
-            let before = existing.get(&key).cloned();
+            let before = existing.get(&key).map(str::to_string);
             (*target, key, before, after)
         })
         .collect();
@@ -3022,11 +3018,7 @@ impl MapViewer {
     /// Apply `preset_tags` to `target` as one `SetTags` undo step (none if
     /// nothing changes). Existing tags the preset doesn't mention (e.g.
     /// `addr:*`) are left untouched: this only adds or overwrites keys.
-    fn apply_nsi_preset(
-        &mut self,
-        target: &osm_gpui::selection::FeatureRef,
-        preset_tags: std::collections::HashMap<String, String>,
-    ) {
+    fn apply_nsi_preset(&mut self, target: &osm_gpui::selection::FeatureRef, preset_tags: Tags) {
         let values = preset_tags.into_iter().map(|(k, v)| (k, Some(v))).collect();
         self.apply_tag_values(target, values);
     }
@@ -3078,10 +3070,7 @@ impl MapViewer {
             .into_iter()
             .filter_map(|key| {
                 let after = preset_tags.get(key).cloned().flatten();
-                let before = existing
-                    .iter()
-                    .find(|(k, _)| k == key)
-                    .map(|(_, v)| v.clone());
+                let before = existing.get(key).map(str::to_string);
                 if before == after {
                     return None;
                 }

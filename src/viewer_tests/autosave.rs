@@ -14,6 +14,7 @@ use osm_gpui::layers::LayerId;
 use osm_gpui::layers::MapLayer;
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
 use osm_gpui::selection::FeatureKind;
+use osm_gpui::tags::Tags;
 use osm_gpui::viewport::Viewport;
 use osm_gpui::{auth, autosave, custom_imagery_store, persist, settings_store};
 use std::collections::HashMap;
@@ -36,7 +37,7 @@ fn fixture() -> OsmData {
         lat: 40.0,
         lon,
         version: 2,
-        tags: HashMap::new(),
+        tags: Tags::new(),
     };
     OsmData {
         nodes: HashMap::from([(NodeId(1), node(1, -74.001)), (NodeId(2), node(2, -73.999))]),
@@ -46,7 +47,7 @@ fn fixture() -> OsmData {
                 id: WayId(10),
                 nodes: vec![NodeId(1), NodeId(2)],
                 version: 3,
-                tags: HashMap::new(),
+                tags: Tags::new(),
             },
         )]),
         relations: Vec::new(),

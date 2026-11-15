@@ -10,6 +10,7 @@ use gpui_component::{
     label::Label,
     ActiveTheme, IconName, Sizable,
 };
+use osm_gpui::tags::Tags;
 
 use crate::MapViewer;
 use osm_gpui::tr;
@@ -89,7 +90,7 @@ impl MapViewer {
     fn render_one_field(
         &mut self,
         field: &osm_gpui::fields::Field,
-        tags: &std::collections::HashMap<String, String>,
+        tags: &Tags,
         feature: osm_gpui::selection::FeatureRef,
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
@@ -101,7 +102,7 @@ impl MapViewer {
         use osm_gpui::fields::Widget;
         match field.widget() {
             Widget::Text => {
-                let current = tags.get(&field.key).cloned().unwrap_or_default();
+                let current = tags.get(&field.key).map(str::to_string).unwrap_or_default();
                 let input = self.text_field_input(
                     &field.id,
                     &current,
@@ -124,7 +125,7 @@ impl MapViewer {
                     .into_any_element()
             }
             Widget::Check => {
-                let current = tags.get(&field.key).map(String::as_str) == Some("yes");
+                let current = tags.get(&field.key) == Some("yes");
                 let field_key = field.key.clone();
                 let element_id: gpui::ElementId =
                     gpui::SharedString::from(format!("field-check-{}", field.id)).into();
@@ -155,7 +156,7 @@ impl MapViewer {
                     .into_any_element()
             }
             Widget::Radio => {
-                let current_value = tags.get(&field.key).cloned();
+                let current_value = tags.get(&field.key).map(str::to_string);
                 let field_key = field.key.clone();
                 let options = field.options.clone();
                 let selected_index = options
@@ -194,7 +195,7 @@ impl MapViewer {
                     .into_any_element()
             }
             Widget::Combo => {
-                let current_value = tags.get(&field.key).cloned();
+                let current_value = tags.get(&field.key).map(str::to_string);
                 let is_open =
                     self.fields_panel.fields_open_combo.as_deref() == Some(field.id.as_str());
                 // A value the options don't list (a custom one) is shown as
@@ -734,13 +735,12 @@ impl MapViewer {
         feat: &osm_gpui::selection::FeatureRef,
     ) -> Option<(
         &'static osm_gpui::presets::Preset,
-        std::collections::HashMap<String, String>,
+        Tags,
         osm_gpui::presets::Geometry,
     )> {
         let layer = self.layer_manager.find_layer(feat.layer_id)?;
         let editable = layer.as_editable()?;
-        let tags: std::collections::HashMap<String, String> =
-            editable.feature_tags(feat)?.into_iter().collect();
+        let tags = editable.feature_tags(feat)?;
         let geometry = editable.feature_geometry(feat, osm_gpui::presets::area_keys())?;
         let preset = osm_gpui::catalogue::Catalogue::bundled().match_preset(&tags, geometry)?;
         Some((preset, tags, geometry))

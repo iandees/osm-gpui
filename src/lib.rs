@@ -70,6 +70,7 @@ pub mod style;
 pub mod svg_normalize;
 pub mod tag_suggest;
 pub mod taginfo;
+pub mod tags;
 pub mod tile_cache;
 pub mod tiles;
 pub mod topology;

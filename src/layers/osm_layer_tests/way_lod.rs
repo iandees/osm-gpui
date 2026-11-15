@@ -11,13 +11,14 @@ use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditableLayer, LayerId};
 use crate::osm::{OsmData, OsmNode, OsmWay};
+use crate::tags::Tags;
 use crate::viewport::Viewport;
 use gpui::{point, px, size, Bounds, Pixels};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-fn tags() -> HashMap<String, String> {
-    HashMap::new()
+fn tags() -> Tags {
+    Tags::new()
 }
 
 fn node(id: i64, lat: f64, lon: f64) -> OsmNode {
@@ -233,9 +234,9 @@ fn two_way_layer(css: &str) -> OsmLayer {
     let l = layer();
     let mut data = (**l.store.osm_data.as_ref().unwrap()).clone();
     let mut lo = way(10, vec![1, 2, 3, 4, 5]);
-    lo.tags.insert("highway".into(), "lo".into());
+    lo.tags.insert("highway", "lo");
     let mut hi = way(11, vec![1, 2, 3, 4, 5]);
-    hi.tags.insert("highway".into(), "hi".into());
+    hi.tags.insert("highway", "hi");
     data.ways = HashMap::from([(WayId(10), lo), (WayId(11), hi)]);
     let mut l = OsmLayer::new_with_data(LayerId(1), "t", Arc::new(data));
     l.set_stylesheet(Arc::new(crate::style::Stylesheet::parse(css).unwrap()));
@@ -390,7 +391,7 @@ fn adding_and_removing_ways_updates_the_scene() {
     let a = l.add_node(LAT + 0.0002, LON);
     let b = l.add_node(LAT + 0.0002, LON + 0.001);
     let c = l.add_node(LAT + 0.0004, LON + 0.002);
-    let id = l.add_way(vec![a, b, c], Vec::new());
+    let id = l.add_way(vec![a, b, c], Tags::new());
     assert_same_as_fresh(&l);
     assert!(scene_vertices(&l, 17.0) > before);
     l.remove_way(id).unwrap();

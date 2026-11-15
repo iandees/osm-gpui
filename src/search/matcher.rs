@@ -9,6 +9,7 @@ use super::{Expr, Pat, Query, ValueTest};
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::osm::{MemberType, OsmData, OsmNode, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
+use crate::tags::Tags;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
@@ -60,7 +61,7 @@ impl<'a> Obj<'a> {
         }
     }
 
-    fn tags(&self) -> &'a HashMap<String, String> {
+    fn tags(&self) -> &'a Tags {
         match self {
             Obj::Node(n) => &n.tags,
             Obj::Way(w) => &w.tags,
