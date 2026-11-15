@@ -49,6 +49,8 @@ menu:
     custom_add: "Add…"
     # Opens a browser for ArcGIS Server (Esri) map and image services.
     esri_add: "Add Esri Layer…"
+    # Opens a dialog for a PMTiles vector-tile archive (an address or a file).
+    pmtiles_add: "Add PMTiles Vector Layer…"
     osm_carto: "OpenStreetMap Carto"
     loading: "(Loading imagery index…)"
     unavailable: "(Imagery index unavailable)"
@@ -1087,6 +1089,18 @@ dialog:
       min_zoom_invalid: "Min zoom must be a whole number from 0 to 24."
       max_zoom_invalid: "Max zoom must be a whole number from 0 to 24."
       min_zoom_above_max: "Min zoom must be ≤ max zoom."
+  # Adds a vector-tile overlay from a PMTiles archive. "PMTiles" and "MVT" are
+  # format names.
+  pmtiles:
+    title: "Add PMTiles Vector Layer"
+    source: "Archive address or file"
+    source_placeholder: "https://…/tiles.pmtiles or /path/to/tiles.pmtiles"
+    name: "Name (optional)"
+    name_placeholder: "Named after the file"
+    hint: "Shows a vector-tile (MVT) PMTiles archive as an overlay, drawn in a colour per layer. A web address must allow range requests."
+    confirm: "Add"
+    error:
+      source_empty: "Enter the address of a PMTiles archive, or the path of a file."
   # Browser for ArcGIS Server (Esri) REST services. "MapServer" and
   # "ImageServer" are Esri product terms.
   esri:
@@ -1339,6 +1353,26 @@ validator:
     tag_whitespace: "Tag \"%{key}\" has leading or trailing whitespace"
     fixme: "Has a note to fix: %{key}=%{value}"
     deprecated_tag: "Deprecated tag %{old}; use %{new}"
+# Status-bar messages of PMTiles vector layers.
+pmtiles:
+  state:
+    opening: "Opening %{name}…"
+    open_failed: "Could not open %{name}: %{detail}"
+    loading: "Loading %{name} tiles…"
+    loaded: "%{name}: tiles loaded"
+    tile_failed: "%{name}: a tile could not be loaded (%{detail})"
+  # The side-panel section for a clicked feature.
+  panel:
+    title: "Map feature"
+    close: "Close feature"
+    source_layer: "Layer: %{layer}"
+    id: "ID: %{id}"
+    no_attributes: "This feature has no attributes."
+    geometry:
+      point: "Point"
+      line: "Line"
+      polygon: "Area"
+
 street_imagery:
   menu:
     mapillary: "Show Mapillary Photos"

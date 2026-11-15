@@ -47,6 +47,7 @@ use modes::AddProgress;
 #[cfg(test)]
 use modes::{BuildingReference, ExtrudeDrag, ExtrudeStyle};
 mod notes_ui;
+mod pmtiles_ui;
 mod pointer_state;
 #[cfg(test)]
 mod reference_tests;
@@ -71,7 +72,8 @@ mod welcome;
 use crate::menu::{
     add_imagery_layer, add_osm_carto, add_saved_custom_imagery, download_from_osm,
     no_op_imagery_info, open_custom_imagery_dialog, open_esri_layer_dialog, open_osm_file,
-    open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
+    open_pmtiles_dialog, open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
+    validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
@@ -800,6 +802,7 @@ struct MapViewer {
     gps_traces: gps_traces_ui::GpsTracesState,
     /// Street-level photos from Mapillary and Fotoshi (see `street_imagery_ui`).
     imagery: street_imagery_ui::ImageryState,
+    pmtiles: pmtiles_ui::PmtilesState,
 }
 
 /// An open selection-actions context menu: the `PopupMenu` entity, where it
@@ -1005,6 +1008,7 @@ impl MapViewer {
             notes: Default::default(),
             gps_traces: Default::default(),
             imagery: Default::default(),
+            pmtiles: Default::default(),
         }
     }
 
@@ -3151,6 +3155,7 @@ impl MapViewer {
         [
             open_modal(&self.dialogs.custom_imagery_dialog, cx),
             open_modal(&self.dialogs.esri_layer_dialog, cx),
+            open_modal(&self.dialogs.pmtiles_dialog, cx),
             open_modal(&self.dialogs.quit_confirm_dialog, cx),
             open_modal(&self.dialogs.delete_layer_dialog, cx),
             open_modal(&self.dialogs.restore_dialog, cx),
@@ -3461,6 +3466,11 @@ impl MapViewer {
             cx.notify();
             return;
         }
+        // The end of a pan repaints in full detail (vector layers draw coarser
+        // while the map is dragged).
+        if std::mem::take(&mut self.viewport.is_dragging) {
+            cx.notify();
+        }
         self.viewport.handle_mouse_up();
 
         if self.offset_adjust_mouse_up() {
@@ -3697,17 +3707,24 @@ impl MapViewer {
         }
         match self.layer_manager.hit_test_point(&self.viewport, screen_pt) {
             Some((_, LayerHit::Note(id))) => {
+                self.close_vector_feature();
                 self.notes.pending_open = Some(id);
                 true
             }
             Some((_, LayerHit::Photo { photo, .. })) => {
+                self.close_vector_feature();
                 self.imagery.pending_open = Some(photo);
+                true
+            }
+            Some((layer, LayerHit::VectorFeature(info))) => {
+                self.select_vector_feature(layer, info);
                 true
             }
             // Reference features only describe themselves when no OSM
             // feature is under the click (`select::click`).
             Some((_, LayerHit::ReferenceFeature(_))) | None => {
                 self.close_photo_panel();
+                self.close_vector_feature();
                 false
             }
         }
@@ -5737,6 +5754,7 @@ impl Render for MapViewer {
         self.check_for_pending_restore(window, cx);
         self.notes_frame(window, cx);
         self.imagery_frame(cx);
+        self.pmtiles_frame(cx);
         self.maybe_rebuild_imagery_menu(cx);
         // Re-run the validator (debounced) if the edits changed since the
         // Validation section was last filled.
@@ -6229,6 +6247,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_validate))
             .on_action(cx.listener(Self::on_open_custom_imagery_dialog))
             .on_action(cx.listener(Self::on_open_esri_layer_dialog))
+            .on_action(cx.listener(Self::on_open_pmtiles_dialog))
             .on_action(cx.listener(Self::on_show_about))
             .children(self.open_modals(cx).into_iter().map(|m| m.view))
             .children(self.render_photo_fullscreen(window, cx))
@@ -6401,6 +6420,7 @@ fn main() {
         cx.on_action(no_op_imagery_info);
         cx.on_action(open_custom_imagery_dialog);
         cx.on_action(open_esri_layer_dialog);
+        cx.on_action(open_pmtiles_dialog);
         cx.on_action(open_settings);
         cx.on_action(upload_to_osm);
         cx.on_action(validate);

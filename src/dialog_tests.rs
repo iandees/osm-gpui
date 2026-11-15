@@ -37,6 +37,10 @@ fn openers() -> Vec<(&'static str, Opener)> {
             v.dialogs.esri_layer_dialog =
                 Some(cx.new(|cx| ui::esri_layer_dialog::EsriLayerDialog::new(http, w, cx)));
         }),
+        ("pmtiles", |v, w, cx| {
+            v.dialogs.pmtiles_dialog =
+                Some(cx.new(|cx| ui::pmtiles_dialog::PmtilesDialog::new(w, cx)));
+        }),
         ("quit confirm", |v, w, cx| {
             v.dialogs.quit_confirm_dialog =
                 Some(cx.new(|cx| ui::quit_confirm_dialog::QuitConfirmDialog::new(w, cx)));
@@ -239,6 +243,12 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
         |w, cx| esri_layer_dialog::EsriLayerDialog::new(osm_gpui::http::default_client(), w, cx),
         esri_layer_dialog::DialogEvent,
         esri_layer_dialog::DialogEvent::Cancelled
+    );
+    closes_on_escape!(
+        cx,
+        pmtiles_dialog::PmtilesDialog::new,
+        pmtiles_dialog::DialogEvent,
+        pmtiles_dialog::DialogEvent::Cancelled
     );
     closes_on_escape!(
         cx,

@@ -4618,6 +4618,7 @@ dependencies = [
  "base64",
  "dirs",
  "earcutr",
+ "flate2",
  "futures",
  "geo-types",
  "gpui",

@@ -21,6 +21,7 @@ pub mod reference_layer;
 pub mod resolve;
 pub mod street_imagery_layer;
 pub mod tile_layer;
+pub mod vector_tile_layer;
 pub mod way_stroke;
 
 /// Wash laid over the part of the map that was not downloaded (RGBA): a deep
@@ -151,6 +152,8 @@ pub enum LayerKind {
     /// GPX, GeoJSON and downloaded GPS traces.
     Reference,
     StreetImagery,
+    /// Tiles of a vector-tile archive (PMTiles).
+    VectorTile,
 }
 
 /// What a layer found under a click, in the layer's own terms.
@@ -166,6 +169,8 @@ pub enum LayerHit {
     },
     /// A GPX/GeoJSON/trace feature; its index in the layer's data.
     ReferenceFeature(usize),
+    /// A feature of a vector-tile layer.
+    VectorFeature(std::sync::Arc<crate::layers::vector_tile_layer::VectorFeatureInfo>),
 }
 
 impl LayerHit {
@@ -177,6 +182,7 @@ impl LayerHit {
             LayerHit::Note(_) => 0,
             LayerHit::Photo { .. } => 1,
             LayerHit::ReferenceFeature(_) => 2,
+            LayerHit::VectorFeature(_) => 3,
         }
     }
 
@@ -184,7 +190,7 @@ impl LayerHit {
     fn distance_px(&self) -> f32 {
         match self {
             LayerHit::Photo { distance_px, .. } => *distance_px,
-            LayerHit::Note(_) | LayerHit::ReferenceFeature(_) => 0.0,
+            LayerHit::Note(_) | LayerHit::ReferenceFeature(_) | LayerHit::VectorFeature(_) => 0.0,
         }
     }
 }
