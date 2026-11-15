@@ -240,6 +240,15 @@ fn area_tier(tags: &Tags) -> i32 {
     280
 }
 
+/// Whether an area's label is set in italic: water features, the
+/// cartographic convention (the same classes as the top area tier).
+pub fn area_label_italic(tags: &Tags) -> bool {
+    let is = |k: &str, vs: &[&str]| tags.get(k).is_some_and(|v| vs.contains(&v));
+    is("natural", &["water", "bay", "strait"])
+        || is("waterway", &["riverbank", "dock"])
+        || is("landuse", &["reservoir", "basin"])
+}
+
 fn street_tier(tags: &Tags) -> i32 {
     match tags.get("highway") {
         Some("motorway" | "trunk") => 90,
@@ -957,7 +966,7 @@ pub fn resolve_node_label_with(
 /// An LRU of shaped lines keyed by text and size.
 #[derive(Default)]
 pub struct ShapeCache {
-    map: HashMap<(SharedString, u32), (Arc<ShapedLine>, u64)>,
+    map: HashMap<(SharedString, u32, bool), (Arc<ShapedLine>, u64)>,
     tick: u64,
     pub misses: usize,
 }
@@ -973,14 +982,28 @@ impl ShapeCache {
 
     /// The shaped line for `text` at `font_px`, shaping it on a miss.
     pub fn get(&mut self, window: &Window, text: &SharedString, font_px: f32) -> Arc<ShapedLine> {
+        self.get_styled(window, text, font_px, false)
+    }
+
+    /// Like [`ShapeCache::get`], in the italic face when `italic`.
+    pub fn get_styled(
+        &mut self,
+        window: &Window,
+        text: &SharedString,
+        font_px: f32,
+        italic: bool,
+    ) -> Arc<ShapedLine> {
         self.tick += 1;
-        let key = (text.clone(), (font_px * 10.0).round() as u32);
+        let key = (text.clone(), (font_px * 10.0).round() as u32, italic);
         if let Some((line, used)) = self.map.get_mut(&key) {
             *used = self.tick;
             return line.clone();
         }
         self.misses += 1;
-        let font = window.text_style().font();
+        let mut font = window.text_style().font();
+        if italic {
+            font = font.italic();
+        }
         let run = gpui::TextRun {
             len: text.len(),
             font,
@@ -1962,6 +1985,26 @@ mod tests {
             slot: 0,
             priority: priority.into(),
             rects: vec![Rect::new(x0, y - 6.0, x1, y + 6.0)],
+        }
+    }
+
+    #[test]
+    fn water_areas_are_italic_and_others_are_not() {
+        for t in [
+            &[("natural", "water")][..],
+            &[("natural", "bay")],
+            &[("waterway", "riverbank")],
+            &[("landuse", "reservoir")],
+        ] {
+            assert!(area_label_italic(&tags(t)), "{t:?}");
+        }
+        for t in [
+            &[("natural", "wood")][..],
+            &[("leisure", "park")],
+            &[("building", "yes")],
+            &[],
+        ] {
+            assert!(!area_label_italic(&tags(t)), "{t:?}");
         }
     }
 

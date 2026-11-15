@@ -34,7 +34,9 @@ use gpui::SharedString;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::layers::labels::{label_text, Key, LabelClass, LabelPriority, TextLook, LABEL_MIN_ZOOM};
+use crate::layers::labels::{
+    area_label_italic, label_text, Key, LabelClass, LabelPriority, TextLook, LABEL_MIN_ZOOM,
+};
 
 /// Smallest font an area label is shrunk to before it is dropped.
 pub const MIN_AREA_FONT_PX: f32 = 9.0;
@@ -57,6 +59,8 @@ const GEOM_CACHE_CAP: usize = 6000;
 pub struct AreaLabel {
     pub text: SharedString,
     pub look: TextLook,
+    /// Set in italic (water features).
+    pub italic: bool,
     /// Tier only; the size bonus is added per placement
     /// ([`LabelPriority::with_size_px`]).
     pub priority: LabelPriority,
@@ -74,6 +78,7 @@ pub fn resolve_area_label(style: &TextStyle, tags: &Tags, zoom: f64) -> Option<A
     Some(AreaLabel {
         text: text.into(),
         look: TextLook::resolve(style, TextLook::AREA),
+        italic: area_label_italic(tags),
         priority: LabelPriority::of(LabelClass::Area, tags).with_style(style),
     })
 }

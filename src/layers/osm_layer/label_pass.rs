@@ -177,35 +177,52 @@ impl OsmLayer {
     )> {
         let geom = self.area_geom_for(cache, key)?;
         let font_px = label.look.font_px;
-        let line = cache.shapes.get(window, &label.text, font_px);
+        let italic = label.italic;
+        let line = cache
+            .shapes
+            .get_styled(window, &label.text, font_px, italic);
         let size = (f32::from(line.width), f32::from(line.ascent + line.descent));
         // The name on two lines too, if it has a space to split at.
         let halves = area_labels::split_two_lines(&label.text);
         let wrapped = halves.map(|(a, b)| {
-            let a = cache
-                .shapes
-                .get(window, &SharedString::from(a.to_string()), font_px);
-            let b = cache
-                .shapes
-                .get(window, &SharedString::from(b.to_string()), font_px);
+            let a = cache.shapes.get_styled(
+                window,
+                &SharedString::from(a.to_string()),
+                font_px,
+                italic,
+            );
+            let b = cache.shapes.get_styled(
+                window,
+                &SharedString::from(b.to_string()),
+                font_px,
+                italic,
+            );
             labels::text_size(&a, Some(&b))
         });
         let scales = area_labels::font_scales(font_px);
         let at = area_labels::locate_wrapped(&geom, view, size, wrapped, &scales, forced, budget)?;
         let px_size = font_px * at.scale;
         if let (2, Some((a, b))) = (at.lines, halves) {
-            let a = cache
-                .shapes
-                .get(window, &SharedString::from(a.to_string()), px_size);
-            let b = cache
-                .shapes
-                .get(window, &SharedString::from(b.to_string()), px_size);
+            let a = cache.shapes.get_styled(
+                window,
+                &SharedString::from(a.to_string()),
+                px_size,
+                italic,
+            );
+            let b = cache.shapes.get_styled(
+                window,
+                &SharedString::from(b.to_string()),
+                px_size,
+                italic,
+            );
             return Some((at, a, Some(b)));
         }
         let line = if at.scale == 1.0 {
             line
         } else {
-            cache.shapes.get(window, &label.text, px_size)
+            cache
+                .shapes
+                .get_styled(window, &label.text, px_size, italic)
         };
         Some((at, line, None))
     }
