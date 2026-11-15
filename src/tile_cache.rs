@@ -236,6 +236,13 @@ impl TileStore {
         revived
     }
 
+    /// See [`release_wanted_tiles`].
+    fn release(&self, source_key: &str) {
+        if let Some(set) = self.wanted.lock().unwrap().get_mut(source_key) {
+            set.clear();
+        }
+    }
+
     /// Whether a download for `url` is still wanted. Sources that have not
     /// reported a wanted set (nothing rendered yet) are never cancelled.
     fn is_wanted(&self, source_key: &str, url: &str) -> bool {
@@ -444,6 +451,15 @@ fn evict_if_over_budget(dir: &Path, max_bytes: u64) {
 /// outlives its entry here.
 pub fn set_wanted_tiles(source_key: &str, urls: HashSet<String>) -> Vec<TileAssetKey> {
     shared_store().set_wanted(source_key, urls)
+}
+
+/// Stop wanting every tile of `source_key`, for a layer that is hidden or
+/// removed and so no longer renders to update its set: its queued and
+/// in-flight downloads are cancelled instead of holding download slots. The
+/// cancelled tiles are revived by the next [`set_wanted_tiles`] that names
+/// them.
+pub fn release_wanted_tiles(source_key: &str) {
+    shared_store().release(source_key)
 }
 
 /// Look up the most recent failure reason for a tile URL, if any.
@@ -692,59 +708,86 @@ fn fetch(
     }
 }
 
-/// Max number of tile downloads allowed to be in flight at once, process-wide.
+/// Max number of tile downloads allowed to be in flight at once to one host.
 ///
-/// The OSM tile usage policy asks clients to keep to ~2 concurrent connections
-/// per host. Custom imagery URLs can point anywhere, so rather than track
-/// hosts this caps total downloads process-wide; nearly all traffic goes to
-/// one tile host at a time, so it behaves close to a per-host cap.
-const MAX_CONCURRENT_TILE_DOWNLOADS: usize = 4;
+/// Counted per host so that a tile server that hangs (accepting no
+/// connections until each request times out) only holds up its own tiles,
+/// not every other imagery source's.
+const MAX_CONCURRENT_TILE_DOWNLOADS_PER_HOST: usize = 4;
 
-/// A simple blocking counting semaphore built on `Mutex` + `Condvar`, used to
-/// cap concurrent tile downloads without pulling in an async runtime.
-struct Semaphore {
-    count: Mutex<usize>,
+/// How often a download waiting for a slot rechecks whether its tile is
+/// still wanted.
+const SLOT_WAIT_RECHECK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Counting semaphores, one per host, built on `Mutex` + `Condvar` so tile
+/// downloads are capped without an async runtime.
+struct HostSlots {
+    in_use: Mutex<HashMap<String, usize>>,
     cond: Condvar,
-    max: usize,
+    max_per_host: usize,
 }
 
-impl Semaphore {
-    fn new(max: usize) -> Self {
+impl HostSlots {
+    fn new(max_per_host: usize) -> Self {
         Self {
-            count: Mutex::new(0),
+            in_use: Mutex::new(HashMap::new()),
             cond: Condvar::new(),
-            max,
+            max_per_host,
         }
     }
 
-    /// Block until a permit is available, then hold it until the returned
-    /// guard is dropped.
-    fn acquire(&self) -> SemaphoreGuard<'_> {
-        let mut count = self.count.lock().unwrap();
-        while *count >= self.max {
-            count = self.cond.wait(count).unwrap();
+    /// Wait for a free slot for `host` and hold it until the returned guard
+    /// is dropped, or give up (`None`) as soon as `keep` returns false.
+    fn acquire(&self, host: &str, keep: &dyn Fn() -> bool) -> Option<SlotGuard<'_>> {
+        let mut in_use = self.in_use.lock().unwrap();
+        loop {
+            if !keep() {
+                return None;
+            }
+            let count = in_use.entry(host.to_string()).or_insert(0);
+            if *count < self.max_per_host {
+                *count += 1;
+                return Some(SlotGuard {
+                    slots: self,
+                    host: host.to_string(),
+                });
+            }
+            in_use = self.cond.wait_timeout(in_use, SLOT_WAIT_RECHECK).unwrap().0;
         }
-        *count += 1;
-        SemaphoreGuard { sem: self }
     }
 }
 
-struct SemaphoreGuard<'a> {
-    sem: &'a Semaphore,
+struct SlotGuard<'a> {
+    slots: &'a HostSlots,
+    host: String,
 }
 
-impl Drop for SemaphoreGuard<'_> {
+impl Drop for SlotGuard<'_> {
     fn drop(&mut self) {
-        let mut count = self.sem.count.lock().unwrap();
-        *count = count.saturating_sub(1);
-        self.sem.cond.notify_one();
+        let mut in_use = self.slots.in_use.lock().unwrap();
+        if let Some(count) = in_use.get_mut(&self.host) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                in_use.remove(&self.host);
+            }
+        }
+        // Waiters for every host share the condvar, so wake them all.
+        self.slots.cond.notify_all();
     }
 }
 
-static TILE_DOWNLOAD_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+static TILE_DOWNLOAD_SLOTS: OnceLock<HostSlots> = OnceLock::new();
 
-fn tile_download_semaphore() -> &'static Semaphore {
-    TILE_DOWNLOAD_SEMAPHORE.get_or_init(|| Semaphore::new(MAX_CONCURRENT_TILE_DOWNLOADS))
+fn tile_download_slots() -> &'static HostSlots {
+    TILE_DOWNLOAD_SLOTS.get_or_init(|| HostSlots::new(MAX_CONCURRENT_TILE_DOWNLOADS_PER_HOST))
+}
+
+/// The key a URL's downloads are counted under: its lowercased host, or the
+/// whole URL when it has none.
+fn slot_key(url: &str) -> String {
+    crate::http::url_host(url)
+        .unwrap_or(url)
+        .to_ascii_lowercase()
 }
 
 /// Up to this many bytes of an error response body are kept (as a sanitized snippet)
@@ -761,7 +804,7 @@ pub(crate) fn download_file_sync_with(
 }
 
 /// Download `url`, abandoning it (with `TileFetchError::Cancelled`) once
-/// `keep` returns false. `keep` is checked after waiting for a download slot
+/// `keep` returns false. `keep` is checked while waiting for a download slot
 /// and while the body is being read.
 pub(crate) fn download_file_cancellable(
     client: &dyn crate::http::HttpClient,
@@ -769,10 +812,9 @@ pub(crate) fn download_file_cancellable(
     keep: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, TileFetchError> {
     // Held for the whole request, retries included.
-    let _permit = tile_download_semaphore().acquire();
-    if !keep() {
+    let Some(_slot) = tile_download_slots().acquire(&slot_key(url), keep) else {
         return Err(TileFetchError::Cancelled);
-    }
+    };
 
     let req =
         crate::http::HttpRequest::get(url).header("Referer", "https://github.com/iandees/osm-gpui");
@@ -1024,21 +1066,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn semaphore_caps_concurrent_holders() {
+    fn host_slots_cap_concurrent_holders_of_one_host() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::thread;
 
-        let sem = Arc::new(Semaphore::new(2));
+        let slots = Arc::new(HostSlots::new(2));
         let current = Arc::new(AtomicUsize::new(0));
         let max_seen = Arc::new(AtomicUsize::new(0));
 
         let handles: Vec<_> = (0..8)
             .map(|_| {
-                let sem = sem.clone();
+                let slots = slots.clone();
                 let current = current.clone();
                 let max_seen = max_seen.clone();
                 thread::spawn(move || {
-                    let _permit = sem.acquire();
+                    let _slot = slots.acquire("tile.example", &|| true).unwrap();
                     let now = current.fetch_add(1, Ordering::SeqCst) + 1;
                     max_seen.fetch_max(now, Ordering::SeqCst);
                     thread::sleep(std::time::Duration::from_millis(10));
@@ -1052,6 +1094,45 @@ mod tests {
         }
 
         assert!(max_seen.load(Ordering::SeqCst) <= 2);
+    }
+
+    #[test]
+    fn a_full_host_does_not_block_another_host() {
+        let slots = HostSlots::new(1);
+        let _stuck = slots.acquire("dead.example", &|| true).unwrap();
+        // Another host still gets a slot straight away.
+        assert!(slots.acquire("tile.example", &|| true).is_some());
+    }
+
+    #[test]
+    fn a_waiter_gives_up_once_its_tile_is_unwanted() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let slots = Arc::new(HostSlots::new(1));
+        let _held = slots.acquire("dead.example", &|| true).unwrap();
+        let wanted = Arc::new(AtomicBool::new(true));
+        let waiter = {
+            let (slots, wanted) = (slots.clone(), wanted.clone());
+            std::thread::spawn(move || {
+                slots
+                    .acquire("dead.example", &|| wanted.load(Ordering::SeqCst))
+                    .is_none()
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        wanted.store(false, Ordering::SeqCst);
+        assert!(
+            waiter.join().unwrap(),
+            "the waiter should give up, not wait for the slot"
+        );
+    }
+
+    #[test]
+    fn slot_keys_are_the_lowercased_host() {
+        assert_eq!(
+            slot_key("https://A.Tile.Example:8080/1/2/3.png"),
+            "a.tile.example"
+        );
+        assert_eq!(slot_key("not a url"), "not a url");
     }
 
     #[test]
@@ -1177,6 +1258,20 @@ mod tests {
         let err = download_file_cancellable(&client, "http://t/1.png", &|| false).unwrap_err();
         assert!(matches!(err, TileFetchError::Cancelled));
         assert_eq!(client.request_count(), 0);
+    }
+
+    #[test]
+    fn a_released_source_wants_nothing_until_it_renders_again() {
+        let store = TileStore::new();
+        let src = "test-src-release";
+        store.set_wanted(src, HashSet::from(["u1".to_string()]));
+        store.release(src);
+        assert!(!store.is_wanted(src, "u1"));
+        store.set_wanted(src, HashSet::from(["u1".to_string()]));
+        assert!(store.is_wanted(src, "u1"));
+        // Releasing a source that never rendered changes nothing.
+        store.release("never-rendered");
+        assert!(store.is_wanted("never-rendered", "u1"));
     }
 
     #[test]
