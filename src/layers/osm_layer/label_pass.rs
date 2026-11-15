@@ -19,6 +19,8 @@ pub(super) enum Subject {
     Area {
         label: Arc<area_labels::AreaLabel>,
         line: Arc<ShapedLine>,
+        /// The second line of a wrapped label.
+        line2: Option<Arc<ShapedLine>>,
         /// Where the text is centred, Mercator metres.
         mx: f64,
         my: f64,
@@ -162,20 +164,44 @@ impl OsmLayer {
         forced: bool,
         budget: &mut usize,
         window: &mut Window,
-    ) -> Option<(area_labels::Located, Arc<ShapedLine>)> {
+    ) -> Option<(
+        area_labels::Located,
+        Arc<ShapedLine>,
+        Option<Arc<ShapedLine>>,
+    )> {
         let geom = self.area_geom_for(cache, key)?;
-        let line = cache.shapes.get(window, &label.text, label.look.font_px);
+        let font_px = label.look.font_px;
+        let line = cache.shapes.get(window, &label.text, font_px);
         let size = (f32::from(line.width), f32::from(line.ascent + line.descent));
-        let scales = area_labels::font_scales(label.look.font_px);
-        let at = area_labels::locate(&geom, view, size, &scales, forced, budget)?;
+        // The name on two lines too, if it has a space to split at.
+        let halves = area_labels::split_two_lines(&label.text);
+        let wrapped = halves.map(|(a, b)| {
+            let a = cache
+                .shapes
+                .get(window, &SharedString::from(a.to_string()), font_px);
+            let b = cache
+                .shapes
+                .get(window, &SharedString::from(b.to_string()), font_px);
+            labels::text_size(&a, Some(&b))
+        });
+        let scales = area_labels::font_scales(font_px);
+        let at = area_labels::locate_wrapped(&geom, view, size, wrapped, &scales, forced, budget)?;
+        let px_size = font_px * at.scale;
+        if let (2, Some((a, b))) = (at.lines, halves) {
+            let a = cache
+                .shapes
+                .get(window, &SharedString::from(a.to_string()), px_size);
+            let b = cache
+                .shapes
+                .get(window, &SharedString::from(b.to_string()), px_size);
+            return Some((at, a, Some(b)));
+        }
         let line = if at.scale == 1.0 {
             line
         } else {
-            cache
-                .shapes
-                .get(window, &label.text, label.look.font_px * at.scale)
+            cache.shapes.get(window, &label.text, px_size)
         };
-        Some((at, line))
+        Some((at, line, None))
     }
 
     /// The named areas in view as placement items (`Anchor::Center`, no
@@ -271,7 +297,7 @@ impl OsmLayer {
         let mut out = Vec::with_capacity(found.len());
         for (key, label, bpx) in found {
             let is_forced = forced.contains(&key);
-            let Some((at, line)) =
+            let Some((at, line, line2)) =
                 self.locate_area_label(cache, &view, key, &label, is_forced, &mut budget, window)
             else {
                 continue;
@@ -280,7 +306,7 @@ impl OsmLayer {
                 continue;
             }
             let sp = viewport.mercator_to_screen(Mercator::new(at.mx, at.my));
-            let (w, h) = (f32::from(line.width), f32::from(line.ascent + line.descent));
+            let (w, h) = labels::text_size(&line, line2.as_deref());
             out.push(Candidate {
                 item: labels::Item {
                     key,
@@ -293,6 +319,7 @@ impl OsmLayer {
                 subject: Subject::Area {
                     label,
                     line,
+                    line2,
                     mx: at.mx,
                     my: at.my,
                 },
@@ -435,6 +462,7 @@ impl OsmLayer {
                 Subject::Area {
                     label,
                     line,
+                    line2,
                     mx,
                     my,
                 } => {
@@ -444,7 +472,8 @@ impl OsmLayer {
                             item.key.1,
                             *mx,
                             *my,
-                            labels::PlacedText::in_rect(line.clone(), &r, item.center, label.look),
+                            labels::PlacedText::in_rect(line.clone(), &r, item.center, label.look)
+                                .with_second(line2.clone()),
                         ));
                     }
                 }
@@ -640,11 +669,12 @@ impl OsmLayer {
             let item = forced_item(
                 (labels::KIND_NODE, f.id),
                 reach,
-                &line,
+                labels::text_size(&line, None),
                 label.pref,
                 label.priority,
             );
-            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
+            let t = labels::PlacedText::new(line, 0.0, 0.0, label.look);
+            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, t);
         }
         // Likewise a selected or hovered area whose label was not placed:
         // shown at its label point, fitted or not, collision ignored.
@@ -668,7 +698,7 @@ impl OsmLayer {
             let Some(label) = self.area_label_for(&mut cache, key, zoom) else {
                 continue;
             };
-            let Some((at, line)) = self.locate_area_label(
+            let Some((at, line, line2)) = self.locate_area_label(
                 &mut cache,
                 &view,
                 key,
@@ -683,8 +713,10 @@ impl OsmLayer {
             if !on_screen(f32::from(sp.x), f32::from(sp.y)) {
                 continue;
             }
-            let item = forced_item(key, 0.0, &line, labels::Anchor::Center, label.priority);
-            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, line, label.look);
+            let (w, h) = labels::text_size(&line, line2.as_deref());
+            let item = forced_item(key, 0.0, (w, h), labels::Anchor::Center, label.priority);
+            let t = labels::PlacedText::new(line, 0.0, 0.0, label.look).with_second(line2);
+            paint_forced(window, point(sp.x + ox, sp.y + oy), &item, t);
         }
         cache.placement = Some(placement);
         crate::frame_stats::lap("labels.paint", fs);
@@ -933,7 +965,7 @@ impl OsmLayer {
 fn forced_item(
     key: labels::Key,
     marker_r: f32,
-    line: &ShapedLine,
+    (w, h): (f32, f32),
     anchor: labels::Anchor,
     priority: labels::LabelPriority,
 ) -> labels::Item {
@@ -942,11 +974,7 @@ fn forced_item(
         center: (0.0, 0.0),
         marker_r,
         icon_r: None,
-        text: Some((
-            f32::from(line.width),
-            f32::from(line.ascent + line.descent),
-            anchor,
-        )),
+        text: Some((w, h, anchor)),
         priority: priority.with_forced(true),
     }
 }
@@ -956,13 +984,12 @@ fn paint_forced(
     window: &mut Window,
     at: Point<Pixels>,
     item: &labels::Item,
-    line: Arc<ShapedLine>,
-    look: labels::TextLook,
+    mut t: labels::PlacedText,
 ) {
     let Some((_, r)) = item.forced_text_rect() else {
         return;
     };
-    let t = labels::PlacedText::new(line, r.x0, r.y0, look);
+    (t.dx, t.dy) = (r.x0, r.y0);
     labels::paint_text(
         window,
         &t,
