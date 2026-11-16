@@ -34,6 +34,7 @@ pub mod imagery;
 pub mod imagery_offset;
 pub mod improve_way;
 pub mod interaction;
+pub mod junction;
 pub mod keybindings;
 pub mod layers;
 pub mod limits;
