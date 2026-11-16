@@ -7,7 +7,8 @@ use osm_gpui::ui::{
     parallel_dialog::ParallelDialog, pmtiles_dialog::PmtilesDialog,
     preset_picker_dialog::PresetPickerDialog, quit_confirm_dialog::QuitConfirmDialog,
     relation_picker_dialog::RelationPickerDialog, restore_dialog::RestoreDialog,
-    sign_in_dialog::SignInDialog, upload_dialog::UploadDialog,
+    revert_changeset_dialog::RevertChangesetDialog, sign_in_dialog::SignInDialog,
+    upload_dialog::UploadDialog,
 };
 
 /// Each dialog is `Some` while it is open. `MapViewer::open_modals` lists them
@@ -46,6 +47,16 @@ pub(crate) struct Dialogs {
     /// What the parallel-way dialog was last submitted with, offered again
     /// next time (this session only).
     pub(crate) parallel_params: osm_gpui::parallel::ParallelParams,
+    /// Set by File > "Revert Changeset…"; `render` opens the dialog and
+    /// clears it.
+    pub(crate) pending_revert_dialog: bool,
+    /// What a script asked the revert dialog to be answered with.
+    pub(crate) pending_revert_text: Option<String>,
+    /// Active "revert changeset" dialog, if open.
+    pub(crate) revert_dialog: Option<gpui::Entity<RevertChangesetDialog>>,
+    /// A notice (title, message) a background task wants shown; `render` opens
+    /// it (it needs the window) and clears it.
+    pub(crate) pending_notice: Option<(String, String)>,
     /// Active NSI preset search dialog, if open.
     pub(crate) nsi_dialog: Option<gpui::Entity<NsiPresetDialog>>,
     /// Active "change feature type" preset picker dialog, if open.

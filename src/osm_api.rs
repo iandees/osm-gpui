@@ -255,10 +255,117 @@ pub fn fetch_element_with(
     }
 }
 
+/// How many objects one multi-fetch asks for; the API allows 725, and this
+/// keeps the URL short.
+const MULTI_FETCH_CHUNK: usize = 100;
+
+fn revert_parse_error(e: crate::changeset_revert::ParseError) -> OsmApiError {
+    OsmApiError::Parse(OsmParseError::ParseError(e.0))
+}
+
+pub(crate) fn changeset_download_url(base_url: &str, changeset: i64) -> String {
+    format!(
+        "{}/api/0.6/changeset/{}/download",
+        base_url.trim_end_matches('/'),
+        changeset
+    )
+}
+
+/// `GET /api/0.6/changeset/#id/download`: every object version the changeset
+/// wrote, with the osmChange section it was in. Synchronous — call from a
+/// worker thread.
+pub fn fetch_changeset_with(
+    client: &dyn HttpClient,
+    base_url: &str,
+    token: Option<&str>,
+    changeset: i64,
+) -> Result<
+    Vec<(
+        Option<crate::changeset_revert::Section>,
+        crate::changeset_revert::Entry,
+    )>,
+    OsmApiError,
+> {
+    let body = fetch_map_body(
+        client,
+        &changeset_download_url(base_url, changeset),
+        token,
+        None,
+    )?;
+    crate::changeset_revert::parse_entries(&body).map_err(revert_parse_error)
+}
+
+/// `(id, version)` as the multi-fetch query names it: `id` for the current
+/// version, `idvN` for version N.
+pub(crate) fn multi_fetch_url(
+    base_url: &str,
+    kind: FeatureKind,
+    refs: &[(i64, Option<i32>)],
+) -> String {
+    let noun = match kind {
+        FeatureKind::Node => "nodes",
+        FeatureKind::Way => "ways",
+        FeatureKind::Relation => "relations",
+    };
+    let list: Vec<String> = refs
+        .iter()
+        .map(|&(id, version)| match version {
+            Some(v) => format!("{id}v{v}"),
+            None => id.to_string(),
+        })
+        .collect();
+    format!(
+        "{}/api/0.6/{}?{}={}",
+        base_url.trim_end_matches('/'),
+        noun,
+        noun,
+        list.join(",")
+    )
+}
+
+/// `GET /api/0.6/[nodes|ways|relations]?...`: the named objects, at the
+/// version given or (`None`) as they are now. Deleted objects come back as
+/// entries without content. Synchronous — call from a worker thread.
+pub fn fetch_objects_with(
+    client: &dyn HttpClient,
+    base_url: &str,
+    token: Option<&str>,
+    kind: FeatureKind,
+    refs: &[(i64, Option<i32>)],
+) -> Result<Vec<crate::changeset_revert::Entry>, OsmApiError> {
+    let mut out = Vec::new();
+    for chunk in refs.chunks(MULTI_FETCH_CHUNK) {
+        let body = fetch_map_body(client, &multi_fetch_url(base_url, kind, chunk), token, None)?;
+        out.extend(
+            crate::changeset_revert::parse_entries(&body)
+                .map_err(revert_parse_error)?
+                .into_iter()
+                .map(|(_, entry)| entry),
+        );
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::http::fake::{ok, status_err, FakeClient};
+
+    #[test]
+    fn revert_urls_name_the_changeset_and_versions() {
+        assert_eq!(
+            changeset_download_url("https://osm.test/", 77),
+            "https://osm.test/api/0.6/changeset/77/download"
+        );
+        assert_eq!(
+            multi_fetch_url(
+                "https://osm.test",
+                FeatureKind::Way,
+                &[(1, Some(2)), (3, None)]
+            ),
+            "https://osm.test/api/0.6/ways?ways=1v2,3"
+        );
+    }
 
     #[test]
     fn http_failures_map_to_api_errors() {

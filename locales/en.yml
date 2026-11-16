@@ -22,6 +22,7 @@ menu:
     open: "Open…"
     export: "Export…"
     download: "Download from OSM"
+    revert_changeset: "Revert Changeset…"
     upload: "Upload to OSM…"
   edit:
     title: "Edit"
@@ -1483,3 +1484,29 @@ relation_sort:
     one: "Sorted the members into one connected chain"
     other: "Sorted the members; the ways form %{count} separate chains"
   already: "The members are already in order"
+
+revert:
+  title: "Revert Changeset"
+  hint: "Undo a changeset by its number or page address. The changes are made here for you to review, then upload them as usual."
+  placeholder: "Changeset number or address"
+  field: "Changeset"
+  action: "Revert"
+  working: "Reverting…"
+  bad_id: "Enter a changeset number, or the address of its page on openstreetmap.org."
+  label: "Revert changeset %{id}"
+  nothing: "Changeset %{id} has nothing to revert."
+  done: "Reverted changeset %{id}: %{reverted} changed, %{skipped} left alone."
+  done_all: "Reverted changeset %{id}: %{reverted} changed. Review and upload them when ready."
+  busy: "Another transfer is running. Try again when it has finished."
+  notice_title: "Some objects were left alone"
+  notice_intro: "These objects were not reverted:"
+  more: "…and %{count} more"
+  kind:
+    node: "Node"
+    way: "Way"
+    relation: "Relation"
+  skipped:
+    changed_since: "%{kind} %{id}: changed since, now at version %{version}"
+    unavailable: "%{kind} %{id}: not available from the server"
+    edited_locally: "%{kind} %{id}: has edits that are not uploaded yet"
+    refused: "%{kind} %{id}: %{detail}"

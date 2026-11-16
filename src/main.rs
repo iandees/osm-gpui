@@ -7,9 +7,9 @@
 
 use gpui::Action;
 use gpui::{
-    actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SharedString, Window,
-    WindowOptions,
+    actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, Entity,
+    KeyBinding, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent,
+    SharedString, Window, WindowOptions,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -72,8 +72,8 @@ mod welcome;
 use crate::menu::{
     add_imagery_layer, add_osm_carto, add_saved_custom_imagery, download_from_osm,
     no_op_imagery_info, open_custom_imagery_dialog, open_esri_layer_dialog, open_osm_file,
-    open_pmtiles_dialog, open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
-    validate, ShowAbout,
+    open_pmtiles_dialog, open_settings, quit, rebuild_menus, revert_changeset,
+    toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
@@ -218,6 +218,17 @@ fn key_binding_for(id: &'static str, spec: &str) -> Option<KeyBinding> {
         "redo" => Some(KeyBinding::new(spec, Redo, Some(MAP_VIEWER_KEY_CONTEXT))),
         _ => None,
     }
+}
+
+/// File > Revert Changeset…. With `id` (a changeset number, or `last` for the
+/// one this session uploaded last) the dialog opens filled in and submitted,
+/// as a typed answer would be: for scripts.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+struct RevertChangeset {
+    #[serde(default)]
+    id: Option<String>,
 }
 
 /// Action for adding an imagery layer from the ELI by id.
@@ -762,6 +773,9 @@ struct MapViewer {
     /// closes without uploading (Cancel, or Show on a conflict) and put back
     /// when it reopens. Cleared after a successful upload.
     upload_comment_draft: String,
+    /// The changeset id of the last upload this session finished (for the
+    /// script form of Revert Changeset).
+    last_uploaded_changeset: Option<u64>,
     /// The sources text kept when the upload dialog closed without
     /// uploading; `None` means prefill the last uploaded one.
     upload_source_draft: Option<String>,
@@ -979,6 +993,7 @@ impl MapViewer {
             find_mode: Default::default(),
             validation: None,
             upload_comment_draft: String::new(),
+            last_uploaded_changeset: None,
             upload_source_draft: None,
             fields_panel: Default::default(),
             tag_edit: Default::default(),
@@ -3166,6 +3181,7 @@ impl MapViewer {
             open_modal(&self.dialogs.preset_picker_dialog, cx),
             open_modal(&self.dialogs.relation_picker_dialog, cx),
             open_modal(&self.dialogs.parallel_dialog, cx),
+            open_modal(&self.dialogs.revert_dialog, cx),
             open_modal(&self.dialogs.upload_dialog, cx),
             open_modal(&self.dialogs.sign_in_dialog, cx),
             open_modal(&self.dialogs.notice_dialog, cx),
@@ -5099,6 +5115,7 @@ impl MapViewer {
                     None => {
                         this.dialogs.upload_dialog = None;
                         this.upload_comment_draft.clear();
+                        this.last_uploaded_changeset = Some(last_changeset).filter(|&c| c > 0);
                         this.upload_source_draft = None;
                         // Remember the source and comment for next time. Never
                         // written to disk from a script run or a test.
@@ -5710,6 +5727,245 @@ impl MapViewer {
         .detach();
     }
 
+    /// File > "Revert Changeset…": ask which changeset (`render` opens the
+    /// dialog, which needs the window).
+    ///
+    /// `answer` is what to type into it and submit, for a script: a changeset
+    /// number, or `last` for the changeset this session uploaded last.
+    pub(crate) fn request_revert_dialog(&mut self, answer: Option<String>, cx: &mut Context<Self>) {
+        if self.refuse_edit_during_upload() {
+            cx.notify();
+            return;
+        }
+        let answer = match answer.as_deref() {
+            Some("last") => match self.last_uploaded_changeset {
+                Some(id) => Some(id.to_string()),
+                None => {
+                    self.set_status("No changeset has been uploaded in this session.");
+                    cx.notify();
+                    return;
+                }
+            },
+            _ => answer,
+        };
+        self.dialogs.pending_revert_text = answer;
+        self.dialogs.pending_revert_dialog = true;
+        cx.notify();
+    }
+
+    fn check_for_pending_revert_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::revert_changeset_dialog::{DialogEvent, RevertChangesetDialog};
+
+        if !std::mem::take(&mut self.dialogs.pending_revert_dialog)
+            || self.dialogs.revert_dialog.is_some()
+        {
+            return;
+        }
+        let dialog = cx.new(|cx| RevertChangesetDialog::new(window, cx));
+        let answer = self.dialogs.pending_revert_text.take();
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, entity, event: &DialogEvent, cx| match event {
+                DialogEvent::Cancelled => {
+                    this.dialogs.revert_dialog = None;
+                    cx.notify();
+                }
+                DialogEvent::Submit(id) => this.start_revert(*id, entity, cx),
+            },
+        )
+        .detach();
+        self.dialogs.revert_dialog = Some(dialog.clone());
+        if let Some(text) = answer {
+            dialog.update(cx, |d, cx| {
+                d.set_text(&text, window, cx);
+                d.press_revert(cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn check_for_pending_notice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dialogs.notice_dialog.is_some() {
+            return;
+        }
+        let Some((title, message)) = self.dialogs.pending_notice.take() else {
+            return;
+        };
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::notice_dialog::NoticeDialog::new(title, message, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, _entity, _event: &osm_gpui::ui::notice_dialog::DialogEvent, cx| {
+                this.dialogs.notice_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.dialogs.notice_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Fetch changeset `id` and what it needs (in the background), then make
+    /// the edits that undo it. The dialog stays open, busy, until then; a
+    /// failure is shown in it.
+    fn start_revert(
+        &mut self,
+        id: i64,
+        dialog: Entity<osm_gpui::ui::revert_changeset_dialog::RevertChangesetDialog>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.transfer.is_some() {
+            let busy = tr!("revert.busy").to_string();
+            dialog.update(cx, |d, cx| d.fail(busy.into(), cx));
+            return;
+        }
+        let base_url = settings_store::api_base_url();
+        osm_gpui::capabilities::ensure_fetched(self.http.clone(), &base_url);
+        if osm_gpui::capabilities::for_server(&base_url).is_offline() {
+            let offline = tr!("status.api_offline").to_string();
+            dialog.update(cx, |d, cx| d.fail(offline.into(), cx));
+            return;
+        }
+        dialog.update(cx, |d, cx| d.begin(cx));
+
+        let http = self.http.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    // Reading a changeset is public: like a download, it never
+                    // waits on the keychain and goes out anonymously without a
+                    // token already in memory.
+                    let token = auth::fresh_token_if_loaded(
+                        http.as_ref(),
+                        &auth::oauth_base_for(&base_url),
+                    )
+                    .map(|t| t.access_token);
+                    osm_gpui::changeset_revert::prepare(
+                        http.as_ref(),
+                        &base_url,
+                        token.as_deref(),
+                        id,
+                    )
+                })
+                .await;
+
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(prepared) => {
+                    this.dialogs.revert_dialog = None;
+                    this.apply_revert(prepared, cx);
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    dialog.update(cx, |d, cx| d.fail(message.into(), cx));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Make the edits that undo a prepared changeset revert, in the active
+    /// layer (or a new one) as one undo step, and say what was left alone.
+    fn apply_revert(
+        &mut self,
+        prepared: osm_gpui::changeset_revert::Prepared,
+        cx: &mut Context<Self>,
+    ) {
+        use osm_gpui::changeset_revert::apply;
+
+        if self.refuse_edit_during_upload() {
+            cx.notify();
+            return;
+        }
+        let id = prepared.changeset;
+        if prepared.plan.steps.is_empty() {
+            let skipped = osm_gpui::changeset_revert::Report {
+                skipped: prepared
+                    .plan
+                    .skipped
+                    .iter()
+                    .map(|(k, i, c)| {
+                        (
+                            *k,
+                            *i,
+                            osm_gpui::changeset_revert::SkipReason::Conflict(c.clone()),
+                        )
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            self.set_status(tr!("revert.nothing", id = id));
+            self.queue_skipped_notice(&skipped);
+            cx.notify();
+            return;
+        }
+
+        let active = self.active_layer;
+        let layer_id = match active.filter(|&l| {
+            self.layer_manager
+                .find_layer_mut(l)
+                .is_some_and(|layer| layer.as_editable_mut().is_some())
+        }) {
+            Some(layer_id) => layer_id,
+            None => {
+                let name = self.layer_manager.unique_name(DOWNLOAD_LAYER_NAME);
+                let layer_id = self.layer_manager.alloc_id();
+                let layer = OsmLayer::new_with_data_styled(
+                    layer_id,
+                    name,
+                    Arc::new(OsmData::default()),
+                    osm_gpui::style::custom::active_stylesheet(),
+                );
+                self.layer_manager.add_layer(Box::new(layer));
+                self.note_download_origin(layer_id);
+                self.active_layer = Some(layer_id);
+                layer_id
+            }
+        };
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(layer_id)
+            .and_then(|l| l.as_editable_mut())
+        else {
+            return;
+        };
+        let (ops, report) = apply(layer_id, editable, &prepared);
+        self.data_generation += 1;
+        if !ops.is_empty() {
+            self.undo_stack.push(UndoableAction::edit(
+                layer_id,
+                EditLabel::Text(tr!("revert.label", id = id).to_string()),
+                ops,
+            ));
+        }
+        let status = if report.skipped.is_empty() {
+            tr!("revert.done_all", id = id, reverted = report.reverted)
+        } else {
+            tr!(
+                "revert.done",
+                id = id,
+                reverted = report.reverted,
+                skipped = report.skipped.len()
+            )
+        };
+        self.set_status(status);
+        self.queue_skipped_notice(&report);
+        cx.notify();
+    }
+
+    /// Have `render` list the objects a revert left alone, if there were any.
+    fn queue_skipped_notice(&mut self, report: &osm_gpui::changeset_revert::Report) {
+        if report.skipped.is_empty() {
+            return;
+        }
+        let message = format!(
+            "{}\n\n{}",
+            tr!("revert.notice_intro"),
+            report.skipped_text(15)
+        );
+        self.dialogs.pending_notice = Some((tr!("revert.notice_title").to_string(), message));
+    }
+
     /// Put downloaded OSM data on the map. It is merged, by object id, into
     /// the active layer when there is one, keeping any local edits (see
     /// `osm_gpui::layers::merge`), so a second download extends the same
@@ -5765,6 +6021,8 @@ impl Render for MapViewer {
         self.check_for_pending_role_edit(window, cx);
         self.check_for_pending_relation_picker(window, cx);
         self.check_for_pending_parallel_dialog(window, cx);
+        self.check_for_pending_revert_dialog(window, cx);
+        self.check_for_pending_notice(window, cx);
         self.check_for_pending_restore(window, cx);
         self.notes_frame(window, cx);
         self.imagery_frame(cx);
@@ -6429,6 +6687,7 @@ fn main() {
         cx.on_action(open_osm_file);
         cx.on_action(add_osm_carto);
         cx.on_action(download_from_osm);
+        cx.on_action(revert_changeset);
         cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);
         cx.on_action(add_saved_custom_imagery);
