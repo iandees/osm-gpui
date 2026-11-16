@@ -27,7 +27,7 @@ use crate::{
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
     DeselectAll, DownloadFromOsm, EditMode, ExportOsmFile, Find, HideApp, HideOtherApps,
     ImageryLoadState, LayerRequest, MinimizeWindow, OpenOsmFile, OpenSettings, Quit, Redo,
-    RunSelectionAction, ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps,
+    RevertChangeset, RunSelectionAction, ScriptSeedCustomImagery, SelectAll, SetMode, ShowAllApps,
     ToggleDebugOverlay, ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut,
     ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
@@ -258,6 +258,11 @@ fn show_settings_page(root: gpui::AnyView, page: SettingsPage, cx: &mut App) {
 
 pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
     with_map_viewer(cx, |v, cx| v.request_download(cx));
+}
+
+pub(crate) fn revert_changeset(action: &RevertChangeset, cx: &mut App) {
+    let answer = action.id.clone();
+    with_map_viewer(cx, |v, cx| v.request_revert_dialog(answer, cx));
 }
 
 // Global fallback for the File > Upload to OSM menu action; the normal path
@@ -830,6 +835,10 @@ fn build_menus(
         MenuItem::separator(),
         MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
         MenuItem::action(tr!("gps_traces.menu.download"), DownloadGpsTraces),
+        MenuItem::action(
+            tr!("menu.file.revert_changeset"),
+            RevertChangeset::default(),
+        ),
         MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!toggles.can_upload),
     ];
     let mut edit_tail = vec![];
@@ -1540,7 +1549,7 @@ mod tests {
             .iter()
             .filter(|i| matches!(i, gpui::OwnedMenuItem::Action { .. }))
             .count();
-        // Open, Export, Download, Download GPS Traces, Upload.
-        assert_eq!(actions, 5);
+        // Open, Export, Download, Download GPS Traces, Revert Changeset, Upload.
+        assert_eq!(actions, 6);
     }
 }

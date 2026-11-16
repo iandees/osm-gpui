@@ -642,6 +642,12 @@ pub trait EditableLayer {
 
     /// Undo of `purge_features`: put the objects back in data and baseline.
     fn restore_purged(&mut self, purged: crate::selection::PurgedFeatures);
+
+    /// Bring back objects the server has deleted, as edits of the existing
+    /// objects: they join the data as given (ids and the deleted versions
+    /// kept) and the baseline as a marked stand-in, so the diff reports each
+    /// as modified rather than created. Undone by `purge_features`.
+    fn undelete_objects(&mut self, objects: crate::selection::PurgedFeatures);
 }
 
 /// Read the status-line numbers off `layers` through their typed accessors.

@@ -1,6 +1,7 @@
 //! Tests for `OsmLayer`, one file per area; the fixtures several areas share live here.
 
 mod batching;
+mod changeset_revert;
 mod chunked;
 mod conflicts;
 mod create_and_delete;

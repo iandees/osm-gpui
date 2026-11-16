@@ -11,6 +11,7 @@ pub mod autosave;
 pub mod building;
 pub mod capabilities;
 pub mod catalogue;
+pub mod changeset_revert;
 pub mod changeset_tags;
 pub mod civil_date;
 pub mod coordinates;

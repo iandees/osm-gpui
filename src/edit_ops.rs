@@ -73,6 +73,17 @@ pub enum EditOp {
     Unpurge {
         purged: PurgedFeatures,
     },
+    /// Objects the server has deleted come back: they join the layer's data
+    /// as edits of the existing objects (same ids, the deleted version), not
+    /// as new ones, so an upload modifies them.
+    Undelete {
+        objects: PurgedFeatures,
+    },
+    /// The inverse of `Undelete`: the objects go away again, leaving no trace
+    /// in the data or the baseline.
+    Redelete {
+        objects: PurgedFeatures,
+    },
 }
 
 impl EditOp {
@@ -127,6 +138,12 @@ impl EditOp {
             EditOp::Unpurge { purged } => EditOp::Purge {
                 purged: purged.clone(),
             },
+            EditOp::Undelete { objects } => EditOp::Redelete {
+                objects: objects.clone(),
+            },
+            EditOp::Redelete { objects } => EditOp::Undelete {
+                objects: objects.clone(),
+            },
         }
     }
 
@@ -175,6 +192,19 @@ impl EditOp {
                 layer.restore_purged(purged.clone());
                 Ok(())
             }
+            EditOp::Undelete { objects } => {
+                layer.undelete_objects(objects.clone());
+                Ok(())
+            }
+            EditOp::Redelete { objects } => {
+                // Removing from data and baseline alike is what a purge does.
+                let nodes: Vec<NodeId> = objects.nodes.iter().map(|n| n.id).collect();
+                let ways: Vec<WayId> = objects.ways.iter().map(|w| w.id).collect();
+                let relations: Vec<RelationId> =
+                    objects.relations.iter().map(|(r, ..)| r.id).collect();
+                layer.purge_features(&nodes, &ways, &relations);
+                Ok(())
+            }
         }
     }
 
@@ -198,6 +228,9 @@ impl EditOp {
             }
             EditOp::SetRelationMembers { id, .. } => vec![at(FeatureKind::Relation, id.get())],
             EditOp::Purge { purged } | EditOp::Unpurge { purged } => purged.features(layer_id),
+            EditOp::Undelete { objects } | EditOp::Redelete { objects } => {
+                objects.features(layer_id)
+            }
         }
     }
 }
@@ -490,6 +523,16 @@ impl<'a> Recording<'a> {
             });
         }
         purged
+    }
+
+    /// Bring objects the server has deleted back as edits of themselves (see
+    /// `EditOp::Undelete`). Nothing is recorded for an empty set.
+    pub fn undelete_objects(&mut self, objects: PurgedFeatures) {
+        if objects.is_empty() {
+            return;
+        }
+        self.layer.undelete_objects(objects.clone());
+        self.ops.push(EditOp::Undelete { objects });
     }
 
     pub fn reverse_way(&mut self, way_id: WayId) -> Result<(), EditError> {

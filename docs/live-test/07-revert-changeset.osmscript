@@ -1,0 +1,181 @@
+# Live test 7: File > Revert Changeset against the OSM development server.
+# Open ocean near lat -48.0, lon -123.0, like the other live tests.
+#
+#   cargo run -- --api-server dev --script-delay-ms 400 --script docs/live-test/07-revert-changeset.osmscript
+#
+# Sign in first with 00-sign-in.osmscript. Captures go to out/live-07-*.png.
+# Changeset comments are "osm-gpui live test: revert ...".
+#
+# `action RevertChangeset {"id":"last"}` answers the dialog with the changeset
+# this run uploaded last, as a typed number would be.
+#
+# What it covers, in order:
+#   1. create a way and upload                      (changeset 1)
+#   2. modify a tag and move a node, upload         (changeset 2)
+#   3. revert changeset 2 (a modify), undo, redo, upload
+#   4. delete everything and upload                 (a delete)
+#   5. revert that delete: objects come back as MODIFIES of the existing
+#      objects (the server must accept them, ids unchanged), upload, and
+#      download fresh to see them on the server
+#   6. revert that undelete (the objects are visible now and were deleted
+#      before, so reverting deletes them again), upload: the server is clean
+#
+# Window 1200x800; the viewport centre is window (488, 388). The nodes are
+# drawn at A (380,330) and B (560,330); the way's middle is (470,330).
+
+assert_server dev
+assert_signed_in
+window 1200 800
+load_osm docs/live-test/empty.osm
+viewport -48.0000 -123.0000 18
+wait_idle 10s
+assert_dialog none
+
+# --- 1. Draw a way and upload it ----------------------------------------------
+pause 1s Drawing a way
+key a
+assert_mode add
+click 380,330
+click 560,330
+key enter
+key escape
+assert_mode select
+click 470,330
+wait_idle 2s
+assert_selection way
+set_tag highway service
+set_tag name Revert test
+assert_pending 3
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: revert (create)
+upload_confirm
+wait_transfer 120s
+assert_dialog none
+assert_status_contains Uploaded changes
+assert_pending 0
+capture out/live-07-01-created.png
+
+# --- 2. Modify a tag and move a node, upload ------------------------------------
+pause 1s Changing a tag and moving a node
+click 470,330
+wait_idle 2s
+assert_selection way
+set_tag highway track
+click 560,330
+wait_idle 2s
+assert_selection node
+drag 560,330 600,380 button=left
+wait_idle 2s
+assert_pending 2
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: revert (modify)
+upload_confirm
+wait_transfer 120s
+assert_dialog none
+assert_pending 0
+capture out/live-07-02-modified.png
+
+# --- 3. Revert the modify ---------------------------------------------------------
+pause 1s Reverting the modify
+action RevertChangeset {"id":"last"}
+wait 2s
+assert_dialog none
+assert_status_contains Reverted changeset
+# The way's tag and the node's position are back: two pending edits.
+assert_pending 2
+capture out/live-07-03-modify-reverted.png
+
+# One undo step takes it all back, and redo does it again.
+key cmd+z
+wait_idle 2s
+assert_pending 0
+key cmd+shift+z
+wait_idle 2s
+assert_pending 2
+
+# The node is back where it was drawn.
+click 560,330
+wait_idle 2s
+assert_selection node
+
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: revert (revert of modify)
+upload_confirm
+wait_transfer 120s
+assert_dialog none
+assert_pending 0
+
+# --- 4. Delete everything, upload ---------------------------------------------------
+pause 1s Deleting everything
+action SelectAll
+action DeleteSelection
+wait_idle 2s
+assert_pending 3
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: revert (delete)
+upload_confirm
+wait_transfer 120s
+assert_dialog none
+assert_pending 0
+capture out/live-07-04-deleted.png
+
+# --- 5. Revert the delete: an undelete -------------------------------------------------
+# The objects are deleted on the server. They return as modifies of the same
+# objects (same ids, the deleted version), not as new ones.
+pause 1s Reverting the delete
+action RevertChangeset {"id":"last"}
+wait 2s
+assert_dialog none
+assert_status_contains Reverted changeset
+assert_pending 3
+capture out/live-07-05-delete-reverted.png
+
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: revert (undelete)
+upload_confirm
+wait_transfer 120s
+assert_dialog none
+assert_status_contains Uploaded changes
+assert_pending 0
+
+# Download fresh: the way is on the server again.
+action layers::DeleteLayer {"index":1}
+wait_idle 2s
+assert_dialog none
+action DownloadFromOsm
+wait_transfer 60s
+wait_idle 5s
+click 470,330
+wait_idle 2s
+assert_selection way
+capture out/live-07-06-undeleted-on-server.png
+
+# --- 6. Revert that, to leave the server clean ---------------------------------------------
+pause 1s Reverting the undelete
+action RevertChangeset {"id":"last"}
+wait 2s
+assert_dialog none
+assert_status_contains Reverted changeset
+assert_pending 3
+action UploadToOsm
+wait_idle 2s
+assert_dialog editing
+type osm-gpui live test: revert (cleanup)
+upload_confirm
+wait_transfer 120s
+assert_dialog none
+assert_status_contains Uploaded changes
+assert_pending 0
+capture out/live-07-07-cleaned-up.png
+pause 2s Revert test finished: the server is clean
+log done

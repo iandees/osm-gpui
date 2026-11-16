@@ -787,6 +787,44 @@ impl EditableLayer for OsmLayer {
         self.store.revision += 1;
     }
 
+    fn undelete_objects(&mut self, objects: PurgedFeatures) {
+        use crate::layers::diff::UNKNOWN_BASELINE_TAG;
+        let mut data = self.store.osm_data.as_deref().cloned().unwrap_or_default();
+        let mut base = self
+            .store
+            .original_data
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
+        let marker = || (UNKNOWN_BASELINE_TAG.to_string(), "yes".to_string());
+        for n in objects.nodes {
+            let mut stand_in = n.clone();
+            stand_in.tags.extend([marker()]);
+            base.nodes.insert(n.id, stand_in);
+            data.nodes.insert(n.id, n);
+        }
+        for w in objects.ways {
+            let mut stand_in = w.clone();
+            stand_in.tags.extend([marker()]);
+            base.ways.insert(w.id, stand_in);
+            data.ways.insert(w.id, w);
+        }
+        for (r, ..) in objects.relations {
+            let mut stand_in = r.clone();
+            stand_in.tags.extend([marker()]);
+            base.relations.retain(|b| b.id != r.id);
+            base.relations.push(stand_in);
+            data.relations.retain(|d| d.id != r.id);
+            data.relations.push(r);
+        }
+        let data = Arc::new(data);
+        self.rebuild_caches(&data);
+        self.store.osm_data = Some(data);
+        self.store.original_data = Some(Arc::new(base));
+        self.store.modified = true;
+        self.store.revision += 1;
+    }
+
     fn hit_test(&self, viewport: &Viewport, screen_pt: Point<Pixels>) -> Vec<HitCandidate> {
         self.hit_test_point(viewport, screen_pt)
     }
