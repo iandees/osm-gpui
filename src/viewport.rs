@@ -114,6 +114,11 @@ impl Viewport {
         self.zoom_at(position, scale.log2())
     }
 
+    /// Zoom in one level around `position` (a double-click on empty map).
+    pub fn zoom_in_at(&mut self, position: Point<Pixels>) -> bool {
+        self.zoom_at(position, 1.0)
+    }
+
     /// Pan from a precise (trackpad) two-finger scroll. `delta` is how far
     /// the content should move on screen, so the map follows the fingers.
     pub fn pan_by_scroll(&mut self, delta: Point<Pixels>) -> bool {
