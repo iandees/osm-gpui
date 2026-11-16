@@ -8,7 +8,7 @@ use gpui::{
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    input::{Input, InputState},
+    input::InputState,
     label::Label,
     v_flex, ActiveTheme as _, Disableable as _,
 };
@@ -122,13 +122,13 @@ impl Render for RevertChangesetDialog {
         let muted = cx.theme().muted_foreground;
         let can_revert = !self.busy && !self.text(cx).trim().is_empty();
         let body = v_flex()
-            .gap_2()
+            .gap_3()
             .child(
                 Label::new(tr!("revert.hint"))
                     .text_size(muted_text_size())
                     .text_color(muted),
             )
-            .child(Input::new(&self.input).disabled(self.busy))
+            .child(modal::field_row(tr!("revert.field"), &self.input, muted))
             .children(
                 self.error
                     .clone()

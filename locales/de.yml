@@ -1437,6 +1437,7 @@ revert:
   title: "Änderungssatz zurücknehmen"
   hint: "Nimm einen Änderungssatz anhand seiner Nummer oder Seitenadresse zurück. Die Änderungen entstehen hier zur Prüfung; lade sie dann wie gewohnt hoch."
   placeholder: "Nummer oder Adresse des Änderungssatzes"
+  field: "Änderungssatz"
   action: "Zurücknehmen"
   working: "Wird zurückgenommen …"
   bad_id: "Gib eine Nummer oder die Adresse der Seite auf openstreetmap.org ein."

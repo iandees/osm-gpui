@@ -1489,6 +1489,7 @@ revert:
   title: "Revert Changeset"
   hint: "Undo a changeset by its number or page address. The changes are made here for you to review, then upload them as usual."
   placeholder: "Changeset number or address"
+  field: "Changeset"
   action: "Revert"
   working: "Reverting…"
   bad_id: "Enter a changeset number, or the address of its page on openstreetmap.org."
