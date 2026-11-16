@@ -1,0 +1,21 @@
+# The Junction inspector on a four-way junction. Run with:
+#   cargo run -- --script docs/screenshots/junction.osmscript --offline \
+#     --http-fixtures docs/screenshots/fixtures/offline/http-fixtures.json
+
+window 1400 900
+load_osm docs/screenshots/fixtures/junction.osm
+viewport 45.0 -93.0 18
+wait_idle
+# The first click selects a way and shows its vertices; the second picks
+# the junction node.
+click geo:45.0,-93.0
+wait 200ms
+click geo:45.0,-93.0
+assert_selected node 9001
+wait 300ms
+capture docs/screenshots/junction-01-default.png
+
+# The west Oak Avenue label (left edge of the diagram): its turns.
+click 1171,494
+wait 300ms
+capture docs/screenshots/junction-02-from-west.png
