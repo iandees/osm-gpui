@@ -434,6 +434,16 @@ pub trait EditableLayer {
         false
     }
 
+    /// Names of the named roads within `radius_m` meters of `feature`,
+    /// nearest first (for `addr:street` suggestions). Default: none.
+    fn nearby_road_names(
+        &self,
+        _feature: &crate::selection::FeatureRef,
+        _radius_m: f64,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Return key/value tags for the given feature if this layer owns it.
     fn feature_tags(&self, feature: &crate::selection::FeatureRef) -> Option<Tags>;
 

@@ -112,6 +112,51 @@ impl MapViewer {
                     window,
                     cx,
                 );
+                // Roads near the feature, offered as one-click street names.
+                let nearby: Vec<String> = if field.key == "addr:street" {
+                    self.layer_manager
+                        .find_layer(feature.layer_id)
+                        .and_then(|l| l.as_editable())
+                        .map(|e| {
+                            e.nearby_road_names(
+                                &feature,
+                                osm_gpui::tag_suggest::NEARBY_ROAD_RADIUS_M,
+                            )
+                        })
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|n| *n != current)
+                        .take(5)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let chips = (!nearby.is_empty()).then(|| {
+                    let field_key = field.key.clone();
+                    gpui::div().flex().flex_row().flex_wrap().gap_1().children(
+                        nearby.into_iter().enumerate().map(|(i, name)| {
+                            let (input, field_key, value) =
+                                (input.clone(), field_key.clone(), name.clone());
+                            Button::new(("street-suggestion", i))
+                                .label(name)
+                                .xsmall()
+                                .outline()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    input.update(cx, |state, cx| {
+                                        state.set_value(value.clone(), window, cx)
+                                    });
+                                    this.apply_field_values(
+                                        &feature,
+                                        std::collections::HashMap::from([(
+                                            field_key.clone(),
+                                            value.clone(),
+                                        )]),
+                                    );
+                                    cx.notify();
+                                }))
+                        }),
+                    )
+                });
                 gpui::div()
                     .flex()
                     .flex_col()
@@ -122,6 +167,7 @@ impl MapViewer {
                             .with_size(gpui_component::Size::Size(body / 0.875))
                             .h(gpui::px(FIELD_CONTROL_HEIGHT)),
                     )
+                    .children(chips)
                     .into_any_element()
             }
             Widget::Check => {
