@@ -165,6 +165,11 @@ pub struct Arm {
     pub inbound: Option<LaneGroup>,
     /// Traffic driving away from the node; `None` when a oneway in.
     pub outbound: Option<LaneGroup>,
+    /// The way's next node along the arm, which tells the arm's part apart
+    /// after the way is split at the junction.
+    pub next_node: NodeId,
+    /// The way runs on past the junction node (rather than ending there).
+    pub way_continues: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +237,8 @@ pub struct Movement {
     pub to: usize,
     pub turn: TurnKind,
     pub state: MovementState,
+    /// The `only_*` restriction that names this movement, if any.
+    pub only: Option<RelationId>,
 }
 
 /// Something wrong with the junction's tagging.
@@ -261,6 +268,9 @@ pub struct Junction {
     pub movements: Vec<Movement>,
     pub listed: Vec<ListedRestriction>,
     pub issues: Vec<Issue>,
+    /// The restrictions drawn as movements: id, the tag key that holds the
+    /// value (`restriction` or `restriction:<mode>`), and the value.
+    pub restrictions: Vec<(RelationId, String, String)>,
 }
 
 impl Junction {
@@ -502,6 +512,8 @@ pub fn build(src: &dyn JunctionSource, node: NodeId) -> Option<Junction> {
                     label: arm_label(way, &tags),
                     inbound: lane_group(&tags, !outward),
                     outbound: lane_group(&tags, outward),
+                    next_node: path[1],
+                    way_continues: closed || (i > 0 && i < last),
                 });
             }
         }
@@ -538,6 +550,7 @@ pub fn build(src: &dyn JunctionSource, node: NodeId) -> Option<Junction> {
                 to,
                 turn,
                 state: MovementState::Allowed,
+                only: None,
             });
         }
     }
@@ -548,6 +561,7 @@ pub fn build(src: &dyn JunctionSource, node: NodeId) -> Option<Junction> {
         movements,
         listed: Vec::new(),
         issues: split_issues,
+        restrictions: Vec::new(),
     };
     apply_restrictions(src, &mut j);
     lane_issues(&mut j);
@@ -669,12 +683,20 @@ fn apply_restrictions(src: &dyn JunctionSource, j: &mut Junction) {
                 ),
             });
         }
+        let key = match &mode {
+            Some(m) => format!("restriction:{m}"),
+            None => "restriction".to_string(),
+        };
+        j.restrictions.push((r.id, key, value.clone()));
         let only = value.starts_with("only_");
         for m in j.movements.iter_mut() {
             if !pairs.iter().any(|&(f, _, _)| f == m.from) {
                 continue;
             }
             let named = pairs.iter().any(|&(f, t, _)| f == m.from && t == m.to);
+            if only && named {
+                m.only = Some(r.id);
+            }
             if !only && named {
                 m.state = MovementState::Banned {
                     relation: r.id,
@@ -744,6 +766,87 @@ fn lane_issues(j: &mut Junction) {
         }
     }
     j.issues.extend(issues);
+}
+
+/// One end of a restriction to create: an arm's way, and the way's next node
+/// along the arm (to find the arm's part if the way is split first).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArmEnd {
+    pub way: WayId,
+    pub next_node: NodeId,
+    /// The way runs on past the junction, so it must be split there for the
+    /// restriction to name only this side.
+    pub needs_split: bool,
+}
+
+/// What clicking a movement does to the restrictions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RestrictionEdit {
+    /// Ban an allowed movement: a new `no_*` restriction.
+    Create {
+        from: ArmEnd,
+        via: NodeId,
+        to: ArmEnd,
+        value: String,
+    },
+    /// Turn the movement's `no_*` restriction into an `only_*` one.
+    Retag {
+        relation: RelationId,
+        key: String,
+        value: String,
+    },
+    /// Allow the movement again by removing the restriction.
+    Delete { relation: RelationId },
+}
+
+/// The restriction value suffix for a movement of this turn kind.
+pub fn turn_value(turn: TurnKind) -> &'static str {
+    match turn {
+        TurnKind::Straight | TurnKind::SlightLeft | TurnKind::SlightRight => "straight_on",
+        TurnKind::Left | TurnKind::SharpLeft => "left_turn",
+        TurnKind::Right | TurnKind::SharpRight => "right_turn",
+        TurnKind::UTurn => "u_turn",
+    }
+}
+
+/// The edit that moves the movement `from` → `to` one step along allowed →
+/// `no_*` → `only_*` → allowed. A movement ruled out by an `only_*`
+/// restriction from its approach is allowed again by removing that
+/// restriction. `None` if there is no such movement.
+pub fn toggle(j: &Junction, from: usize, to: usize) -> Option<RestrictionEdit> {
+    let m = j.movements.iter().find(|m| m.from == from && m.to == to)?;
+    let end = |arm: &Arm| ArmEnd {
+        way: arm.way,
+        next_node: arm.next_node,
+        needs_split: arm.way_continues,
+    };
+    Some(match &m.state {
+        MovementState::Allowed => match m.only {
+            Some(relation) => RestrictionEdit::Delete { relation },
+            None => RestrictionEdit::Create {
+                from: end(&j.arms[from]),
+                via: j.node,
+                to: end(&j.arms[to]),
+                value: format!("no_{}", turn_value(m.turn)),
+            },
+        },
+        MovementState::Banned { relation, .. } => {
+            let (_, key, value) = j.restrictions.iter().find(|(id, _, _)| id == relation)?;
+            match value.strip_prefix("no_") {
+                Some(rest) => RestrictionEdit::Retag {
+                    relation: *relation,
+                    key: key.clone(),
+                    value: format!("only_{rest}"),
+                },
+                None => RestrictionEdit::Delete {
+                    relation: *relation,
+                },
+            }
+        }
+        MovementState::OnlyElsewhere { relation, .. } => RestrictionEdit::Delete {
+            relation: *relation,
+        },
+    })
 }
 
 /// `lanes:forward + lanes:backward (+ lanes:both_ways)` against `lanes`, for
@@ -1007,6 +1110,71 @@ mod tests {
             ("lanes:backward", "1"),
         ]);
         assert!(lanes_split_issue(&t).is_none());
+    }
+
+    /// A T: way 10 ends at node 1 from the south, way 20 runs west→east
+    /// through it.
+    fn tee() -> OsmData {
+        data(
+            &[(1, 0.0, 0.0), (2, -D, 0.0), (4, 0.0, -D), (5, 0.0, D)],
+            &[
+                (10, &[2, 1], &[("highway", "primary")]),
+                (20, &[4, 1, 5], &[("highway", "residential")]),
+            ],
+        )
+    }
+
+    #[test]
+    fn toggling_cycles_allowed_no_only_allowed() {
+        let mut d = tee();
+        let j = build(&d, NodeId(1)).unwrap();
+        let (south, west) = (arm(&j, 10, false), arm(&j, 20, false));
+        // Allowed: a new no_left_turn; the way through must be split.
+        let Some(RestrictionEdit::Create {
+            from,
+            via,
+            to,
+            value,
+        }) = toggle(&j, south, west)
+        else {
+            panic!("expected a create");
+        };
+        assert_eq!(value, "no_left_turn");
+        assert_eq!(via, NodeId(1));
+        assert_eq!(
+            (from.way, from.next_node, from.needs_split),
+            (WayId(10), NodeId(2), false)
+        );
+        assert_eq!(
+            (to.way, to.next_node, to.needs_split),
+            (WayId(20), NodeId(4), true)
+        );
+
+        // Banned: becomes only_left_turn.
+        d.relations
+            .push(restriction(100, "no_left_turn", 10, 1, 20));
+        let j = build(&d, NodeId(1)).unwrap();
+        assert_eq!(
+            toggle(&j, south, west),
+            Some(RestrictionEdit::Retag {
+                relation: RelationId(100),
+                key: "restriction".into(),
+                value: "only_left_turn".into(),
+            })
+        );
+
+        // Only: the movement it names, and every one it rules out, delete it.
+        d.relations[0] = restriction(100, "only_left_turn", 10, 1, 20);
+        let j = build(&d, NodeId(1)).unwrap();
+        let east = arm(&j, 20, true);
+        for to in [west, east] {
+            assert_eq!(
+                toggle(&j, south, to),
+                Some(RestrictionEdit::Delete {
+                    relation: RelationId(100)
+                })
+            );
+        }
     }
 
     #[test]
