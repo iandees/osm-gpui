@@ -159,7 +159,7 @@ Note: labels already fade in (point, area and street labels share `labels::fade_
 ✅ Done — running download/upload shown with a spinner in the status bar, separate from transient messages (#119).
 
 ### 4.5 Trackpad/keyboard navigation
-✅ Done (partial) — trackpad pan, pinch zoom, keyboard navigation (#92); scroll direction setting (#166, #170). Remaining: double-click on empty map does not zoom-to-cursor (double-click is used for selecting closed-way interiors and inserting a node on a segment).
+✅ Done — trackpad pan, pinch zoom, keyboard navigation (#92); scroll direction setting (#166, #170); double-click on empty map zooms to the cursor in Select mode (#326).
 
 ### 4.6 Surface relation membership
 ✅ Done — relations are parsed, selected, edited and shown in the side panel (member-of rows, roles, Add to Relation) (#110, #111, #112, #114), drawn on the map (#139, #144), and sortable (#213).
@@ -269,7 +269,7 @@ Each item was checked against the code.
 
 - **Typed coordinates.** Latitude/longitude travel as bare `(f64, f64)` tuples whose order differs between modules (`Viewport::center` and `screen_to_geo` return `(lat, lon)`, while mercator values are `(x, y)` pairs of the same type), and the mercator bounds are tuples too. Introduce `LatLon` and `Mercator` newtypes and a bounds struct.
 - **`MapViewer` field grouping.** `MapViewer` in `src/main.rs` is still one flat struct; group related fields (viewport and interaction, dialogs, autosave, imagery) into sub-structs.
-- **Imagery provider secrets in the keychain.** `mapillary_token` and `fotoshi_api_key` are plain fields of `settings.json` (`src/settings_store.rs`); store them in the keyring like the OAuth token.
+- ✅ **Imagery provider secrets in the keychain.** Done in #301: `src/secrets.rs` keeps `mapillary_token` and `fotoshi_api_key` in the keyring (owner-only `secrets.json` fallback when the keychain refuses), reads lazily once per session, and `migrate_from_settings` moves legacy plaintext out of `settings.json` at startup.
 - **Flaky UI scripts when the window is covered.** Scripts can hang at `capture` or `scroll` after an idle wait when another window covers the app; not yet diagnosed.
 - **3D building follow-ups.** The 3D view work lives on the unmerged `building-3d` branch; its follow-ups stay open until it merges.
 - **Compiler-checked dispatch for the last two mode hooks.** `refresh_snap_preview` and `handle_modifiers_changed` in `src/main.rs` still test `self.mode() == EditMode::...` instead of matching on `ModeState`, so a new mode does not get a compile error there.
@@ -283,5 +283,5 @@ The original edit-loop arc (versions, undo, tags, create/delete, quit guard, upl
 1. **Label follow-ups (3.14):** start with the cheap, independent ones: settings toggles (3), `label-priority` and street-name vs icon priority (1), street-name halo unification (6). Then cross-layer collision (4) and area-label wrapping (2). The GPU frame-time measurement (10) and satellite legibility check (11) should precede any further halo-cost work.
 2. **MapCSS leftovers:** node zoom selectors beyond z18 (3.14 item 9), chevron/one-way properties (7).
 3. **Small rendering items:** 3.11 (theme-sourced map colors, tile fade, error badge), 3.7 remainder (theme accent).
-4. **UX gaps:** 4.1(c) auto-fetch on viewport settle, 4.5 double-click zoom.
-5. **Code health, safely parallelizable:** 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 `OsmParser` associated functions, then the "Still open from the architecture review" list (typed coordinates, `MapViewer` field grouping, imagery secrets in the keychain, a script-mode HTTP client, the covered-window script hangs, compiler-checked dispatch for the last two mode hooks).
+4. **UX gaps:** 4.1(c) auto-fetch on viewport settle.
+5. **Code health, safely parallelizable:** 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 `OsmParser` associated functions, then the "Still open from the architecture review" list (typed coordinates, `MapViewer` field grouping, a script-mode HTTP client, the covered-window script hangs, compiler-checked dispatch for the last two mode hooks).
