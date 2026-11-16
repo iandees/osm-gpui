@@ -123,9 +123,7 @@ Honest remainder (each is scoped under 3.14):
 ✅ Done — `hidpi_tile_zoom()` requests z+1 tiles at scale factor >= 1.5 (stretching when z+1 exceeds the source's max zoom) (#224).
 
 ### 3.11 Map-area colors bypass the theme; tile pop-in is abrupt
-Still open (partially mitigated by the theme work in #72, #143, #155). The coordinate grid layer (and its hardcoded grid color) has since been removed. Hardcoded colors remain: tile placeholder `0x2d3748` and the full-tile crimson error block `0x9f1239` in `src/layers/tile_layer.rs`; tiles still appear with no fade.
-
-**Implement:** source map background/overlay colors from `cx.theme()`; fade tile opacity 0→1; replace the crimson error tile with a corner badge.
+✅ Done — the tile placeholder and error badge colors come from `cx.theme()` (`muted`, `danger`), tiles fade in over `TILE_FADE` once their image loads, and a failed tile shows a small corner badge instead of a full crimson block (`src/layers/tile_layer.rs`).
 
 ### 3.14 Label rendering follow-ups
 Concrete next steps after the label work (#226-#229). Each was re-checked against the code; grep for the named symbols.
