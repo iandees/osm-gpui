@@ -60,15 +60,13 @@ pub(super) fn hover_enabled(view: &MapViewer, button_down: bool) -> bool {
 /// Resolve a plain click into a selection change. `shift_held` toggles the
 /// hit feature in/out of the existing selection (add if absent, remove if
 /// already selected) instead of replacing it; a shift-click that hits nothing
-/// is a no-op, leaving the existing selection intact. A double-click on empty
-/// map (no feature, interior or reference feature) zooms in one level around
-/// the cursor; returns whether the viewport changed.
+/// is a no-op, leaving the existing selection intact.
 pub(crate) fn click(
     view: &mut MapViewer,
     screen_pt: Point<Pixels>,
     shift_held: bool,
     click_count: usize,
-) -> bool {
+) {
     let per_layer = view.layer_manager.hit_test_all(&view.viewport, screen_pt);
     let mut hit = osm_gpui::selection::resolve_hits(per_layer);
     // Double-click inside a closed way's interior (away from its outline,
@@ -81,12 +79,9 @@ pub(crate) fn click(
     }
     // Data underneath always wins. A click on nothing but a read-only
     // reference feature (GPX, GeoJSON) shows what it is in the status bar.
-    let mut zoomed = false;
     if hit.is_none() && !shift_held {
         if let Some(text) = view.reference_feature_at(screen_pt) {
             view.set_status(text);
-        } else if click_count == 2 {
-            zoomed = view.viewport.zoom_in_at(screen_pt);
         }
     }
     view.selected = osm_gpui::selection::apply_click_selection(&view.selected, hit, shift_held);
@@ -94,7 +89,6 @@ pub(crate) fn click(
     view.fields_panel.fields_text_subscribed.clear();
     view.fields_panel.fields_open_combo = None;
     view.fields_panel.fields_promoted_more_fields.clear();
-    zoomed
 }
 
 /// Escape clears the selection, unless it just cancelled a move-drag.

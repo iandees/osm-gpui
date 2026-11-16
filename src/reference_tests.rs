@@ -62,30 +62,6 @@ fn clicking_a_reference_line_shows_it_in_the_status_bar(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn double_click_on_empty_map_zooms_in_around_the_cursor(cx: &mut TestAppContext) {
-    with_view(cx, |view, _w, cx| {
-        view.add_reference_dataset("walk".into(), track(), cx);
-        let at = point(px(200.0), px(500.0));
-        let geo = view.viewport.screen_to_geo(at);
-        let before = view.viewport.zoom_level();
-        // A single click does not zoom.
-        crate::modes::select::click(view, at, false, 1);
-        assert_eq!(view.viewport.zoom_level(), before);
-        // On a reference feature, a double-click does not zoom.
-        crate::modes::select::click(view, point(px(400.0), px(302.0)), false, 2);
-        assert_eq!(view.viewport.zoom_level(), before);
-        // Shift-double-click does not zoom either.
-        assert!(!crate::modes::select::click(view, at, true, 2));
-        assert_eq!(view.viewport.zoom_level(), before);
-        assert!(crate::modes::select::click(view, at, false, 2));
-        assert_eq!(view.viewport.zoom_level(), before + 1.0);
-        // The point under the cursor stays put.
-        let after = view.viewport.screen_to_geo(at);
-        assert!((after.lat - geo.lat).abs() < 1e-6 && (after.lon - geo.lon).abs() < 1e-6);
-    });
-}
-
-#[gpui::test]
 fn add_mode_snaps_a_new_node_onto_the_reference_line(cx: &mut TestAppContext) {
     with_view(cx, |view, _w, cx| {
         let data_id = add_osm_layer(view, "data", empty_data());
