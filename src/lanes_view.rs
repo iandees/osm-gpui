@@ -29,6 +29,34 @@ pub(crate) const SECTION: usize = 9;
 const LANE_H: f32 = 28.0;
 /// Space above and below the road.
 const MARGIN: f32 = 10.0;
+/// Space left and right of the road, where the end badges sit.
+const INSET: f32 = 30.0;
+/// Diameter of an end badge.
+const BADGE: f32 = 20.0;
+
+/// The way's first node ("A", the strip's left end) and last node ("B", its
+/// right end): the same badges mark them on the map, so the strip's
+/// directions can be matched to the road.
+pub(crate) const END_A: u32 = 0xE8590C;
+pub(crate) const END_B: u32 = 0x1E6FE8;
+
+/// A round end badge with its letter.
+fn end_badge(letter: &'static str, colour: u32) -> gpui::Div {
+    div()
+        .size(px(BADGE))
+        .flex_shrink_0()
+        .rounded_full()
+        .border_2()
+        .border_color(gpui::white())
+        .bg(gpui::rgb(colour))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(11.))
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_color(gpui::white())
+        .child(letter)
+}
 
 /// A lane of the strip: its direction and index (left to right as that
 /// direction's driver sees them), or a shared centre lane.
@@ -61,7 +89,7 @@ fn rows(c: &LaneConfig) -> Vec<Row> {
 
 fn paint_strip(c: &LaneConfig, width: f32, o: Point<Pixels>, window: &mut Window) {
     let rows = rows(c);
-    let (x0, x1) = (6.0, width - 6.0);
+    let (x0, x1) = (INSET, width - INSET);
     let top = MARGIN;
     let bottom = MARGIN + rows.len() as f32 * LANE_H;
     fill(
@@ -197,6 +225,62 @@ impl MapViewer {
         is_road(&tags).then_some((feature.layer_id, WayId(feature.id), tags))
     }
 
+    /// The A and B badges on the map at the selected road's first and last
+    /// nodes, matching the Lanes strip's ends, while that section is open.
+    /// Each sits just beyond its end of the way, so it doesn't hide the node.
+    pub(crate) fn render_lane_end_markers(&self) -> Vec<gpui::AnyElement> {
+        let mut out = Vec::new();
+        if !self.side_panel_open[SECTION] {
+            return out;
+        }
+        let Some((layer_id, way, _)) = self.selected_road() else {
+            return out;
+        };
+        let Some(layer) = self
+            .layer_manager
+            .find_layer(layer_id)
+            .and_then(|l| l.as_editable())
+        else {
+            return out;
+        };
+        let Some(nodes) = layer.way_node_ids(way).filter(|n| n.len() >= 2) else {
+            return out;
+        };
+        let screen = |n: NodeId| {
+            layer.node_lat_lon(n).map(|(lat, lon)| {
+                let p = self
+                    .viewport
+                    .geo_to_screen(osm_gpui::coordinates::LatLon::new(lat, lon));
+                V(p.x.as_f32(), p.y.as_f32())
+            })
+        };
+        let n = nodes.len();
+        for (end, inner, letter, colour) in [
+            (nodes[0], nodes[1], "A", END_A),
+            (nodes[n - 1], nodes[n - 2], "B", END_B),
+        ] {
+            let (Some(p), Some(q)) = (screen(end), screen(inner)) else {
+                continue;
+            };
+            let d = p.sub(q);
+            let len = d.0.hypot(d.1);
+            let out_dir = if len > 0.0 {
+                d.mul(1.0 / len)
+            } else {
+                V(0.0, -1.0)
+            };
+            let c = p.add(out_dir.mul(BADGE * 0.9));
+            out.push(
+                end_badge(letter, colour)
+                    .absolute()
+                    .left(px(c.0 - BADGE / 2.0))
+                    .top(px(c.1 - BADGE / 2.0))
+                    .into_any_element(),
+            );
+        }
+        out
+    }
+
     /// Apply a lane edit to the selected road as one undo step.
     pub(crate) fn apply_lane_edit(&mut self, edit: LaneEdit) {
         if self.refuse_edit_during_upload() {
@@ -285,8 +369,8 @@ impl MapViewer {
                 div()
                     .id(("lane-row", i))
                     .absolute()
-                    .left(px(6.0))
-                    .w(px(width - 12.0))
+                    .left(px(INSET))
+                    .w(px(width - 2.0 * INSET))
                     .top(px(MARGIN + i as f32 * LANE_H))
                     .h(px(LANE_H))
                     .cursor_pointer()
@@ -321,7 +405,20 @@ impl MapViewer {
                 .inset_0()
                 .size_full()
             })
-            .children(lane_rows);
+            .children(lane_rows)
+            // A at the left (the way's start), B at the right (its end).
+            .child(
+                end_badge("A", END_A)
+                    .absolute()
+                    .left(px((INSET - BADGE) / 2.0))
+                    .top(px((height - BADGE) / 2.0)),
+            )
+            .child(
+                end_badge("B", END_B)
+                    .absolute()
+                    .right(px((INSET - BADGE) / 2.0))
+                    .top(px((height - BADGE) / 2.0)),
+            );
 
         let small_button = |id: (&'static str, usize), label: &'static str, on: bool| {
             div()
@@ -349,10 +446,12 @@ impl MapViewer {
                 config.backward.as_ref()
             }?;
             let towards = names_at(layer, layer_id, if forward { last } else { first }, way);
-            let title = if forward {
-                tr!("panel.lanes.forward", place = towards)
+            let title = tr!("panel.lanes.towards", place = towards);
+            // A → B for forward traffic, B → A for backward.
+            let (from_badge, to_badge) = if forward {
+                (end_badge("A", END_A), end_badge("B", END_B))
             } else {
-                tr!("panel.lanes.backward", place = towards)
+                (end_badge("B", END_B), end_badge("A", END_A))
             };
             let k = if forward { 0 } else { 1 };
             Some(
@@ -360,6 +459,9 @@ impl MapViewer {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .child(from_badge)
+                    .child("→")
+                    .child(to_badge)
                     .child(div().flex_1().min_w(px(0.)).truncate().child(title))
                     .child(
                         div()

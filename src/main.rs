@@ -6108,6 +6108,7 @@ impl Render for MapViewer {
                     .children(self.object_history.view.clone())
                     .children(self.render_imagery_offset_panel(window, cx))
                     .children(self.render_gps_traces_legend(cx))
+                    .children(self.render_lane_end_markers())
                     .child({
                         // Legally-required tile/imagery attribution for
                         // every currently-visible layer that has one,

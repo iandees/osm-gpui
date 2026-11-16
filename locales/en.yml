@@ -342,18 +342,19 @@ panel:
     value_placeholder: "value"
   lanes:
     title: "Lanes"
-    # `%{place}` is the road(s) the direction drives towards, or `way_end`.
-    forward: "→ towards %{place}"
-    backward: "← towards %{place}"
+    # After the A → B (or B → A) badges. `%{place}` is the road(s) the
+    # direction drives towards, or `way_end`.
+    towards: "towards %{place}"
     way_end: "way end"
     count:
       one: "%{count} lane"
       other: "%{count} lanes"
     both_ways: "Shared centre turn lanes: %{count}"
     hint: "Click a lane to set its turn arrows."
-    # `%{lane}` counts from the left as the driver sees it.
-    arrows_forward: "Arrows for lane %{lane} from the left, driving →"
-    arrows_backward: "Arrows for lane %{lane} from the left, driving ←"
+    # `%{lane}` counts from the left as the driver sees it; A and B are the
+    # way's ends as the badges mark them.
+    arrows_forward: "Arrows for lane %{lane} from the left, driving A → B"
+    arrows_backward: "Arrows for lane %{lane} from the left, driving B → A"
   junction:
     title: "Junction"
     # Above the movement list; %{arm} is the road the movements start on.

@@ -330,16 +330,15 @@ panel:
     value_placeholder: "Wert"
   lanes:
     title: "Fahrstreifen"
-    forward: "→ Richtung %{place}"
-    backward: "← Richtung %{place}"
+    towards: "Richtung %{place}"
     way_end: "Wegende"
     count:
       one: "%{count} Fahrstreifen"
       other: "%{count} Fahrstreifen"
     both_ways: "Gemeinsame mittlere Abbiegestreifen: %{count}"
     hint: "Einen Fahrstreifen anklicken, um seine Abbiegepfeile festzulegen."
-    arrows_forward: "Pfeile für Fahrstreifen %{lane} von links, Fahrtrichtung →"
-    arrows_backward: "Pfeile für Fahrstreifen %{lane} von links, Fahrtrichtung ←"
+    arrows_forward: "Pfeile für Fahrstreifen %{lane} von links, Fahrtrichtung A → B"
+    arrows_backward: "Pfeile für Fahrstreifen %{lane} von links, Fahrtrichtung B → A"
   junction:
     title: "Kreuzung"
     from: "Von %{arm}"
