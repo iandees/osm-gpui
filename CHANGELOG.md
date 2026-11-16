@@ -7,6 +7,26 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.13.0
+
+### Editing
+
+- Selecting a road way shows a Lanes section: the road drawn as a strip of lanes from its `lanes`, `lanes:forward`, `lanes:backward`, `lanes:both_ways`, oneway and `turn:lanes` tags, with an editor for them. ([#340](https://github.com/iandees/osm-gpui/pull/340))
+- Selecting a node where roads meet shows a Junction section with a top-down diagram of the junction and turn-restriction editing. ([#341](https://github.com/iandees/osm-gpui/pull/341))
+- The tag editor and the Address field suggest nearby road names for `addr:street`. ([#338](https://github.com/iandees/osm-gpui/pull/338))
+- A new File > Revert Changeset… takes a changeset number or address and makes the edits that undo it, in the active layer or a new one, as one undo step. ([#339](https://github.com/iandees/osm-gpui/pull/339))
+
+### Map
+
+- Settings toggles and View menu items turn labels, POI icons, street names and area labels on or off. ([#333](https://github.com/iandees/osm-gpui/pull/333))
+- A new `label-priority` MapCSS property ranks street names against icons and text, and labels from different layers no longer overprint. ([#333](https://github.com/iandees/osm-gpui/pull/333))
+- Area labels try two lines when one does not fit, and water area labels are drawn in italic. ([#333](https://github.com/iandees/osm-gpui/pull/333))
+- Tiles fade in, tile layer colours come from the theme, and a tile error shows as a small badge instead of a full-tile block; the parent tile stays visible until the new tile has fully faded in. ([#334](https://github.com/iandees/osm-gpui/pull/334), [#337](https://github.com/iandees/osm-gpui/pull/337))
+
+### Settings and app
+
+- In `--offline` runs, a request with no matching fixture fails with an error naming the host, method and URL. ([#334](https://github.com/iandees/osm-gpui/pull/334))
+
 ## 0.12.0
 
 ### Layers
