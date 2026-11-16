@@ -159,7 +159,7 @@ Note: labels already fade in (point, area and street labels share `labels::fade_
 ✅ Done — running download/upload shown with a spinner in the status bar, separate from transient messages (#119).
 
 ### 4.5 Trackpad/keyboard navigation
-✅ Done — trackpad pan, pinch zoom, keyboard navigation (#92); scroll direction setting (#166, #170); double-click on empty map zooms to the cursor in Select mode (#326).
+✅ Done (partial) — trackpad pan, pinch zoom, keyboard navigation (#92); scroll direction setting (#166, #170). Remaining: double-click on empty map does not zoom-to-cursor (double-click is used for selecting closed-way interiors and inserting a node on a segment).
 
 ### 4.6 Surface relation membership
 ✅ Done — relations are parsed, selected, edited and shown in the side panel (member-of rows, roles, Add to Relation) (#110, #111, #112, #114), drawn on the map (#139, #144), and sortable (#213).
@@ -283,5 +283,5 @@ The original edit-loop arc (versions, undo, tags, create/delete, quit guard, upl
 1. **Label follow-ups (3.14):** start with the cheap, independent ones: settings toggles (3), `label-priority` and street-name vs icon priority (1), street-name halo unification (6). Then cross-layer collision (4) and area-label wrapping (2). The GPU frame-time measurement (10) and satellite legibility check (11) should precede any further halo-cost work.
 2. **MapCSS leftovers:** node zoom selectors beyond z18 (3.14 item 9), chevron/one-way properties (7).
 3. **Small rendering items:** 3.11 (theme-sourced map colors, tile fade, error badge), 3.7 remainder (theme accent).
-4. **UX gaps:** 4.1(c) auto-fetch on viewport settle.
+4. **UX gaps:** 4.1(c) auto-fetch on viewport settle, 4.5 double-click zoom.
 5. **Code health, safely parallelizable:** 5.9 `on_move_layer` test, 5.10 remaining silent lock/save failures, 5.12 `OsmParser` associated functions, then the "Still open from the architecture review" list (typed coordinates, `MapViewer` field grouping, a script-mode HTTP client, the covered-window script hangs, compiler-checked dispatch for the last two mode hooks).
