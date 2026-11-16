@@ -3683,6 +3683,8 @@ mod tests {
                 EditOp::ReverseWay { .. } => "reverse",
                 EditOp::Purge { .. } => "purge",
                 EditOp::Unpurge { .. } => "unpurge",
+                EditOp::Undelete { .. } => "undelete",
+                EditOp::Redelete { .. } => "redelete",
             })
             .collect()
     }

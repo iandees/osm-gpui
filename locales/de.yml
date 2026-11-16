@@ -22,6 +22,7 @@ menu:
     open: "Öffnen …"
     export: "Exportieren …"
     download: "Von OSM herunterladen"
+    revert_changeset: "Änderungssatz zurücknehmen …"
     upload: "Auf OSM hochladen …"
   edit:
     title: "Bearbeiten"
@@ -1457,3 +1458,29 @@ relation_sort:
     one: "Mitglieder zu einer zusammenhängenden Kette sortiert"
     other: "Mitglieder sortiert; die Wege bilden %{count} getrennte Ketten"
   already: "Die Mitglieder sind bereits in Reihenfolge"
+
+revert:
+  title: "Änderungssatz zurücknehmen"
+  hint: "Nimm einen Änderungssatz anhand seiner Nummer oder Seitenadresse zurück. Die Änderungen entstehen hier zur Prüfung; lade sie dann wie gewohnt hoch."
+  placeholder: "Nummer oder Adresse des Änderungssatzes"
+  field: "Änderungssatz"
+  action: "Zurücknehmen"
+  working: "Wird zurückgenommen …"
+  bad_id: "Gib eine Nummer oder die Adresse der Seite auf openstreetmap.org ein."
+  label: "Änderungssatz %{id} zurückgenommen"
+  nothing: "Änderungssatz %{id} enthält nichts zum Zurücknehmen."
+  done: "Änderungssatz %{id} zurückgenommen: %{reverted} geändert, %{skipped} unberührt."
+  done_all: "Änderungssatz %{id} zurückgenommen: %{reverted} geändert. Prüfe sie und lade sie hoch."
+  busy: "Eine andere Übertragung läuft. Versuche es nach deren Ende erneut."
+  notice_title: "Einige Objekte blieben unberührt"
+  notice_intro: "Diese Objekte wurden nicht zurückgenommen:"
+  more: "… und %{count} weitere"
+  kind:
+    node: "Knoten"
+    way: "Weg"
+    relation: "Relation"
+  skipped:
+    changed_since: "%{kind} %{id}: seitdem geändert, jetzt Version %{version}"
+    unavailable: "%{kind} %{id}: beim Server nicht verfügbar"
+    edited_locally: "%{kind} %{id}: hat noch nicht hochgeladene Änderungen"
+    refused: "%{kind} %{id}: %{detail}"

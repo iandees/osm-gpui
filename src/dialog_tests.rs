@@ -83,6 +83,10 @@ fn openers() -> Vec<(&'static str, Opener)> {
                 cx.new(|cx| ui::parallel_dialog::ParallelDialog::new(Default::default(), w, cx)),
             );
         }),
+        ("revert changeset", |v, w, cx| {
+            v.dialogs.revert_dialog =
+                Some(cx.new(|cx| ui::revert_changeset_dialog::RevertChangesetDialog::new(w, cx)));
+        }),
         ("upload", |v, w, cx| {
             v.dialogs.upload_dialog =
                 Some(cx.new(|cx| ui::upload_dialog::UploadDialog::new(w, cx, Vec::new())));
@@ -309,6 +313,12 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
         |w, cx| parallel_dialog::ParallelDialog::new(Default::default(), w, cx),
         parallel_dialog::DialogEvent,
         parallel_dialog::DialogEvent::Cancelled
+    );
+    closes_on_escape!(
+        cx,
+        revert_changeset_dialog::RevertChangesetDialog::new,
+        revert_changeset_dialog::DialogEvent,
+        revert_changeset_dialog::DialogEvent::Cancelled
     );
     closes_on_escape!(
         cx,

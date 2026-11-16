@@ -257,6 +257,17 @@ impl EditableLayer for OsmLayer {
         Some((n.lat, n.lon))
     }
 
+    fn nearby_road_names(&self, feature: &FeatureRef, radius_m: f64) -> Vec<String> {
+        if feature.layer_id != self.id {
+            return Vec::new();
+        }
+        self.store
+            .osm_data
+            .as_ref()
+            .map(|d| crate::tag_suggest::nearby_road_names(d, feature.kind, feature.id, radius_m))
+            .unwrap_or_default()
+    }
+
     fn way_node_ids(&self, way_id: WayId) -> Option<Vec<NodeId>> {
         let data = self.store.osm_data.as_ref()?;
         let way = data.ways.get(&way_id)?;
@@ -773,6 +784,44 @@ impl EditableLayer for OsmLayer {
         self.rebuild_caches(&data);
         self.store.osm_data = Some(data);
         self.store.original_data = Some(Arc::new(base));
+        self.store.revision += 1;
+    }
+
+    fn undelete_objects(&mut self, objects: PurgedFeatures) {
+        use crate::layers::diff::UNKNOWN_BASELINE_TAG;
+        let mut data = self.store.osm_data.as_deref().cloned().unwrap_or_default();
+        let mut base = self
+            .store
+            .original_data
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
+        let marker = || (UNKNOWN_BASELINE_TAG.to_string(), "yes".to_string());
+        for n in objects.nodes {
+            let mut stand_in = n.clone();
+            stand_in.tags.extend([marker()]);
+            base.nodes.insert(n.id, stand_in);
+            data.nodes.insert(n.id, n);
+        }
+        for w in objects.ways {
+            let mut stand_in = w.clone();
+            stand_in.tags.extend([marker()]);
+            base.ways.insert(w.id, stand_in);
+            data.ways.insert(w.id, w);
+        }
+        for (r, ..) in objects.relations {
+            let mut stand_in = r.clone();
+            stand_in.tags.extend([marker()]);
+            base.relations.retain(|b| b.id != r.id);
+            base.relations.push(stand_in);
+            data.relations.retain(|d| d.id != r.id);
+            data.relations.push(r);
+        }
+        let data = Arc::new(data);
+        self.rebuild_caches(&data);
+        self.store.osm_data = Some(data);
+        self.store.original_data = Some(Arc::new(base));
+        self.store.modified = true;
         self.store.revision += 1;
     }
 

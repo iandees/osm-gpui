@@ -434,6 +434,16 @@ pub trait EditableLayer {
         false
     }
 
+    /// Names of the named roads within `radius_m` meters of `feature`,
+    /// nearest first (for `addr:street` suggestions). Default: none.
+    fn nearby_road_names(
+        &self,
+        _feature: &crate::selection::FeatureRef,
+        _radius_m: f64,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Return key/value tags for the given feature if this layer owns it.
     fn feature_tags(&self, feature: &crate::selection::FeatureRef) -> Option<Tags>;
 
@@ -632,6 +642,12 @@ pub trait EditableLayer {
 
     /// Undo of `purge_features`: put the objects back in data and baseline.
     fn restore_purged(&mut self, purged: crate::selection::PurgedFeatures);
+
+    /// Bring back objects the server has deleted, as edits of the existing
+    /// objects: they join the data as given (ids and the deleted versions
+    /// kept) and the baseline as a marked stand-in, so the diff reports each
+    /// as modified rather than created. Undone by `purge_features`.
+    fn undelete_objects(&mut self, objects: crate::selection::PurgedFeatures);
 }
 
 /// Read the status-line numbers off `layers` through their typed accessors.

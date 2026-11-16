@@ -16,6 +16,7 @@ pub mod preset_picker_dialog;
 pub mod quit_confirm_dialog;
 pub mod relation_picker_dialog;
 pub mod restore_dialog;
+pub mod revert_changeset_dialog;
 pub mod settings_window;
 pub mod sign_in_dialog;
 pub mod style;

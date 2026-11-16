@@ -23,6 +23,7 @@ use osm_gpui::selection::FeatureRef;
 use osm_gpui::settings_store;
 use osm_gpui::tag_suggest::{
     suggest_keys, suggest_values, DataIndex, SchemaIndex, Source, SuggestInput,
+    NEARBY_ROAD_RADIUS_M,
 };
 use osm_gpui::taginfo::{self, Lookup, ObjectType, TaginfoItem, TaginfoState, Target};
 use osm_gpui::ui::style::muted_text_size;
@@ -323,12 +324,30 @@ impl MapViewer {
                     }
                     selection_values.sort();
                 }
+                // Roads near the selection, for a street name.
+                let mut nearby: Vec<String> = Vec::new();
+                if key_text == "addr:street" {
+                    for f in &edit.ctx.features {
+                        let names = self
+                            .layer_manager
+                            .find_layer(f.layer_id)
+                            .and_then(|l| l.as_editable())
+                            .map(|e| e.nearby_road_names(f, NEARBY_ROAD_RADIUS_M))
+                            .unwrap_or_default();
+                        for n in names {
+                            if !nearby.contains(&n) {
+                                nearby.push(n);
+                            }
+                        }
+                    }
+                }
                 if key_text.is_empty() {
                     Vec::new()
                 } else {
                     suggest_values(SuggestInput {
                         key: &key_text,
                         selection: &selection_values,
+                        nearby: &nearby,
                         data: &refs,
                         taginfo: &edit.suggest.taginfo,
                         ..SuggestInput::new(&typed, schema(), LIST_LIMIT)
