@@ -340,6 +340,15 @@ panel:
       other: "%{count} features selected: too many to show combined tags (limit %{limit})"
     key_placeholder: "key"
     value_placeholder: "value"
+  junction:
+    title: "Junction"
+    # Above the movement list; %{arm} is the road the movements start on.
+    from: "From %{arm}"
+    hint: "Click a road label to see its turns."
+    allowed: "allowed"
+    via_way: "Via-way restrictions"
+    issues: "Issues"
+    no_issues: "No problems found"
   relations:
     title: "Relations"
     no_role: "(no role)"
