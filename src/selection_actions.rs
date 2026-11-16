@@ -191,7 +191,7 @@ fn extend_target(
 }
 
 /// `(way id, node ids)` for every way that uses `node`.
-fn ways_using(editable: &dyn EditableLayer, node: NodeId) -> Vec<(i64, Vec<i64>)> {
+pub(crate) fn ways_using(editable: &dyn EditableLayer, node: NodeId) -> Vec<(i64, Vec<i64>)> {
     editable
         .ways_using_node(node)
         .into_iter()
@@ -874,14 +874,14 @@ pub(crate) fn display_shortcut_for(spec: &str, mac: bool) -> String {
 
 /// The message for an edit the layer refused. Callers have checked what
 /// they can beforehand, so this is not expected to reach the user.
-fn refused(e: EditError) -> String {
+pub(crate) fn refused(e: EditError) -> String {
     tr!("action.edit_refused", detail = e.to_string()).to_string()
 }
 
 /// Edit `editable` through a recording. If `edit` fails, everything it did is
 /// undone and the layer is as it was; if it succeeds, the recorded ops come
 /// back for the undo step.
-fn record_edit<T>(
+pub(crate) fn record_edit<T>(
     layer_id: LayerId,
     editable: &mut dyn EditableLayer,
     edit: impl FnOnce(&mut Recording<'_>) -> Result<T, String>,
@@ -1811,7 +1811,7 @@ fn split_plans(
 /// one afterwards. Returns the changed relations (only those holding a split
 /// way) and, per plan, the id each of its ways stands under (the original,
 /// then a placeholder per new way, in the order the cuts create them).
-fn split_relations(
+pub(crate) fn split_relations(
     editable: &dyn EditableLayer,
     plans: &[topology::SplitPlan],
 ) -> Result<(Vec<osm_gpui::osm::OsmRelation>, Vec<Vec<WayId>>), String> {
@@ -1909,36 +1909,8 @@ fn apply_split(
         }
     }
 
-    let ((), ops) = record_edit(layer_id, editable, |rec| {
-        let mut new_ids = Vec::new();
-        for (plan, ids) in plans.iter().zip(&ids_by_plan) {
-            let way_ref = FeatureRef {
-                layer_id,
-                kind: FeatureKind::Way,
-                id: plan.way_id,
-            };
-            let tags = rec.layer().feature_tags(&way_ref).unwrap_or_default();
-            // Where every way of this plan ends up, replaying its cuts.
-            let mut finals = vec![plan.before.clone()];
-            for cut in plan.cuts() {
-                finals[cut.holder] = cut.keep;
-                finals.push(cut.new);
-            }
-            for (k, nodes) in finals.iter().enumerate().skip(1) {
-                let new_id = rec.add_way(NodeId::from_raw_vec(nodes), tags.clone());
-                new_ids.push((ids[k], new_id));
-            }
-            if plan.cuts().is_empty() {
-                // A closed way only turned to start at the node.
-                finals[0] = plan.keep().to_vec();
-            }
-            rec.set_way_nodes(
-                WayId(plan.way_id),
-                NodeId::from_raw_vec(&finals.swap_remove(0)),
-            )
-            .map_err(refused)?;
-        }
-        retarget_relations(rec, relations, &new_ids)
+    let (_, ops) = record_edit(layer_id, editable, |rec| {
+        record_split(rec, layer_id, &plans, &ids_by_plan, relations)
     })?;
 
     let label = tr_count!("action.split.done", plans.len()).to_string();
@@ -1953,6 +1925,52 @@ fn apply_split(
         select: None,
         continue_way: None,
     })
+}
+
+/// Carry out split `plans` in `rec`: `ids_by_plan` and `relations` come from
+/// [`split_relations`]. Returns, per plan, the real ids of all its ways (the
+/// original first).
+pub(crate) fn record_split(
+    rec: &mut Recording<'_>,
+    layer_id: LayerId,
+    plans: &[topology::SplitPlan],
+    ids_by_plan: &[Vec<WayId>],
+    relations: Vec<osm_gpui::osm::OsmRelation>,
+) -> Result<Vec<Vec<WayId>>, String> {
+    let mut new_ids = Vec::new();
+    let mut real_by_plan = Vec::new();
+    for (plan, ids) in plans.iter().zip(ids_by_plan) {
+        let way_ref = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: plan.way_id,
+        };
+        let tags = rec.layer().feature_tags(&way_ref).unwrap_or_default();
+        // Where every way of this plan ends up, replaying its cuts.
+        let mut finals = vec![plan.before.clone()];
+        for cut in plan.cuts() {
+            finals[cut.holder] = cut.keep;
+            finals.push(cut.new);
+        }
+        let mut real = vec![WayId(plan.way_id)];
+        for (k, nodes) in finals.iter().enumerate().skip(1) {
+            let new_id = rec.add_way(NodeId::from_raw_vec(nodes), tags.clone());
+            new_ids.push((ids[k], new_id));
+            real.push(new_id);
+        }
+        real_by_plan.push(real);
+        if plan.cuts().is_empty() {
+            // A closed way only turned to start at the node.
+            finals[0] = plan.keep().to_vec();
+        }
+        rec.set_way_nodes(
+            WayId(plan.way_id),
+            NodeId::from_raw_vec(&finals.swap_remove(0)),
+        )
+        .map_err(refused)?;
+    }
+    retarget_relations(rec, relations, &new_ids)?;
+    Ok(real_by_plan)
 }
 
 /// Give each of `relations` its planned member list, with the placeholder ids
