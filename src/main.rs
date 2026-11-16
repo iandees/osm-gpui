@@ -45,6 +45,7 @@ mod menu;
 mod menu_sync;
 mod mode_panel;
 mod modes;
+mod road_paint;
 use modes::AddProgress;
 #[cfg(test)]
 use modes::{BuildingReference, ExtrudeDrag, ExtrudeStyle};
