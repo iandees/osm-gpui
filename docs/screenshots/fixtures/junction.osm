@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="junction inspector fixture">
+  <!-- A four-way junction at node 9001 (45.0, -93.0); see junction.osmscript.
+       Main Street runs north-south (9101 south, 9102 north), Oak Avenue
+       east-west (9103 west, 9104 east, bent slightly north).
+       Deliberate problems: 9103's turn:lanes lists 2 lanes for its 1;
+       9104's lanes:forward + lanes:backward doesn't add up to lanes;
+       9203 only_straight_on from Oak west, whose lanes still turn left.
+       Relations: 9201 no_left_turn east -> south; 9202 no_u_turn on Main
+       south; 9203 only_straight_on west -> east. -->
+  <node id="9001" version="1" lat="45.0000" lon="-93.0000"/>
+  <node id="9002" version="1" lat="44.9990" lon="-93.0000"/>
+  <node id="9003" version="1" lat="45.0010" lon="-93.0001"/>
+  <node id="9004" version="1" lat="45.0000" lon="-93.0014"/>
+  <node id="9005" version="1" lat="45.0003" lon="-92.9986"/>
+  <way id="9101" version="1">
+    <nd ref="9002"/>
+    <nd ref="9001"/>
+    <tag k="highway" v="primary"/>
+    <tag k="name" v="Main Street"/>
+    <tag k="lanes" v="5"/>
+    <tag k="lanes:forward" v="3"/>
+    <tag k="lanes:backward" v="2"/>
+    <tag k="turn:lanes:forward" v="left|through|through;right"/>
+  </way>
+  <way id="9102" version="1">
+    <nd ref="9001"/>
+    <nd ref="9003"/>
+    <tag k="highway" v="primary"/>
+    <tag k="name" v="Main Street"/>
+    <tag k="lanes" v="4"/>
+    <tag k="lanes:forward" v="2"/>
+    <tag k="lanes:backward" v="2"/>
+    <tag k="turn:lanes:backward" v="left;through|through;right"/>
+  </way>
+  <way id="9103" version="1">
+    <nd ref="9004"/>
+    <nd ref="9001"/>
+    <tag k="highway" v="secondary"/>
+    <tag k="name" v="Oak Avenue"/>
+    <tag k="lanes" v="2"/>
+    <tag k="turn:lanes:forward" v="left|through;right"/>
+  </way>
+  <way id="9104" version="1">
+    <nd ref="9001"/>
+    <nd ref="9005"/>
+    <tag k="highway" v="secondary"/>
+    <tag k="name" v="Oak Avenue"/>
+    <tag k="lanes" v="3"/>
+    <tag k="lanes:forward" v="1"/>
+    <tag k="lanes:backward" v="1"/>
+  </way>
+  <relation id="9201" version="1">
+    <member type="way" ref="9104" role="from"/>
+    <member type="node" ref="9001" role="via"/>
+    <member type="way" ref="9101" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="no_left_turn"/>
+  </relation>
+  <relation id="9202" version="1">
+    <member type="way" ref="9101" role="from"/>
+    <member type="node" ref="9001" role="via"/>
+    <member type="way" ref="9101" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="no_u_turn"/>
+  </relation>
+  <relation id="9203" version="1">
+    <member type="way" ref="9103" role="from"/>
+    <member type="node" ref="9001" role="via"/>
+    <member type="way" ref="9104" role="to"/>
+    <tag k="type" v="restriction"/>
+    <tag k="restriction" v="only_straight_on"/>
+  </relation>
+</osm>

@@ -341,6 +341,15 @@ panel:
       other: "%{count} features selected: too many to show combined tags (limit %{limit})"
     key_placeholder: "key"
     value_placeholder: "value"
+  junction:
+    title: "Junction"
+    # Above the movement list; %{arm} is the road the movements start on.
+    from: "From %{arm}"
+    hint: "Click a road to see its turns; click a turn to restrict it."
+    allowed: "allowed"
+    via_way: "Via-way restrictions"
+    issues: "Issues"
+    no_issues: "No problems found"
   relations:
     title: "Relations"
     no_role: "(no role)"
@@ -828,6 +837,13 @@ action:
     # `%{features}` is the count from `action.feature_count`.
     done: "Added %{features} to relation %{relation}"
     already: "The selected features are already members of %{relation}"
+  # Clicking a movement in the Junction section. `%{value}` is a restriction
+  # value such as `no_left_turn`; `%{id}` a relation id.
+  junction:
+    created: "Added turn restriction %{value}"
+    created_split: "Split the road at the junction and added turn restriction %{value}"
+    changed: "Changed turn restriction to %{value}"
+    removed: "Removed turn restriction r%{id}"
   new_relation:
     label: "New Relation"
     hint: "Select nodes, ways or relations to put into a new relation"
