@@ -8,8 +8,26 @@
 //! plain [`OsmData`] in tests.
 
 use crate::ids::{NodeId, RelationId, WayId};
+use crate::lanes::{is_road, lane_group, lanes_split_issue, Arrow, CountSource, LaneGroup};
 use crate::osm::{MemberType, OsmData, OsmRelation};
 use crate::tags::Tags;
+
+/// Whether a lane with `arrow` can lead to an exit of this turn kind.
+fn arrow_serves(arrow: Arrow, turn: TurnKind) -> bool {
+    use TurnKind::*;
+    match arrow {
+        Arrow::SharpLeft | Arrow::Left | Arrow::SlightLeft => {
+            matches!(turn, SharpLeft | Left | SlightLeft)
+        }
+        Arrow::SharpRight | Arrow::Right | Arrow::SlightRight => {
+            matches!(turn, SharpRight | Right | SlightRight)
+        }
+        Arrow::Through | Arrow::MergeToLeft | Arrow::MergeToRight => {
+            matches!(turn, Straight | SlightLeft | SlightRight)
+        }
+        Arrow::Reverse => turn == UTurn,
+    }
+}
 
 /// What the junction model needs to read.
 pub trait JunctionSource {
@@ -56,99 +74,6 @@ impl JunctionSource for OsmData {
             .cloned()
             .collect()
     }
-}
-
-/// One lane's `turn:lanes` arrows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Arrow {
-    SharpLeft,
-    Left,
-    SlightLeft,
-    Through,
-    SlightRight,
-    Right,
-    SharpRight,
-    Reverse,
-    MergeToLeft,
-    MergeToRight,
-}
-
-impl Arrow {
-    fn parse(s: &str) -> Option<Arrow> {
-        Some(match s.trim() {
-            "sharp_left" => Arrow::SharpLeft,
-            "left" => Arrow::Left,
-            "slight_left" => Arrow::SlightLeft,
-            "through" => Arrow::Through,
-            "slight_right" => Arrow::SlightRight,
-            "right" => Arrow::Right,
-            "sharp_right" => Arrow::SharpRight,
-            "reverse" => Arrow::Reverse,
-            "merge_to_left" => Arrow::MergeToLeft,
-            "merge_to_right" => Arrow::MergeToRight,
-            _ => return None,
-        })
-    }
-
-    /// The direction the arrow head points, in degrees clockwise from
-    /// straight ahead.
-    pub fn angle(self) -> f32 {
-        match self {
-            Arrow::SharpLeft => -135.0,
-            Arrow::Left => -90.0,
-            Arrow::SlightLeft => -45.0,
-            Arrow::Through => 0.0,
-            Arrow::SlightRight => 45.0,
-            Arrow::Right => 90.0,
-            Arrow::SharpRight => 135.0,
-            Arrow::Reverse => -180.0,
-            Arrow::MergeToLeft => -20.0,
-            Arrow::MergeToRight => 20.0,
-        }
-    }
-
-    /// The turn kinds an exit may have for this arrow to lead there.
-    fn serves(self, turn: TurnKind) -> bool {
-        use TurnKind::*;
-        match self {
-            Arrow::SharpLeft | Arrow::Left | Arrow::SlightLeft => {
-                matches!(turn, SharpLeft | Left | SlightLeft)
-            }
-            Arrow::SharpRight | Arrow::Right | Arrow::SlightRight => {
-                matches!(turn, SharpRight | Right | SlightRight)
-            }
-            Arrow::Through | Arrow::MergeToLeft | Arrow::MergeToRight => {
-                matches!(turn, Straight | SlightLeft | SlightRight)
-            }
-            Arrow::Reverse => turn == UTurn,
-        }
-    }
-}
-
-/// A lane's arrows; empty for `none` or an empty field.
-pub type LaneArrows = Vec<Arrow>;
-
-/// How a lane count was found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CountSource {
-    /// `lanes:<dir>`, or `lanes` on a oneway.
-    Tagged,
-    /// Half of an even `lanes`, or the number of `turn:lanes` fields.
-    Inferred,
-    /// Not known: drawn as one lane.
-    Unknown,
-}
-
-/// The lanes of one travel direction on an arm.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LaneGroup {
-    pub count: u32,
-    pub source: CountSource,
-    /// Per lane, left to right as the driver sees them; `None` without
-    /// `turn:lanes`.
-    pub arrows: Option<Vec<LaneArrows>>,
-    /// The tag `arrows` came from, for messages.
-    pub arrows_key: Option<String>,
 }
 
 /// A road leaving the junction node: one end of a way that ends there, or
@@ -293,44 +218,6 @@ impl Junction {
 /// How far along an arm its bearing is measured, in metres.
 const BEARING_SAMPLE_M: f64 = 20.0;
 
-fn is_road(tags: &Tags) -> bool {
-    matches!(
-        tags.get("highway"),
-        Some(
-            "motorway"
-                | "trunk"
-                | "primary"
-                | "secondary"
-                | "tertiary"
-                | "unclassified"
-                | "residential"
-                | "service"
-                | "living_street"
-                | "road"
-                | "busway"
-                | "motorway_link"
-                | "trunk_link"
-                | "primary_link"
-                | "secondary_link"
-                | "tertiary_link"
-        )
-    )
-}
-
-/// `Some(true)` oneway with the node order, `Some(false)` against it, `None`
-/// two-way.
-fn oneway(tags: &Tags) -> Option<bool> {
-    match tags.get("oneway") {
-        Some("yes" | "1" | "true") => return Some(true),
-        Some("-1" | "reverse") => return Some(false),
-        Some("no" | "0" | "false") => return None,
-        _ => {}
-    }
-    let implied = tags.get("highway") == Some("motorway")
-        || matches!(tags.get("junction"), Some("roundabout" | "circular"));
-    implied.then_some(true)
-}
-
 /// Local metres east/north of `b` from `a`.
 fn delta_m(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     let k = a.0.to_radians().cos();
@@ -362,54 +249,6 @@ fn arm_bearing(src: &dyn JunctionSource, nodes: &[NodeId]) -> Option<f32> {
         return None;
     }
     Some((dx.atan2(dy).to_degrees() as f32).rem_euclid(360.0))
-}
-
-fn parse_turn_lanes(value: &str) -> Vec<LaneArrows> {
-    value
-        .split('|')
-        .map(|lane| lane.split(';').filter_map(Arrow::parse).collect())
-        .collect()
-}
-
-fn parse_count(tags: &Tags, key: &str) -> Option<u32> {
-    tags.get(key)?.trim().parse().ok()
-}
-
-/// The lanes of the way's `forward` (with the node order) or `backward`
-/// direction, or `None` if a oneway forbids that direction.
-fn lane_group(tags: &Tags, forward: bool) -> Option<LaneGroup> {
-    let dir = if forward { "forward" } else { "backward" };
-    let ow = oneway(tags);
-    if ow.is_some_and(|with| with != forward) {
-        return None;
-    }
-    let dir_key = |base: &str| format!("{base}:{dir}");
-    let (arrows_key, arrows) = [dir_key("turn:lanes")]
-        .into_iter()
-        .chain(ow.map(|_| "turn:lanes".to_string()))
-        .find_map(|k| tags.get(&k).map(|v| (k.clone(), parse_turn_lanes(v))))
-        .unzip();
-
-    let explicit = parse_count(tags, &dir_key("lanes"))
-        .or_else(|| ow.and_then(|_| parse_count(tags, "lanes")));
-    let (count, source) = if let Some(n) = explicit {
-        (n, CountSource::Tagged)
-    } else if let Some(n) = parse_count(tags, "lanes")
-        .map(|n| n.saturating_sub(parse_count(tags, "lanes:both_ways").unwrap_or(0)))
-        .filter(|n| n % 2 == 0 && *n > 0)
-    {
-        (n / 2, CountSource::Inferred)
-    } else if let Some(a) = &arrows {
-        (a.len() as u32, CountSource::Inferred)
-    } else {
-        (1, CountSource::Unknown)
-    };
-    Some(LaneGroup {
-        count: count.max(1),
-        source,
-        arrows,
-        arrows_key,
-    })
 }
 
 fn arm_label(way: WayId, tags: &Tags) -> String {
@@ -737,8 +576,10 @@ fn lane_issues(j: &mut Junction) {
                         continue;
                     }
                     seen.push(arrow);
-                    let served: Vec<&&Movement> =
-                        exits.iter().filter(|m| arrow.serves(m.turn)).collect();
+                    let served: Vec<&&Movement> = exits
+                        .iter()
+                        .filter(|m| arrow_serves(arrow, m.turn))
+                        .collect();
                     let name = format!("{arrow:?}").to_lowercase();
                     if served.is_empty() {
                         issues.push(Issue {
@@ -846,26 +687,6 @@ pub fn toggle(j: &Junction, from: usize, to: usize) -> Option<RestrictionEdit> {
         MovementState::OnlyElsewhere { relation, .. } => RestrictionEdit::Delete {
             relation: *relation,
         },
-    })
-}
-
-/// `lanes:forward + lanes:backward (+ lanes:both_ways)` against `lanes`, for
-/// a way's tags. Returns the message when they disagree.
-pub fn lanes_split_issue(tags: &Tags) -> Option<String> {
-    let total = parse_count(tags, "lanes")?;
-    let f = parse_count(tags, "lanes:forward")?;
-    let b = parse_count(tags, "lanes:backward")?;
-    let both = parse_count(tags, "lanes:both_ways").unwrap_or(0);
-    (f + b + both != total).then(|| {
-        format!(
-            "lanes={total} but lanes:forward={f} + lanes:backward={b}{} adds up to {}",
-            if both > 0 {
-                format!(" + lanes:both_ways={both}")
-            } else {
-                String::new()
-            },
-            f + b + both
-        )
     })
 }
 
@@ -1094,22 +915,6 @@ mod tests {
         // Two arrows for three lanes, and no road to the left (only east).
         assert!(checks.contains(&"turn_lanes_count"), "{checks:?}");
         assert!(checks.contains(&"arrow_no_exit"), "{checks:?}");
-    }
-
-    #[test]
-    fn lanes_split_mismatch() {
-        let t = Tags::from([
-            ("lanes", "4"),
-            ("lanes:forward", "2"),
-            ("lanes:backward", "1"),
-        ]);
-        assert!(lanes_split_issue(&t).is_some());
-        let t = Tags::from([
-            ("lanes", "3"),
-            ("lanes:forward", "2"),
-            ("lanes:backward", "1"),
-        ]);
-        assert!(lanes_split_issue(&t).is_none());
     }
 
     /// A T: way 10 ends at node 1 from the south, way 20 runs west→east

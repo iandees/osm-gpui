@@ -36,6 +36,7 @@ pub mod improve_way;
 pub mod interaction;
 pub mod junction;
 pub mod keybindings;
+pub mod lanes;
 pub mod layers;
 pub mod limits;
 pub mod multipolygon;

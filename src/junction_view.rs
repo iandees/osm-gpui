@@ -12,9 +12,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use osm_gpui::ids::{NodeId, RelationId, WayId};
-use osm_gpui::junction::{
-    self, Arrow, CountSource, Junction, JunctionSource, MovementState, TurnKind,
-};
+use osm_gpui::junction::{self, Junction, JunctionSource, MovementState, TurnKind};
+use osm_gpui::lanes::{Arrow, CountSource};
 use osm_gpui::layers::{EditableLayer, LayerId};
 use osm_gpui::osm::OsmRelation;
 use osm_gpui::selection::{FeatureKind, FeatureRef};
