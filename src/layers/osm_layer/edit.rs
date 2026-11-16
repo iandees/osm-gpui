@@ -257,6 +257,17 @@ impl EditableLayer for OsmLayer {
         Some((n.lat, n.lon))
     }
 
+    fn nearby_road_names(&self, feature: &FeatureRef, radius_m: f64) -> Vec<String> {
+        if feature.layer_id != self.id {
+            return Vec::new();
+        }
+        self.store
+            .osm_data
+            .as_ref()
+            .map(|d| crate::tag_suggest::nearby_road_names(d, feature.kind, feature.id, radius_m))
+            .unwrap_or_default()
+    }
+
     fn way_node_ids(&self, way_id: WayId) -> Option<Vec<NodeId>> {
         let data = self.store.osm_data.as_ref()?;
         let way = data.ways.get(&way_id)?;
