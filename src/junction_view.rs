@@ -8,6 +8,8 @@ use gpui::{
     Point, Window,
 };
 use gpui_component::ActiveTheme;
+use std::cell::Cell;
+use std::rc::Rc;
 
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::junction::{
@@ -475,33 +477,11 @@ fn paint(l: &Layout, o: Point<Pixels>, window: &mut Window) {
 
     // Movements from the chosen arm.
     let Some(f) = l.from else { return };
-    let fa = &l.arms[f];
-    let start = edge(fa, fa.stop, fa.centre - fa.k_in as f32 * w / 2.0);
     let mut sorted = l.curves.clone();
     // Allowed under the others, so a ban is never hidden.
     sorted.sort_by_key(|&(_, c, _)| c != ALLOWED);
     for (to, colour, dash) in sorted {
-        let ta = &l.arms[to];
-        let end = edge(ta, ta.stop, ta.centre + ta.k_out as f32 * w / 2.0);
-        let ctrl = if to == f {
-            fa.u.mul(fa.stop * 0.2)
-        } else {
-            V(0.0, 0.0)
-        };
-        let pts: Vec<V> = (0..=24)
-            .map(|i| {
-                let t = i as f32 / 24.0;
-                let a = start.mul((1.0 - t) * (1.0 - t));
-                let b = ctrl.mul(2.0 * (1.0 - t) * t);
-                let c = end.mul(t * t);
-                a.add(b).add(c)
-            })
-            .chain([edge(
-                ta,
-                ta.stop + 12.0,
-                ta.centre + ta.k_out as f32 * w / 2.0,
-            )])
-            .collect();
+        let (pts, tip) = curve(l, f, to);
         if dash {
             for seg in pts.chunks(3).step_by(2) {
                 stroke(window, o, seg, 3.0, colour);
@@ -509,9 +489,74 @@ fn paint(l: &Layout, o: Point<Pixels>, window: &mut Window) {
         } else {
             stroke(window, o, &pts, 3.0, colour);
         }
-        let tip = edge(ta, ta.stop + 18.0, ta.centre + ta.k_out as f32 * w / 2.0);
-        arrow_head(window, o, tip, ta.u, 8.0, colour);
+        arrow_head(window, o, tip, l.arms[to].u, 8.0, colour);
     }
+}
+
+/// The movement curve from arm `from` to arm `to`: its points and the tip of
+/// its arrow head, relative to the canvas centre.
+fn curve(l: &Layout, from: usize, to: usize) -> (Vec<V>, V) {
+    let w = l.lane_w;
+    let (fa, ta) = (&l.arms[from], &l.arms[to]);
+    let start = fa.at(fa.stop, fa.centre - fa.k_in as f32 * w / 2.0);
+    let out = ta.centre + ta.k_out as f32 * w / 2.0;
+    let end = ta.at(ta.stop, out);
+    let ctrl = if to == from {
+        fa.u.mul(fa.stop * 0.2)
+    } else {
+        V(0.0, 0.0)
+    };
+    let pts = (0..=24)
+        .map(|i| {
+            let t = i as f32 / 24.0;
+            start
+                .mul((1.0 - t) * (1.0 - t))
+                .add(ctrl.mul(2.0 * (1.0 - t) * t))
+                .add(end.mul(t * t))
+        })
+        .chain([ta.at(ta.stop + 12.0, out)])
+        .collect();
+    (pts, ta.at(ta.stop + 18.0, out))
+}
+
+/// What a click at `p` (relative to the canvas centre) hits: the movement
+/// curve to an arm (within a few pixels), else an arm's road.
+#[derive(Debug, PartialEq)]
+enum DiagramHit {
+    Movement(usize),
+    Arm(usize),
+}
+
+fn hit_test(l: &Layout, p: V) -> Option<DiagramHit> {
+    const SLOP: f32 = 6.0;
+    let dist = |a: V, b: V| (a.0 - b.0).hypot(a.1 - b.1);
+    if let Some(f) = l.from {
+        let near = l
+            .curves
+            .iter()
+            .map(|&(to, _, _)| {
+                let (pts, tip) = curve(l, f, to);
+                let d = pts
+                    .iter()
+                    .chain([&tip])
+                    .map(|&q| dist(p, q))
+                    .fold(f32::MAX, f32::min);
+                (to, d)
+            })
+            .filter(|&(_, d)| d <= SLOP)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((to, _)) = near {
+            return Some(DiagramHit::Movement(to));
+        }
+    }
+    l.arms
+        .iter()
+        .position(|a| {
+            let along = p.0 * a.u.0 + p.1 * a.u.1;
+            let across = p.0 * a.n.0 + p.1 * a.n.1;
+            along >= a.stop && along <= l.len && across >= a.left && across <= a.right
+        })
+        .map(DiagramHit::Arm)
 }
 
 /// Where an arm's label sits, relative to the canvas centre.
@@ -619,12 +664,16 @@ impl MapViewer {
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _: &MouseDownEvent, _, cx| {
                         this.junction_from = Some((node, i));
+                        cx.stop_propagation();
                         cx.notify();
                     }),
                 )
         });
 
+        // Where the canvas was painted, for hit-testing clicks on it.
+        let origin: Rc<Cell<Option<Point<Pixels>>>> = Rc::new(Cell::new(None));
         let diagram = div()
+            .id("junction-diagram")
             .relative()
             .w(px(size))
             .h(px(size))
@@ -632,10 +681,12 @@ impl MapViewer {
             .overflow_hidden()
             .child({
                 let l = l.clone();
+                let origin = origin.clone();
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, _| {
                         let o = point(bounds.origin.x + px(half), bounds.origin.y + px(half));
+                        origin.set(Some(o));
                         paint(&l, o, window);
                     },
                 )
@@ -643,10 +694,32 @@ impl MapViewer {
                 .inset_0()
                 .size_full()
             })
-            .children(labels);
+            .children(labels)
+            .on_mouse_down(gpui::MouseButton::Left, {
+                let l = l.clone();
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    let Some(o) = origin.get() else {
+                        return;
+                    };
+                    let p = V(
+                        (ev.position.x - o.x).as_f32(),
+                        (ev.position.y - o.y).as_f32(),
+                    );
+                    match (hit_test(&l, p), l.from) {
+                        (Some(DiagramHit::Movement(to)), Some(f)) => {
+                            this.toggle_junction_movement(f, to)
+                        }
+                        (Some(DiagramHit::Arm(arm)), _) => this.junction_from = Some((node, arm)),
+                        _ => return,
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                })
+            });
 
         let movements = from.map(|f| {
             let rows = j.movements_from(f).enumerate().map(|(i, m)| {
+                let to = m.to;
                 let (dot, text, relation) = match &m.state {
                     MovementState::Allowed => {
                         (ALLOWED, tr!("panel.junction.allowed").to_string(), None)
@@ -662,8 +735,17 @@ impl MapViewer {
                         Some(*relation),
                     ),
                 };
+                // Clicking the row steps the movement's restriction; the
+                // relation text selects the relation instead.
                 let row = interactive_row(("junction-move", i), false, cx)
                     .gap_2()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            this.toggle_junction_movement(f, to);
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .size(px(8.))
@@ -676,23 +758,29 @@ impl MapViewer {
                         turn_label(m.turn),
                         j.arms[m.to].label
                     )))
-                    .child(
-                        div()
+                    .child({
+                        let label = div()
+                            .id(("junction-move-relation", i))
                             .flex_shrink_0()
                             .text_size(muted_text_size())
                             .text_color(muted)
-                            .child(text),
-                    );
-                match relation {
-                    Some(rel) => row.on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                            this.select_relation(layer_id, rel);
-                            cx.notify();
-                        }),
-                    ),
-                    None => row,
-                }
+                            .child(text);
+                        match relation {
+                            Some(rel) => label
+                                .cursor_pointer()
+                                .hover(|s| s.underline())
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                        this.select_relation(layer_id, rel);
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                ),
+                            None => label,
+                        }
+                    });
+                row
             });
             div()
                 .flex()

@@ -39,6 +39,7 @@ mod imagery_offset_ui;
 mod imagery_state_tests;
 #[cfg(test)]
 mod improve_click_tests;
+mod junction_edit;
 mod junction_view;
 mod menu;
 mod menu_sync;

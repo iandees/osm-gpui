@@ -331,7 +331,7 @@ panel:
   junction:
     title: "Kreuzung"
     from: "Von %{arm}"
-    hint: "Auf einen Straßennamen klicken, um seine Abbiegungen zu sehen."
+    hint: "Eine Straße anklicken, um ihre Abbiegungen zu sehen; eine Abbiegung anklicken, um sie zu beschränken."
     allowed: "erlaubt"
     via_way: "Abbiegebeschränkungen über einen Weg"
     issues: "Probleme"
@@ -822,6 +822,11 @@ action:
     # `%{features}` ist die Zahl aus `action.feature_count`.
     done: "%{features} zur Relation %{relation} hinzugefügt"
     already: "Die gewählten Objekte sind bereits Mitglieder von %{relation}"
+  junction:
+    created: "Abbiegebeschränkung %{value} hinzugefügt"
+    created_split: "Straße an der Kreuzung geteilt und Abbiegebeschränkung %{value} hinzugefügt"
+    changed: "Abbiegebeschränkung in %{value} geändert"
+    removed: "Abbiegebeschränkung r%{id} entfernt"
   new_relation:
     label: "Neue Relation"
     hint: "Knoten, Wege oder Relationen wählen, die in eine neue Relation kommen sollen"
