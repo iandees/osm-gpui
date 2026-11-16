@@ -381,6 +381,17 @@ fn denied(url: &str) -> HttpError {
     ))
 }
 
+/// The error for a request no fixture answers in an offline run. It names the
+/// method and the full URL so the missing fixture rule is easy to write.
+fn unseeded(req: &HttpRequest) -> HttpError {
+    HttpError::Transport(format!(
+        "{DENIED_PREFIX} request to {} denied: no fixture matches {:?} {} (add a rule to --http-fixtures)",
+        url_host(&req.url).unwrap_or("?"),
+        req.method,
+        req.url
+    ))
+}
+
 fn is_denied(e: &HttpError) -> bool {
     matches!(e, HttpError::Transport(m) if m.starts_with(DENIED_PREFIX))
 }
@@ -500,13 +511,14 @@ pub struct Rule {
     pub handler: RouteHandler,
 }
 
-/// Refuses every request, naming the host and that the run is offline.
+/// Refuses every request, naming the method, URL and that the run is offline.
+/// Used as the fallback of a fixtures-only (`--offline`) script client.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DenyAllClient;
 
 impl HttpClient for DenyAllClient {
     fn request(&self, req: HttpRequest) -> Result<HttpResponse, HttpError> {
-        Err(denied(&req.url))
+        Err(unseeded(&req))
     }
 }
 
@@ -649,7 +661,8 @@ pub fn load_manifest(path: &std::path::Path) -> Result<Vec<Rule>, String> {
 }
 
 /// The client a `--script` run uses. `real` answers whatever `rules` do not,
-/// unless the run is `offline`, in which case everything else is denied.
+/// unless the run is `offline`: then only `rules` answer, and any other
+/// request fails with an error naming its method and URL.
 pub fn script_client(
     offline: bool,
     rules: Vec<Rule>,
@@ -954,6 +967,11 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("offline run"), "{text}");
         assert!(text.contains("api.example.test"), "{text}");
+        assert!(
+            text.contains("https://api.example.test/api/0.6/map"),
+            "{text}"
+        );
+        assert!(text.contains("no fixture matches"), "{text}");
         assert!(matches!(err, HttpError::Transport(_)));
 
         struct Counting(std::sync::atomic::AtomicUsize);
@@ -1083,6 +1101,43 @@ mod tests {
         assert!(client
             .request(HttpRequest::get("https://example.test/"))
             .is_err());
+    }
+
+    #[test]
+    fn an_offline_script_client_serves_only_fixtures_and_names_the_unseeded_url() {
+        let fb = fallback();
+        let client = script_client(
+            true,
+            vec![Rule {
+                matcher: prefix("https://a.test/seeded"),
+                handler: fixed(200, "seeded"),
+            }],
+            fb.clone(),
+        );
+        assert_eq!(
+            client
+                .request(HttpRequest::get("https://a.test/seeded/1"))
+                .unwrap()
+                .body,
+            b"seeded"
+        );
+        let err = client
+            .request(HttpRequest::post_form(
+                "https://b.test/api/0.6/changeset/create?x=1",
+                vec![("k".into(), "v".into())],
+            ))
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("https://b.test/api/0.6/changeset/create?x=1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Post") && text.contains("no fixture"),
+            "{text}"
+        );
+        assert!(is_denied(&err));
+        assert_eq!(fb.request_count(), 0, "the real client must never be used");
     }
 
     #[test]

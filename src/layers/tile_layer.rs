@@ -1,7 +1,9 @@
 use crate::coordinates::Mercator;
 use gpui::*;
-use std::collections::HashSet;
+use gpui_component::ActiveTheme;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::coordinates::MAX_MAP_ZOOM;
 use crate::download_bounds::MercRect;
@@ -44,6 +46,52 @@ pub struct TileLayer {
     /// high-resolution image of the same grid cell a 256 tile covers, so on
     /// a Hi-DPI display it is already sharp at the normal zoom.
     tile_size: u32,
+    /// Which tiles are fading in (see `TileFade`).
+    fade: Mutex<TileFade>,
+}
+
+/// How long a freshly loaded tile takes to fade from transparent to opaque.
+pub const TILE_FADE: Duration = Duration::from_millis(160);
+
+/// Tracks tiles that were not ready when first drawn so that they fade in
+/// when their image arrives. A tile that is ready the first time it is seen
+/// (already loaded for an earlier frame) is opaque at once.
+#[derive(Default)]
+struct TileFade {
+    /// Tiles seen while still loading.
+    pending: HashSet<String>,
+    /// When each such tile became ready.
+    born: HashMap<String, Instant>,
+}
+
+impl TileFade {
+    /// Opacity of tile `url` at `now`. `ready` is whether its image is loaded.
+    fn alpha(&mut self, url: &str, ready: bool, now: Instant) -> f32 {
+        if !ready {
+            self.pending.insert(url.to_string());
+            return 0.0;
+        }
+        if self.pending.remove(url) {
+            self.born.insert(url.to_string(), now);
+        }
+        match self.born.get(url) {
+            None => 1.0,
+            Some(&b) => {
+                let a = (now.saturating_duration_since(b).as_secs_f32() / TILE_FADE.as_secs_f32())
+                    .clamp(0.0, 1.0);
+                if a >= 1.0 {
+                    self.born.remove(url);
+                }
+                a
+            }
+        }
+    }
+
+    /// Forget tiles that are no longer wanted.
+    fn retain(&mut self, keep: &HashSet<String>) {
+        self.pending.retain(|u| keep.contains(u));
+        self.born.retain(|u, _| keep.contains(u));
+    }
 }
 
 /// Standard XYZ raster tile width in pixels.
@@ -89,6 +137,7 @@ impl TileLayer {
             imagery_id,
             offset: ImageryOffset::ZERO,
             tile_size: STANDARD_TILE_SIZE,
+            fade: Mutex::new(TileFade::default()),
         }
     }
 
@@ -395,6 +444,14 @@ impl MapLayer for TileLayer {
         // cancelled but visible again are re-requested.
         let coords: Vec<TileCoord> = visible_tiles.iter().map(|t| t.coord).collect();
         let wanted = wanted_urls(&self.url_template, &coords);
+        let mut fade = self.fade.lock().unwrap_or_else(|e| e.into_inner());
+        fade.retain(&wanted);
+        let now = Instant::now();
+        let mut fading = false;
+        let (placeholder, badge_bg, badge_fg) = {
+            let theme = cx.theme();
+            (theme.muted, theme.danger, theme.danger_foreground)
+        };
         for key in crate::tile_cache::set_wanted_tiles(&self.source_key, wanted) {
             cx.remove_asset::<crate::tile_cache::TileAsset>(&key);
         }
@@ -421,6 +478,8 @@ impl MapLayer for TileLayer {
             let child_ready = window
                 .use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
                 .is_some();
+            let alpha = fade.alpha(&tile_url, child_ready, now);
+            fading |= alpha < 1.0;
 
             // Parent-tile fallback: while the child tile is loading, show the
             // already-cached parent (z-1) tile scaled 2x and clipped to this
@@ -459,7 +518,7 @@ impl MapLayer for TileLayer {
                 .w(tile_width)
                 .h(tile_height)
                 .overflow_hidden()
-                .bg(rgb(0x2d3748)); // Ultimate fallback background
+                .bg(placeholder); // Ultimate fallback background
 
             if let Some(parent_el) = parent_fallback {
                 tile_element = tile_element.child(parent_el);
@@ -475,42 +534,56 @@ impl MapLayer for TileLayer {
                 .child(
                     // Extended past the tile box by `edge_bleed_margin` (see
                     // its docs) and clipped by the box's overflow_hidden.
-                    img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
-                        window.use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
-                    })
-                    .absolute()
-                    .left(-bleed)
-                    .top(-bleed)
-                    .w(tile_width + bleed * 2.0)
-                    .h(tile_height + bleed * 2.0)
-                    .object_fit(gpui::ObjectFit::Fill)
-                    .with_fallback(move || {
-                        let reason = crate::tile_cache::last_error(&fallback_url)
-                            .unwrap_or_else(|| "Failed".to_string());
-                        let display = crate::tile_cache::truncate_middle(&reason, char_budget);
-                        div()
+                    // The wrapper carries the fade-in opacity.
+                    div()
+                        .absolute()
+                        .left(-bleed)
+                        .top(-bleed)
+                        .w(tile_width + bleed * 2.0)
+                        .h(tile_height + bleed * 2.0)
+                        .opacity(if child_ready { alpha } else { 1.0 })
+                        .child(
+                            img(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                                window.use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
+                            })
                             .size_full()
-                            .bg(rgb(0x9f1239))
-                            .overflow_hidden()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
+                            .object_fit(gpui::ObjectFit::Fill)
+                            .with_fallback(move || {
+                                let reason = crate::tile_cache::last_error(&fallback_url)
+                                    .unwrap_or_else(|| "Failed".to_string());
+                                let display =
+                                    crate::tile_cache::truncate_middle(&reason, char_budget);
+                                // A small corner badge: the failed tile keeps
+                                // the placeholder (and any parent tile) behind.
                                 div()
-                                    .text_color(rgb(0xffffff))
-                                    .text_xs()
-                                    .whitespace_nowrap()
-                                    .child(display),
-                            )
-                            .into_any_element()
-                    })
-                    .into_any_element(),
+                                    .size_full()
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top(bleed + px(4.0))
+                                            .left(bleed + px(4.0))
+                                            .px_1()
+                                            .rounded_sm()
+                                            .bg(badge_bg)
+                                            .text_color(badge_fg)
+                                            .text_xs()
+                                            .whitespace_nowrap()
+                                            .child(format!("! {display}")),
+                                    )
+                                    .into_any_element()
+                            }),
+                        )
+                        .into_any_element(),
                 )
                 .into_any_element();
 
             elements.push(tile_element);
         }
 
+        drop(fade);
+        if fading {
+            window.request_animation_frame();
+        }
         elements
     }
 
@@ -542,12 +615,41 @@ impl MapLayer for TileLayer {
 mod tests {
     use super::{
         compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, render_tile_zoom,
-        tile_screen_rect, wanted_urls, OSM_CARTO_TEMPLATE, TILE_OVERLAP_PX,
+        tile_screen_rect, wanted_urls, TileFade, OSM_CARTO_TEMPLATE, TILE_FADE, TILE_OVERLAP_PX,
     };
     use crate::coordinates::{LatLon, Mercator};
     use crate::tiles::TileCoord;
     use crate::viewport::Viewport;
     use gpui::{px, size};
+    use std::collections::HashSet;
+    use std::time::Instant;
+
+    #[test]
+    fn tile_loaded_after_pending_fades_in_then_stays_opaque() {
+        let mut f = TileFade::default();
+        let t0 = Instant::now();
+        assert_eq!(f.alpha("a", false, t0), 0.0);
+        let ready = t0 + std::time::Duration::from_millis(10);
+        assert_eq!(f.alpha("a", true, ready), 0.0);
+        let mid = f.alpha("a", true, ready + TILE_FADE / 2);
+        assert!((mid - 0.5).abs() < 0.01, "{mid}");
+        assert_eq!(f.alpha("a", true, ready + TILE_FADE * 2), 1.0);
+        assert_eq!(f.alpha("a", true, ready + TILE_FADE * 3), 1.0);
+    }
+
+    #[test]
+    fn tile_ready_on_first_sight_is_opaque() {
+        let mut f = TileFade::default();
+        assert_eq!(f.alpha("a", true, Instant::now()), 1.0);
+    }
+
+    #[test]
+    fn fade_state_is_dropped_for_unwanted_tiles() {
+        let mut f = TileFade::default();
+        f.alpha("a", false, Instant::now());
+        f.retain(&HashSet::new());
+        assert!(f.pending.is_empty());
+    }
 
     fn adjacent_tiles(z: u32) -> [TileCoord; 4] {
         [
