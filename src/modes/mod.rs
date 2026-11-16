@@ -350,7 +350,11 @@ impl crate::MapViewer {
         cx: &mut gpui::Context<Self>,
     ) {
         match self.mode_state {
-            ModeState::Select(_) => select::click(self, at, shift_held, click_count),
+            ModeState::Select(_) => {
+                if select::click(self, at, shift_held, click_count) {
+                    cx.notify();
+                }
+            }
             ModeState::Add(_) => add::click(self, at, snapping_off),
             ModeState::Building(_) => building::click(self, at),
             ModeState::Arc(_) => arc::click(self, at, snapping_off),
