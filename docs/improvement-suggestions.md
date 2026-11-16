@@ -272,7 +272,6 @@ Each item was checked against the code.
 - **Typed coordinates.** Latitude/longitude travel as bare `(f64, f64)` tuples whose order differs between modules (`Viewport::center` and `screen_to_geo` return `(lat, lon)`, while mercator values are `(x, y)` pairs of the same type), and the mercator bounds are tuples too. Introduce `LatLon` and `Mercator` newtypes and a bounds struct.
 - **`MapViewer` field grouping.** `MapViewer` in `src/main.rs` is still one flat struct; group related fields (viewport and interaction, dialogs, autosave, imagery) into sub-structs.
 - **Imagery provider secrets in the keychain.** `mapillary_token` and `fotoshi_api_key` are plain fields of `settings.json` (`src/settings_store.rs`); store them in the keyring like the OAuth token.
-- **Fully offline script runs.** Scripts still use the real HTTP client for anything not seeded by a fixture; add a script-mode `HttpClient` that serves only fixtures and fails loudly otherwise.
 - **Flaky UI scripts when the window is covered.** Scripts can hang at `capture` or `scroll` after an idle wait when another window covers the app; not yet diagnosed.
 - **3D building follow-ups.** The 3D view work lives on the unmerged `building-3d` branch; its follow-ups stay open until it merges.
 - **Compiler-checked dispatch for the last two mode hooks.** `refresh_snap_preview` and `handle_modifiers_changed` in `src/main.rs` still test `self.mode() == EditMode::...` instead of matching on `ModeState`, so a new mode does not get a compile error there.
