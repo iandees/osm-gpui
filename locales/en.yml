@@ -340,6 +340,20 @@ panel:
       other: "%{count} features selected: too many to show combined tags (limit %{limit})"
     key_placeholder: "key"
     value_placeholder: "value"
+  lanes:
+    title: "Lanes"
+    # `%{place}` is the road(s) the direction drives towards, or `way_end`.
+    forward: "→ towards %{place}"
+    backward: "← towards %{place}"
+    way_end: "way end"
+    count:
+      one: "%{count} lane"
+      other: "%{count} lanes"
+    both_ways: "Shared centre turn lanes: %{count}"
+    hint: "Click a lane to set its turn arrows."
+    # `%{lane}` counts from the left as the driver sees it.
+    arrows_forward: "Arrows for lane %{lane} from the left, driving →"
+    arrows_backward: "Arrows for lane %{lane} from the left, driving ←"
   junction:
     title: "Junction"
     # Above the movement list; %{arm} is the road the movements start on.
@@ -836,6 +850,8 @@ action:
     # `%{features}` is the count from `action.feature_count`.
     done: "Added %{features} to relation %{relation}"
     already: "The selected features are already members of %{relation}"
+  lanes:
+    changed: "Changed lanes"
   # Clicking a movement in the Junction section. `%{value}` is a restriction
   # value such as `no_left_turn`; `%{id}` a relation id.
   junction:

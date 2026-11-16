@@ -10,6 +10,7 @@ mod delete_layer;
 mod download_merge;
 mod find;
 mod junction_edits;
+mod lane_edits;
 mod preset_fields;
 mod relation_edits;
 mod relation_members;

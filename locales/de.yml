@@ -328,6 +328,18 @@ panel:
       other: "%{count} Objekte ausgewählt: zu viele, um gemeinsame Tags anzuzeigen (Grenze %{limit})"
     key_placeholder: "Schlüssel"
     value_placeholder: "Wert"
+  lanes:
+    title: "Fahrstreifen"
+    forward: "→ Richtung %{place}"
+    backward: "← Richtung %{place}"
+    way_end: "Wegende"
+    count:
+      one: "%{count} Fahrstreifen"
+      other: "%{count} Fahrstreifen"
+    both_ways: "Gemeinsame mittlere Abbiegestreifen: %{count}"
+    hint: "Einen Fahrstreifen anklicken, um seine Abbiegepfeile festzulegen."
+    arrows_forward: "Pfeile für Fahrstreifen %{lane} von links, Fahrtrichtung →"
+    arrows_backward: "Pfeile für Fahrstreifen %{lane} von links, Fahrtrichtung ←"
   junction:
     title: "Kreuzung"
     from: "Von %{arm}"
@@ -822,6 +834,8 @@ action:
     # `%{features}` ist die Zahl aus `action.feature_count`.
     done: "%{features} zur Relation %{relation} hinzugefügt"
     already: "Die gewählten Objekte sind bereits Mitglieder von %{relation}"
+  lanes:
+    changed: "Fahrstreifen geändert"
   junction:
     created: "Abbiegebeschränkung %{value} hinzugefügt"
     created_split: "Straße an der Kreuzung geteilt und Abbiegebeschränkung %{value} hinzugefügt"

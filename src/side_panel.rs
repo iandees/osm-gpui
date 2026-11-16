@@ -123,6 +123,8 @@ impl MapViewer {
         let open_members = self.side_panel_open[6];
         let junction_section = self.render_junction_section(cx);
         let open_junction = self.side_panel_open[crate::junction_view::SECTION];
+        let lanes_section = self.render_lanes_section(cx);
+        let open_lanes = self.side_panel_open[crate::lanes_view::SECTION];
 
         let open_layers = self.side_panel_open[0];
         let open_fields = self.side_panel_open[2];
@@ -288,6 +290,17 @@ impl MapViewer {
                                                     div().px_2().py_1().child(selection_section),
                                                 )
                                             })
+                                            // A road's Lanes come before its
+                                            // (long) Fields, so they show.
+                                            .children(lanes_section.map(|section| {
+                                                self.collapsible_section(
+                                                    tr!("panel.lanes.title"),
+                                                    crate::lanes_view::SECTION,
+                                                    open_lanes,
+                                                    section,
+                                                    cx,
+                                                )
+                                            }))
                                             .when(selected_count == 1, |group| {
                                                 group.child(self.collapsible_section(
                                                     tr!("panel.fields.title"),
@@ -977,7 +990,9 @@ impl MapViewer {
                         // The junction diagram runs edge to edge; its text
                         // rows carry the usual inset themselves.
                         .when(
-                            !document_level && index != crate::junction_view::SECTION,
+                            !document_level
+                                && index != crate::junction_view::SECTION
+                                && index != crate::lanes_view::SECTION,
                             |this| this.px_3(),
                         )
                         .pt_0p5()

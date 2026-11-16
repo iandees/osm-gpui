@@ -41,6 +41,7 @@ mod imagery_state_tests;
 mod improve_click_tests;
 mod junction_edit;
 mod junction_view;
+mod lanes_view;
 mod menu;
 mod menu_sync;
 mod mode_panel;
@@ -776,11 +777,13 @@ struct MapViewer {
     /// and panel width at mouse-down.
     side_panel_resize: Option<(f32, f32)>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
-    /// Tags, History, Relations, Members, Validation, Junction, by the
+    /// Tags, History, Relations, Members, Validation, Junction, Lanes, by the
     /// indices `render_side_panel` gives them) is expanded.
-    side_panel_open: [bool; 9],
+    side_panel_open: [bool; 10],
     /// The Junction inspector's chosen approach: `(junction node, arm index)`.
     junction_from: Option<(NodeId, usize)>,
+    /// The Lanes editor's chosen lane: `(way, forward, lane from the left)`.
+    lane_selected: Option<(WayId, bool, usize)>,
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
@@ -998,12 +1001,13 @@ impl MapViewer {
             // Everything open except History and Validation, which keep to
             // their headers until the user opens them.
             side_panel_open: {
-                let mut open = [true; 9];
+                let mut open = [true; 10];
                 open[side_panel::HISTORY_SECTION] = false;
                 open[validation_panel::SECTION] = false;
                 open
             },
             junction_from: None,
+            lane_selected: None,
             focus_handle,
             undo_stack: UndoStack::default(),
             mode_state: modes::ModeState::fresh(EditMode::Select),
