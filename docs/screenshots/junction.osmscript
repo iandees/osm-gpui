@@ -1,6 +1,9 @@
 # The Junction inspector on a four-way junction. Run with:
 #   cargo run -- --script docs/screenshots/junction.osmscript --offline \
 #     --http-fixtures docs/screenshots/fixtures/offline/http-fixtures.json
+#
+# Clicks in the side panel are window pixels for this window size and the
+# panel's default width.
 
 window 1400 900
 load_osm docs/screenshots/fixtures/junction.osm
@@ -15,7 +18,22 @@ assert_selected node 9001
 wait 300ms
 capture docs/screenshots/junction-01-default.png
 
+# From east Oak Avenue, click the "straight on" row: a new no_straight_on.
+click 1190,764
+wait 300ms
+assert_pending 1
+assert_status_contains no_straight_on
+capture docs/screenshots/junction-02-created.png
+
 # The west Oak Avenue label (left edge of the diagram): its turns.
 click 1171,494
 wait 300ms
-capture docs/screenshots/junction-02-from-west.png
+capture docs/screenshots/junction-03-from-west.png
+
+# Its "left" row is ruled out by r9203 only_straight_on; clicking it removes
+# that restriction.
+click 1190,788
+wait 300ms
+assert_pending 2
+assert_status_contains r9203
+capture docs/screenshots/junction-04-only-removed.png
