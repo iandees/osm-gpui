@@ -94,6 +94,13 @@ impl TileFade {
     }
 }
 
+/// Whether the parent tile is drawn behind a tile of opacity `alpha`. It stays
+/// until the tile has fully faded in, so it shows through the fade instead of
+/// the bare placeholder background.
+fn shows_parent_fallback(alpha: f32) -> bool {
+    alpha < 1.0
+}
+
 /// Standard XYZ raster tile width in pixels.
 pub const STANDARD_TILE_SIZE: u32 = 256;
 
@@ -474,7 +481,9 @@ impl MapLayer for TileLayer {
             };
 
             // Probe the child tile first: the parent fallback is only built
-            // (and its asset only requested) while the child is not ready.
+            // (and its asset only requested) until the child has fully faded
+            // in, so the parent shows through the fade instead of the bare
+            // placeholder.
             let child_ready = window
                 .use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
                 .is_some();
@@ -484,7 +493,7 @@ impl MapLayer for TileLayer {
             // Parent-tile fallback: while the child tile is loading, show the
             // already-cached parent (z-1) tile scaled 2x and clipped to this
             // child's quadrant. Prevents the dark "downloading" flash.
-            let parent_fallback = if child_ready {
+            let parent_fallback = if !shows_parent_fallback(alpha) {
                 None
             } else {
                 tile_coord.parent().map(|parent_coord| {
@@ -615,7 +624,8 @@ impl MapLayer for TileLayer {
 mod tests {
     use super::{
         compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, render_tile_zoom,
-        tile_screen_rect, wanted_urls, TileFade, OSM_CARTO_TEMPLATE, TILE_FADE, TILE_OVERLAP_PX,
+        shows_parent_fallback, tile_screen_rect, wanted_urls, TileFade, OSM_CARTO_TEMPLATE,
+        TILE_FADE, TILE_OVERLAP_PX,
     };
     use crate::coordinates::{LatLon, Mercator};
     use crate::tiles::TileCoord;
@@ -641,6 +651,36 @@ mod tests {
     fn tile_ready_on_first_sight_is_opaque() {
         let mut f = TileFade::default();
         assert_eq!(f.alpha("a", true, Instant::now()), 1.0);
+    }
+
+    #[test]
+    fn parent_shows_through_the_whole_fade_and_goes_when_opaque() {
+        let mut f = TileFade::default();
+        let t0 = Instant::now();
+        // Loading: alpha 0, parent shown.
+        assert!(shows_parent_fallback(f.alpha("a", false, t0)));
+        // Image just arrived: still alpha 0, parent must still be shown
+        // (the flash happened here when it was dropped).
+        let ready = t0 + std::time::Duration::from_millis(10);
+        assert!(shows_parent_fallback(f.alpha("a", true, ready)));
+        // Mid-fade.
+        assert!(shows_parent_fallback(f.alpha(
+            "a",
+            true,
+            ready + TILE_FADE / 2
+        )));
+        // Fully faded in: parent dropped.
+        assert!(!shows_parent_fallback(f.alpha(
+            "a",
+            true,
+            ready + TILE_FADE * 2
+        )));
+    }
+
+    #[test]
+    fn tile_ready_on_first_sight_needs_no_parent() {
+        let mut f = TileFade::default();
+        assert!(!shows_parent_fallback(f.alpha("a", true, Instant::now())));
     }
 
     #[test]
