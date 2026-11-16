@@ -8,7 +8,7 @@ cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 
 ## Running offline
 
-A scripted run uses the network like a normal run (map tiles, imagery index, name suggestions, server capabilities). To make it deterministic, add `--offline`: every HTTP request is then denied with an error that names the host, and fails the way a lost connection does (failed tiles show their placeholder, startup fetches log and carry on). `--offline` is only meaningful with `--script`.
+A scripted run uses the network like a normal run (map tiles, imagery index, name suggestions, server capabilities). To make it deterministic, add `--offline`: only fixtures answer: every other HTTP request is denied with an error that names the method, host and full URL (`no fixture matches ...`), never reaches the real network, and fails the way a lost connection does (failed tiles show their placeholder, startup fetches log and carry on). `--offline` is only meaningful with `--script`. Without `--offline` a scripted run is not strict: `--http-fixtures` rules are tried first and everything else still goes to the real network, so use `--offline` for deterministic runs.
 
 `--http-fixtures FILE` adds routing rules, tried in order before the deny-all fallback (and, without `--offline`, before the real network):
 
