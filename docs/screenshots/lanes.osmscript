@@ -1,0 +1,33 @@
+# The Lanes editor on Main Street south of the junction fixture. Run with:
+#   cargo run -- --script docs/screenshots/lanes.osmscript --offline \
+#     --http-fixtures docs/screenshots/fixtures/offline/http-fixtures.json
+#
+# Clicks in the side panel are window pixels for this window size and the
+# panel's default width.
+
+window 1400 900
+load_osm docs/screenshots/fixtures/junction.osm
+viewport 45.0 -93.0 18
+wait_idle
+click geo:44.9995,-93.0
+assert_selected way 9101
+wait 300ms
+capture docs/screenshots/lanes-01-selected.png
+
+# The leftmost northbound lane (its arrow is `left`).
+click 1260,309
+wait 300ms
+capture docs/screenshots/lanes-02-lane-chosen.png
+
+# Turn `through` on for it: turn:lanes:forward becomes left;through|...
+click 1266,488
+wait 300ms
+assert_status_contains Changed lanes
+assert_pending 1
+capture docs/screenshots/lanes-03-arrow-added.png
+
+# One more southbound lane.
+click 1374,432
+wait 300ms
+assert_pending 1
+capture docs/screenshots/lanes-04-lane-added.png
