@@ -431,7 +431,8 @@ fn dragging_a_node_onto_another_node_merges_them(cx: &mut TestAppContext) {
 #[gpui::test]
 fn add_mode_snaps_a_way_being_drawn_only_onto_compatible_ways(cx: &mut TestAppContext) {
     // Way 10 is a building outline. A drawn way that is untagged snaps to
-    // anything, but once it is a footway it must not glue onto the building.
+    // anything, but once it is a service road it must not glue onto the
+    // building (footways may, see snap::may_snap).
     with_session(cx, scene(&[("building", "yes")], &[]), |s| {
         s.view.enter_mode(EditMode::Add);
         s.view
@@ -439,7 +440,7 @@ fn add_mode_snaps_a_way_being_drawn_only_onto_compatible_ways(cx: &mut TestAppCo
         s.view
             .handle_add_click(point(gpui::px(60.0), gpui::px(80.0)), false);
         let drawn = s.view.add_progress().unwrap().way_id.unwrap();
-        s.set_tag(W, drawn.get(), "highway", "footway");
+        s.set_tag(W, drawn.get(), "highway", "service");
         let on_building = screen(s, 40.0, -74.0);
         s.view.handle_add_click(on_building, false);
         assert_eq!(
