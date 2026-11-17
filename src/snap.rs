@@ -177,11 +177,32 @@ pub fn may_snap(sources: &[&Tags], target: &Tags) -> bool {
         return true;
     }
     let crossing = sources.iter().any(|t| is_crossing_node(t));
-    match classify(target) {
-        Some(tc) => classes
-            .iter()
-            .all(|&sc| classes_compatible(sc, tc, crossing)),
-        None => false,
+    let Some(tc) = classify(target) else {
+        return false;
+    };
+    sources.iter().all(|t| match classify(t) {
+        None => true,
+        Some(sc) => {
+            classes_compatible(sc, tc, crossing) || footway_meets_building(t, sc, target, tc)
+        }
+    })
+}
+
+/// A footway (sidewalk, crossing, ...) may meet a building, in either
+/// direction, since footways commonly end at a building's wall. Other
+/// highways stay separate from buildings.
+fn footway_meets_building(a: &Tags, ac: SnapClass, b: &Tags, bc: SnapClass) -> bool {
+    let is_footway = |t: &Tags| t.iter().any(|(k, v)| k == "highway" && v == "footway");
+    match (ac, bc) {
+        (SnapClass::Highway, SnapClass::Building) => is_footway(a),
+        // An entrance stays on building walls; only a building outline
+        // may be glued onto a footway.
+        (SnapClass::Building, SnapClass::Highway) => {
+            is_footway(b)
+                && a.iter()
+                    .any(|(k, _)| k == "building" || k == "building:part")
+        }
+        _ => false,
     }
 }
 
@@ -382,6 +403,14 @@ mod tests {
     fn waterway_may_end_on_the_coastline() {
         assert!(ok(&[&[("waterway", "river")]], &[("natural", "coastline")]));
         assert!(ok(&[&[("natural", "coastline")]], &[("waterway", "river")]));
+    }
+
+    #[test]
+    fn footway_snaps_to_building_but_other_highways_do_not() {
+        assert!(ok(&[&[("highway", "footway")]], &[("building", "yes")]));
+        assert!(ok(&[&[("building", "yes")]], &[("highway", "footway")]));
+        assert!(!ok(&[&[("highway", "path")]], &[("building", "yes")]));
+        assert!(!ok(&[&[("building", "yes")]], &[("highway", "service")]));
     }
 
     #[test]
