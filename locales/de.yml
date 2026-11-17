@@ -770,6 +770,9 @@ action:
       other: "%{count} Wege geteilt"
     error:
       restriction_via: "Teilen nicht möglich: Es lässt sich nicht bestimmen, welcher Teil von Weg %{way} zur Abbiegebeschränkung %{relation} gehört"
+  split_here:
+    label: "Weg hier teilen"
+    hint: "Einen offenen Weg mit der rechten Maustaste anklicken, um ihn dort zu teilen"
   merge:
     label: "Knoten vereinigen"
     hint: "Zwei oder mehr Knoten wählen, um sie zu einem zu vereinigen"
@@ -967,6 +970,11 @@ dialog:
       one: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderung. Beim Löschen der Ebene geht sie verloren. Das kann nicht rückgängig gemacht werden."
       other: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderungen. Beim Löschen der Ebene gehen sie verloren. Das kann nicht rückgängig gemacht werden."
     confirm: "Ebene löschen"
+  split_way:
+    title: "Weg teilen"
+    body: "Welcher Teil des Wegs behält die ID und den Verlauf des bestehenden Wegs? Der andere Teil wird ein neuer Weg mit einer Kopie der Tags."
+    first: "Im ersten Teil behalten (Wegbeginn)"
+    second: "Im zweiten Teil behalten (Wegende)"
   restore:
     title: "Ungesicherte Änderungen wiederherstellen?"
     intro: "Die App wurde beim letzten Mal nicht ordnungsgemäß beendet. Diese Ebenen hatten Änderungen, die nicht hochgeladen wurden:"
@@ -1267,6 +1275,7 @@ gps_traces:
     reset: "Track-Darstellung zurücksetzen"
   legend:
     title: "GPS-Tracks nach %{by}"
+    title_named: "%{name} nach %{by}"
     unknown: "Unbekannt"
     kmh_max: "%{n}+ km/h"
     years:

@@ -788,6 +788,9 @@ action:
       other: "Split %{count} ways"
     error:
       restriction_via: "Can't split: can't tell which part of way %{way} belongs in turn restriction %{relation}"
+  split_here:
+    label: "Split Way Here"
+    hint: "Right-click an open way to split it there"
   merge:
     label: "Merge Nodes"
     hint: "Select two or more nodes to merge them into one"
@@ -1000,6 +1003,11 @@ dialog:
       other: "Layer \"%{layer}\" has %{count} unsaved edits. Deleting the layer discards them. This cannot be undone."
     confirm: "Delete Layer"
   # Offered at startup when the app did not exit normally last time.
+  split_way:
+    title: "Split Way"
+    body: "Which part of the way keeps the existing way's ID and history? The other part becomes a new way with a copy of the tags."
+    first: "Keep in first part (start of way)"
+    second: "Keep in second part (end of way)"
   restore:
     title: "Restore Unsaved Edits?"
     intro: "The app did not close normally last time. These layers had edits that were not uploaded:"
@@ -1321,6 +1329,7 @@ gps_traces:
     reset: "Reset Trace Style"
   legend:
     title: "GPS traces by %{by}"
+    title_named: "%{name} by %{by}"
     unknown: "Unknown"
     kmh_max: "%{n}+ km/h"
     years:

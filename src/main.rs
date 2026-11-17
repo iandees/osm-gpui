@@ -294,6 +294,11 @@ struct RunSelectionAction {
     id: SharedString,
 }
 
+// Context-menu "Split Way Here": split the right-clicked way at the spot
+// remembered in `Dialogs::split_target`, after asking which part keeps the
+// way's history.
+actions!(osm_gpui, [SplitWayHere]);
+
 /// Action to switch the current `EditMode`.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = mode)]
@@ -3196,6 +3201,7 @@ impl MapViewer {
             open_modal(&self.dialogs.upload_dialog, cx),
             open_modal(&self.dialogs.sign_in_dialog, cx),
             open_modal(&self.dialogs.notice_dialog, cx),
+            open_modal(&self.dialogs.split_way_dialog, cx),
             open_modal(&self.new_note_dialog_element(), cx),
         ]
         .into_iter()
@@ -3888,12 +3894,16 @@ impl MapViewer {
         }
         let map_pos = self.window_to_map(position);
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, map_pos);
-        if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
+        let hit = osm_gpui::selection::resolve_hits(per_layer);
+        if let Some(hit) = hit {
             if !self.selected.contains(&hit) {
                 self.set_selection(vec![hit]);
                 cx.notify();
             }
         }
+        // A click on an open way of the active layer can split it right there.
+        self.dialogs.split_target = hit.and_then(|hit| self.split_target_at(hit, map_pos));
+        let split_here = self.dialogs.split_target.is_some();
         if self.selected.is_empty() {
             return;
         }
@@ -3940,6 +3950,13 @@ impl MapViewer {
                         })),
                     );
             }
+            if split_here {
+                let label = tr!("action.split_here.label");
+                menu = menu.separator().item(
+                    PopupMenuItem::element(move |_, _| div().child(label.clone()))
+                        .action(Box::new(SplitWayHere)),
+                );
+            }
             if history_item {
                 let label = tr!("menu.edit.show_history");
                 menu = menu.separator().item(
@@ -3960,6 +3977,95 @@ impl MapViewer {
             _dismiss: dismiss,
         });
         cx.notify();
+    }
+
+    /// Where a right-click at `map_pos` (map coordinates) on `hit` would split
+    /// a way: `hit` must be an open way of the active, editable layer, with
+    /// the click near enough to one of its loaded segments.
+    fn split_target_at(
+        &self,
+        hit: osm_gpui::selection::FeatureRef,
+        map_pos: gpui::Point<gpui::Pixels>,
+    ) -> Option<dialogs::SplitTarget> {
+        if hit.kind != osm_gpui::selection::FeatureKind::Way
+            || self.active_layer != Some(hit.layer_id)
+        {
+            return None;
+        }
+        let layer = self.layer_manager.find_layer(hit.layer_id)?;
+        let editable = layer.as_editable()?;
+        let way = WayId(hit.id);
+        let nodes = editable.way_node_ids(way)?;
+        if nodes.len() < 3 || (nodes.len() >= 4 && nodes.first() == nodes.last()) {
+            return None;
+        }
+        let (_, a, b, _, lat, lon) = layer.as_osm()?.snap_to_way_where(
+            &self.viewport,
+            map_pos,
+            osm_gpui::snap::WAY_SNAP_TOLERANCE_PX * 2.0,
+            |w| w == way,
+        )?;
+        // `snap_to_way_where` counts only loaded nodes: find the segment by
+        // its end nodes instead.
+        let segment = nodes.windows(2).position(|w| w[0] == a && w[1] == b)?;
+        Some(dialogs::SplitTarget {
+            layer_id: hit.layer_id,
+            way,
+            segment,
+            at: (lat, lon),
+        })
+    }
+
+    /// Context menu "Split Way Here": ask which part keeps the way's history.
+    fn on_split_way_here(&mut self, _: &SplitWayHere, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::split_way_dialog::{DialogEvent, KeepPart, SplitWayDialog};
+
+        if self.dialogs.split_way_dialog.is_some() || self.edits_blocked(cx) {
+            return;
+        }
+        let Some(target) = self.dialogs.split_target else {
+            return;
+        };
+        let dialog = cx.new(|cx| SplitWayDialog::new(window, cx));
+        cx.subscribe(&dialog, move |this, _entity, event: &DialogEvent, cx| {
+            this.dialogs.split_way_dialog = None;
+            if let DialogEvent::Chosen(part) = event {
+                // An upload may have started while the dialog was open.
+                if !this.edits_blocked(cx) {
+                    let keep = match part {
+                        KeepPart::First => selection_actions::KeepHistory::First,
+                        KeepPart::Second => selection_actions::KeepHistory::Second,
+                    };
+                    this.split_way_now(target, keep);
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        self.dialogs.split_way_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Carry out the split chosen in the dialog, as one undo step.
+    fn split_way_now(&mut self, t: dialogs::SplitTarget, keep: selection_actions::KeepHistory) {
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(t.layer_id)
+            .and_then(|l| l.as_editable_mut())
+        else {
+            return;
+        };
+        match selection_actions::split_way_at(editable, t.layer_id, t.way, t.segment, t.at, keep) {
+            Ok((ops, label)) => {
+                self.undo_stack.push(UndoableAction::edit(
+                    t.layer_id,
+                    EditLabel::Text(label.clone()),
+                    ops,
+                ));
+                self.set_status(label);
+            }
+            Err(message) => self.set_status(message),
+        }
     }
 
     /// A click outside the open context menu closes it.
@@ -6468,6 +6574,14 @@ impl Render for MapViewer {
             }))
             .child(main_row)
             .child(status_bar)
+            // Files dragged in from Finder open as if picked with File >
+            // Open: `.gpx` and `.geojson` as reference layers, the rest as
+            // OSM data.
+            .on_drop(cx.listener(|_, paths: &gpui::ExternalPaths, _, cx| {
+                for path in paths.paths().iter().filter(|p| !p.is_dir()) {
+                    menu::open_osm_path(path.clone(), cx);
+                }
+            }))
             // A side panel resize drag is tracked here, on the window-sized
             // root, so it keeps following the pointer over the map and the
             // panel alike.
@@ -6523,6 +6637,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_set_imagery_offset))
             .on_action(cx.listener(Self::on_set_mode))
             .on_action(cx.listener(Self::on_run_selection_action))
+            .on_action(cx.listener(Self::on_split_way_here))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_apply_nsi_preset))
