@@ -1895,19 +1895,7 @@ fn apply_split(
 
     // The new halves are added to the relations the way is in; refuse if that
     // would push one past the server's member maximum (nothing is changed yet).
-    for relation in &relations {
-        let grew = editable
-            .relation(relation.id)
-            .is_some_and(|r| relation.members.len() > r.members.len());
-        if grew {
-            if let Some(m) = osm_gpui::limits::relation_over_limit(
-                relation.members.len(),
-                osm_gpui::limits::relation_add_message,
-            ) {
-                return Err(m);
-            }
-        }
-    }
+    check_relations_fit(editable, &relations)?;
 
     let (_, ops) = record_edit(layer_id, editable, |rec| {
         record_split(rec, layer_id, &plans, &ids_by_plan, relations)
@@ -1971,6 +1959,85 @@ pub(crate) fn record_split(
     }
     retarget_relations(rec, relations, &new_ids)?;
     Ok(real_by_plan)
+}
+
+/// Which part of a way split at a point stays in the original way (and so
+/// keeps its id, version and history).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeepHistory {
+    /// The part from the way's first node to the split point.
+    First,
+    /// The part from the split point to the way's last node.
+    Second,
+}
+
+/// Split the open way `way` at `at` (lat, lon), a point on its segment starting at node
+/// index `segment`: a new node goes there and the way is cut at it. The
+/// original way keeps the id and history, and the part named by `keep`; the
+/// other part is a new way with a copy of the tags. Relations are handled as
+/// for Split Way. One undo step, nothing changed on refusal. Returns the
+/// recorded ops and the status message.
+pub(crate) fn split_way_at(
+    editable: &mut dyn EditableLayer,
+    layer_id: LayerId,
+    way: WayId,
+    segment: usize,
+    at: (f64, f64),
+    keep: KeepHistory,
+) -> Result<(Vec<EditOp>, String), String> {
+    let hint = || tr!("action.split_here.hint").to_string();
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        let nodes = rec.layer().way_node_ids(way).ok_or_else(hint)?;
+        let closed = nodes.len() >= 4 && nodes.first() == nodes.last();
+        if closed || segment + 1 >= nodes.len() {
+            return Err(hint());
+        }
+        let new_node = rec
+            .insert_node_into_way(way, segment + 1, at.0, at.1)
+            .map_err(refused)?;
+        let nodes = rec.layer().way_node_ids(way).ok_or_else(hint)?;
+        let mut plans = topology::plan_split(
+            &[new_node.get()],
+            Some(way.get()),
+            &[(way.get(), NodeId::to_raw_vec(&nodes))],
+        );
+        let mut plan = plans
+            .pop()
+            .filter(|p| p.parts.len() == 2)
+            .ok_or_else(hint)?;
+        plan.keeper = match keep {
+            KeepHistory::First => 0,
+            KeepHistory::Second => 1,
+        };
+        let plans = [plan];
+        let (relations, ids) = split_relations(rec.layer(), &plans)?;
+        check_relations_fit(rec.layer(), &relations)?;
+        record_split(rec, layer_id, &plans, &ids, relations)?;
+        Ok(())
+    })?;
+    Ok((ops, tr_count!("action.split.done", 1).to_string()))
+}
+
+/// Refuse if giving `relations` their new member lists would push one that
+/// grows past the server's member maximum.
+fn check_relations_fit(
+    editable: &dyn EditableLayer,
+    relations: &[osm_gpui::osm::OsmRelation],
+) -> Result<(), String> {
+    for relation in relations {
+        let grew = editable
+            .relation(relation.id)
+            .is_some_and(|r| relation.members.len() > r.members.len());
+        if grew {
+            if let Some(m) = osm_gpui::limits::relation_over_limit(
+                relation.members.len(),
+                osm_gpui::limits::relation_add_message,
+            ) {
+                return Err(m);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Give each of `relations` its planned member list, with the placeholder ids
@@ -5072,6 +5139,62 @@ mod tests {
             EditOp::SetRelationMembers { id: RelationId(900), before, after }
                 if before.len() == 3 && after.len() == 4
         ));
+    }
+
+    #[test]
+    fn split_here_adds_a_node_and_the_chosen_part_keeps_the_original_way() {
+        for (keep, original_len) in [(KeepHistory::First, 2), (KeepHistory::Second, 3)] {
+            let mut n = net();
+            // Way 101 is [3,4,5]; cut its first segment.
+            let (a, b) = (
+                n.editable().node_lat_lon(NodeId(3)).unwrap(),
+                n.editable().node_lat_lon(NodeId(4)).unwrap(),
+            );
+            let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+            let layer_id = n.layer_id;
+            let editable = n
+                .layers
+                .find_layer_mut(layer_id)
+                .unwrap()
+                .as_editable_mut()
+                .unwrap();
+            let (ops, label) = split_way_at(editable, layer_id, WayId(101), 0, mid, keep).unwrap();
+            assert_eq!(label, "Split 1 way");
+            assert!(!ops.is_empty());
+            let kept = n.editable().way_node_ids(WayId(101)).unwrap();
+            assert_eq!(kept.len(), original_len, "{keep:?}");
+            let new = the_new_way(&n);
+            let other = n.editable().way_node_ids(WayId(new)).unwrap();
+            assert_eq!(kept.len() + other.len(), 5, "{keep:?}");
+            // Both parts share the one new (negative id) node.
+            let joint: Vec<&NodeId> = kept
+                .iter()
+                .filter(|id| id.get() < 0 && other.contains(id))
+                .collect();
+            assert_eq!(joint.len(), 1, "{keep:?}");
+        }
+    }
+
+    #[test]
+    fn split_here_refuses_a_closed_way_and_changes_nothing() {
+        let mut n = net();
+        let layer_id = n.layer_id;
+        let editable = n
+            .layers
+            .find_layer_mut(layer_id)
+            .unwrap()
+            .as_editable_mut()
+            .unwrap();
+        let err = split_way_at(
+            editable,
+            layer_id,
+            WayId(108),
+            0,
+            (0.0, 0.0),
+            KeepHistory::First,
+        );
+        assert!(err.is_err());
+        assert!(n.layer().diff_for_upload().created_ways.is_empty());
     }
 
     #[test]
