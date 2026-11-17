@@ -258,7 +258,37 @@ impl MapViewer {
                     })
                     .unwrap_or_else(|| tr!("panel.fields.none").to_string());
 
+                // Typing while open filters the options (substring match on
+                // label or value); Enter picks the first match.
+                let query = if is_open {
+                    self.fields_panel.fields_combo_query.to_lowercase()
+                } else {
+                    String::new()
+                };
+                let matches: Vec<(usize, String)> = field
+                    .options
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| {
+                        query.is_empty()
+                            || o.value.to_lowercase().contains(&query)
+                            || cat.option_label(field, o).to_lowercase().contains(&query)
+                    })
+                    .map(|(i, o)| (i, o.value.clone()))
+                    .collect();
+                let current_label = if is_open && !query.is_empty() {
+                    self.fields_panel.fields_combo_query.clone()
+                } else {
+                    current_label
+                };
+                let focus = self
+                    .fields_panel
+                    .fields_combo_focus
+                    .get_or_insert_with(|| cx.focus_handle())
+                    .clone();
+
                 let field_id_for_toggle = field.id.clone();
+                let focus_for_toggle = focus.clone();
                 let header = gpui::div()
                     .id(format!("field-combo-header-{}", field.id))
                     .flex()
@@ -299,15 +329,20 @@ impl MapViewer {
                     )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(move |this, _ev, _window, cx| {
+                        cx.listener(move |this, _ev, window, cx| {
+                            this.fields_panel.fields_combo_query.clear();
                             this.fields_panel.fields_open_combo =
                                 if this.fields_panel.fields_open_combo.as_deref()
                                     == Some(field_id_for_toggle.as_str())
                                 {
                                     None
                                 } else {
+                                    window.focus(&focus_for_toggle, cx);
                                     Some(field_id_for_toggle.clone())
                                 };
+                            if this.fields_panel.fields_open_combo.is_none() {
+                                window.focus(&this.focus_handle, cx);
+                            }
                             cx.notify();
                         }),
                     );
@@ -320,6 +355,47 @@ impl MapViewer {
                     .child(header);
 
                 if is_open {
+                    let key_field_key = field.key.clone();
+                    let first_match = matches.first().map(|(_, v)| v.clone());
+                    column = column.track_focus(&focus).on_key_down(cx.listener(
+                        move |this, ev: &gpui::KeyDownEvent, window, cx| {
+                            let ks = &ev.keystroke;
+                            match ks.key.as_str() {
+                                "escape" => {
+                                    this.fields_panel.fields_open_combo = None;
+                                    window.focus(&this.focus_handle, cx);
+                                }
+                                "enter" => {
+                                    if let Some(value) = first_match.clone() {
+                                        this.apply_field_values(
+                                            &feature,
+                                            std::collections::HashMap::from([(
+                                                key_field_key.clone(),
+                                                value,
+                                            )]),
+                                        );
+                                        this.fields_panel.fields_open_combo = None;
+                                        window.focus(&this.focus_handle, cx);
+                                    }
+                                }
+                                "backspace" => {
+                                    this.fields_panel.fields_combo_query.pop();
+                                }
+                                _ => match &ks.key_char {
+                                    Some(ch)
+                                        if !ch.is_empty()
+                                            && !ks.modifiers.control
+                                            && !ks.modifiers.platform =>
+                                    {
+                                        this.fields_panel.fields_combo_query.push_str(ch);
+                                    }
+                                    _ => return,
+                                },
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        },
+                    ));
                     let field_key = field.key.clone();
                     // The first row clears the field (removes the tag).
                     let clear_key = field.key.clone();
@@ -335,7 +411,7 @@ impl MapViewer {
                         )
                         .on_mouse_down(
                             gpui::MouseButton::Left,
-                            cx.listener(move |this, _ev, _window, cx| {
+                            cx.listener(move |this, _ev, window, cx| {
                                 this.apply_field_values(
                                     &feature,
                                     std::collections::HashMap::from([(
@@ -344,6 +420,7 @@ impl MapViewer {
                                     )]),
                                 );
                                 this.fields_panel.fields_open_combo = None;
+                                window.focus(&this.focus_handle, cx);
                                 cx.notify();
                             }),
                         );
@@ -356,8 +433,10 @@ impl MapViewer {
                             .overflow_y_scroll()
                             .border_1()
                             .border_color(cx.theme().border)
-                            .child(clear_row)
-                            .children(field.options.iter().enumerate().map(|(i, opt)| {
+                            .when(query.is_empty(), |d| d.child(clear_row))
+                            .children(matches.iter().map(|(i, _)| {
+                                let i = *i;
+                                let opt = &field.options[i];
                                 let value = opt.value.clone();
                                 let field_key = field_key.clone();
                                 gpui::div()
@@ -369,7 +448,7 @@ impl MapViewer {
                                     .child(Label::new(cat.option_label(field, opt).to_string()))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
-                                        cx.listener(move |this, _ev, _window, cx| {
+                                        cx.listener(move |this, _ev, window, cx| {
                                             this.apply_field_values(
                                                 &feature,
                                                 std::collections::HashMap::from([(
@@ -378,6 +457,7 @@ impl MapViewer {
                                                 )]),
                                             );
                                             this.fields_panel.fields_open_combo = None;
+                                            window.focus(&this.focus_handle, cx);
                                             cx.notify();
                                         }),
                                     )

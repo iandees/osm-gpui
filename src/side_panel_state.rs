@@ -23,6 +23,10 @@ pub(crate) struct FieldsState {
     /// Which field's combo/multiCombo option list is currently expanded,
     /// if any (`None` = all collapsed). Only one at a time.
     pub(crate) fields_open_combo: Option<String>,
+    /// What the user has typed into the open combo to filter its options.
+    pub(crate) fields_combo_query: String,
+    /// Focus target that receives the typing while a combo is open.
+    pub(crate) fields_combo_focus: Option<gpui::FocusHandle>,
     /// Field ids promoted from a preset's `more_fields` into the visible
     /// list for the current editing session. Cleared on selection change.
     pub(crate) fields_promoted_more_fields: std::collections::HashSet<String>,
