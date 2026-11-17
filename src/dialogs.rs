@@ -4,11 +4,11 @@ use osm_gpui::ui::{
     about_dialog::AboutDialog, custom_imagery_dialog::CustomImageryDialog,
     delete_layer_dialog::DeleteLayerDialog, esri_layer_dialog::EsriLayerDialog,
     find_dialog::FindDialog, notice_dialog::NoticeDialog, nsi_dialog::NsiPresetDialog,
-    parallel_dialog::ParallelDialog, pmtiles_dialog::PmtilesDialog,
-    preset_picker_dialog::PresetPickerDialog, quit_confirm_dialog::QuitConfirmDialog,
-    relation_picker_dialog::RelationPickerDialog, restore_dialog::RestoreDialog,
-    revert_changeset_dialog::RevertChangesetDialog, sign_in_dialog::SignInDialog,
-    split_way_dialog::SplitWayDialog, upload_dialog::UploadDialog,
+    opening_hours_dialog::OpeningHoursDialog, parallel_dialog::ParallelDialog,
+    pmtiles_dialog::PmtilesDialog, preset_picker_dialog::PresetPickerDialog,
+    quit_confirm_dialog::QuitConfirmDialog, relation_picker_dialog::RelationPickerDialog,
+    restore_dialog::RestoreDialog, revert_changeset_dialog::RevertChangesetDialog,
+    sign_in_dialog::SignInDialog, split_way_dialog::SplitWayDialog, upload_dialog::UploadDialog,
 };
 
 /// Each dialog is `Some` while it is open. `MapViewer::open_modals` lists them
@@ -61,6 +61,8 @@ pub(crate) struct Dialogs {
     pub(crate) nsi_dialog: Option<gpui::Entity<NsiPresetDialog>>,
     /// Active "change feature type" preset picker dialog, if open.
     pub(crate) preset_picker_dialog: Option<gpui::Entity<PresetPickerDialog>>,
+    /// The editor opened from an hours field's button, if open.
+    pub(crate) opening_hours_dialog: Option<gpui::Entity<OpeningHoursDialog>>,
     /// Active "which part keeps the history" dialog, if open.
     pub(crate) split_way_dialog: Option<gpui::Entity<SplitWayDialog>>,
     /// The spot the context menu's "Split Way Here" would split at, set when

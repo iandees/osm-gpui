@@ -73,6 +73,12 @@ fn openers() -> Vec<(&'static str, Opener)> {
                     ui::preset_picker_dialog::PresetPickerDialog::new(Vec::new(), w, cx)
                 }));
         }),
+        ("opening hours", |v, w, cx| {
+            v.dialogs.opening_hours_dialog =
+                Some(cx.new(|cx| {
+                    ui::opening_hours_dialog::OpeningHoursDialog::new("Hours", "", w, cx)
+                }));
+        }),
         ("relation picker", |v, w, cx| {
             v.dialogs.relation_picker_dialog = Some(cx.new(|cx| {
                 ui::relation_picker_dialog::RelationPickerDialog::new(Vec::new(), w, cx)
@@ -301,6 +307,12 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
         |w, cx| preset_picker_dialog::PresetPickerDialog::new(Vec::new(), w, cx),
         preset_picker_dialog::DialogEvent,
         preset_picker_dialog::DialogEvent::Cancelled
+    );
+    closes_on_escape!(
+        cx,
+        |w, cx| opening_hours_dialog::OpeningHoursDialog::new("Hours", "", w, cx),
+        opening_hours_dialog::DialogEvent,
+        opening_hours_dialog::DialogEvent::Cancelled
     );
     closes_on_escape!(
         cx,
