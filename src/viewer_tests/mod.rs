@@ -8,6 +8,7 @@ mod clipboard;
 mod context_menu;
 mod delete_layer;
 mod download_merge;
+mod file_drop;
 mod find;
 mod junction_edits;
 mod lane_edits;

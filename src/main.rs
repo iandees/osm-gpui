@@ -6467,6 +6467,14 @@ impl Render for MapViewer {
             }))
             .child(main_row)
             .child(status_bar)
+            // Files dragged in from Finder open as if picked with File >
+            // Open: `.gpx` and `.geojson` as reference layers, the rest as
+            // OSM data.
+            .on_drop(cx.listener(|_, paths: &gpui::ExternalPaths, _, cx| {
+                for path in paths.paths().iter().filter(|p| !p.is_dir()) {
+                    menu::open_osm_path(path.clone(), cx);
+                }
+            }))
             // A side panel resize drag is tracked here, on the window-sized
             // root, so it keeps following the pointer over the map and the
             // panel alike.
