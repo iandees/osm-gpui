@@ -8,7 +8,7 @@ use osm_gpui::ui::{
     preset_picker_dialog::PresetPickerDialog, quit_confirm_dialog::QuitConfirmDialog,
     relation_picker_dialog::RelationPickerDialog, restore_dialog::RestoreDialog,
     revert_changeset_dialog::RevertChangesetDialog, sign_in_dialog::SignInDialog,
-    upload_dialog::UploadDialog,
+    split_way_dialog::SplitWayDialog, upload_dialog::UploadDialog,
 };
 
 /// Each dialog is `Some` while it is open. `MapViewer::open_modals` lists them
@@ -61,4 +61,19 @@ pub(crate) struct Dialogs {
     pub(crate) nsi_dialog: Option<gpui::Entity<NsiPresetDialog>>,
     /// Active "change feature type" preset picker dialog, if open.
     pub(crate) preset_picker_dialog: Option<gpui::Entity<PresetPickerDialog>>,
+    /// Active "which part keeps the history" dialog, if open.
+    pub(crate) split_way_dialog: Option<gpui::Entity<SplitWayDialog>>,
+    /// The spot the context menu's "Split Way Here" would split at, set when
+    /// the menu opens and used for the dialog's answer.
+    pub(crate) split_target: Option<SplitTarget>,
+}
+
+/// A spot on a way to split it at: on the segment that starts at node
+/// `segment`, at `at`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SplitTarget {
+    pub(crate) layer_id: osm_gpui::layers::LayerId,
+    pub(crate) way: osm_gpui::ids::WayId,
+    pub(crate) segment: usize,
+    pub(crate) at: (f64, f64),
 }

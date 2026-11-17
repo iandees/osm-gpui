@@ -19,6 +19,7 @@ pub mod restore_dialog;
 pub mod revert_changeset_dialog;
 pub mod settings_window;
 pub mod sign_in_dialog;
+pub mod split_way_dialog;
 pub mod style;
 pub mod tag_edit;
 pub mod upload_dialog;
