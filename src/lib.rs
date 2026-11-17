@@ -46,6 +46,7 @@ pub mod notes;
 pub mod nsi;
 pub mod object_history;
 pub mod open_files;
+pub mod opening_hours;
 pub mod osm;
 pub mod osm_api;
 pub mod osm_export;

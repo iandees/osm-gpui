@@ -10,6 +10,7 @@ pub mod note_dialog;
 pub mod notice_dialog;
 pub mod nsi_dialog;
 pub mod object_history_view;
+pub mod opening_hours_dialog;
 pub mod parallel_dialog;
 pub mod pmtiles_dialog;
 pub mod preset_picker_dialog;

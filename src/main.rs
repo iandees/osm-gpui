@@ -3189,6 +3189,7 @@ impl MapViewer {
             open_modal(&self.dialogs.about_dialog, cx),
             open_modal(&self.dialogs.nsi_dialog, cx),
             open_modal(&self.dialogs.preset_picker_dialog, cx),
+            open_modal(&self.dialogs.opening_hours_dialog, cx),
             open_modal(&self.dialogs.relation_picker_dialog, cx),
             open_modal(&self.dialogs.parallel_dialog, cx),
             open_modal(&self.dialogs.revert_dialog, cx),

@@ -1146,6 +1146,27 @@ dialog:
     confirm: "Erstellen"
     error:
       offset: "Einen Abstand in Metern eingeben, nicht null und höchstens %{max} in beide Richtungen."
+  opening_hours:
+    paste_label: "Öffnungszeiten von einer Website einfügen"
+    paste_placeholder: "z. B. Monday – Friday: 9 AM – 5 PM, Saturday 10–2"
+    convert: "Umwandeln"
+    converted: "Umgewandelt — bitte Tage und Zeiten unten prüfen."
+    not_understood: "In diesem Text wurden keine Tage oder Zeiten gefunden. Nichts wurde geändert."
+    partly_understood: "Dieser Text konnte nicht vollständig gelesen werden, daher wurde nichts geändert. Die Zeiten bitte unten eingeben."
+    unsupported: "Dieser Wert nutzt eine Syntax, die der Editor nicht darstellen kann. Übernehmen ersetzt ihn."
+    groups_label: "Tage und Zeiten"
+    closed: "Geschlossen"
+    add_time: "Zeit hinzufügen"
+    remove_time: "Zeit entfernen"
+    add_group: "Tage hinzufügen"
+    remove_group: "Diese Tage entfernen"
+    result: "Ergebnis"
+    empty: "(keine Zeiten: das Tag wird entfernt)"
+    apply: "Übernehmen"
+    error:
+      time: "„%{time}“ ist keine Uhrzeit — z. B. 09:00 oder 17:00 verwenden."
+      range: "%{start}–%{end} ist kein Zeitraum."
+    open: "Öffnungszeiten bearbeiten…"
   nsi:
     title: "NSI-Vorlage anwenden"
     search_placeholder: "Marken suchen …"

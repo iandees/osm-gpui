@@ -28,7 +28,51 @@ fn field_label(text: impl Into<gpui::SharedString>, cx: &gpui::App) -> gpui::Div
         .child(text.into())
 }
 
+/// Whether `key` holds an `opening_hours`-syntax value the hours editor can
+/// open (`opening_hours`, `opening_hours:drive_through`, …).
+fn is_opening_hours_key(key: &str) -> bool {
+    key == "opening_hours" || key.starts_with("opening_hours:")
+}
+
 impl MapViewer {
+    /// Open the hours editor for `field_key` of `feature`, starting from what
+    /// the field's `input` shows (which may not be committed yet). Applying
+    /// writes the tag and the field's input.
+    fn open_opening_hours_dialog(
+        &mut self,
+        feature: osm_gpui::selection::FeatureRef,
+        field_key: String,
+        title: String,
+        input: gpui::Entity<InputState>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        use osm_gpui::ui::opening_hours_dialog::{DialogEvent, OpeningHoursDialog};
+        if self.dialogs.opening_hours_dialog.is_some() {
+            return;
+        }
+        let current = input.read(cx).value().to_string();
+        let dialog = cx.new(|cx| OpeningHoursDialog::new(title, &current, window, cx));
+        cx.subscribe_in(
+            &dialog,
+            window,
+            move |this: &mut Self, _dialog, event: &DialogEvent, window, cx| {
+                if let DialogEvent::Submitted(value) = event {
+                    input.update(cx, |state, cx| state.set_value(value.clone(), window, cx));
+                    this.apply_field_values(
+                        &feature,
+                        std::collections::HashMap::from([(field_key.clone(), value.clone())]),
+                    );
+                }
+                this.dialogs.opening_hours_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.dialogs.opening_hours_dialog = Some(dialog);
+        cx.notify();
+    }
+
     /// Get or create the `InputState` entity for a text field, seeded from
     /// `current_value` only on creation (an existing entity keeps whatever
     /// the user has typed, even if `current_value` hasn't changed — it's
@@ -157,16 +201,52 @@ impl MapViewer {
                         }),
                     )
                 });
+                let label = cat.field_label(field).to_string();
+                let text_input = Input::new(&input)
+                    .with_size(gpui_component::Size::Size(body / 0.875))
+                    .h(gpui::px(FIELD_CONTROL_HEIGHT));
+                // Hours fields get a button that opens the hours editor.
+                let control = if is_opening_hours_key(&field.key) {
+                    let (input, field_key, title) =
+                        (input.clone(), field.key.clone(), label.clone());
+                    gpui::div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(gpui::div().flex_1().min_w(gpui::px(0.)).child(text_input))
+                        .child(
+                            Button::new(gpui::SharedString::from(format!(
+                                "field-hours-edit-{}",
+                                field.id
+                            )))
+                            .icon(IconName::Calendar)
+                            .ghost()
+                            .small()
+                            .tooltip(tr!("dialog.opening_hours.open"))
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.open_opening_hours_dialog(
+                                        feature,
+                                        field_key.clone(),
+                                        title.clone(),
+                                        input.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            )),
+                        )
+                        .into_any_element()
+                } else {
+                    text_input.into_any_element()
+                };
                 gpui::div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(field_label(cat.field_label(field).to_string(), cx))
-                    .child(
-                        Input::new(&input)
-                            .with_size(gpui_component::Size::Size(body / 0.875))
-                            .h(gpui::px(FIELD_CONTROL_HEIGHT)),
-                    )
+                    .child(field_label(label, cx))
+                    .child(control)
                     .children(chips)
                     .into_any_element()
             }

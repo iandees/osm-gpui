@@ -1196,6 +1196,30 @@ dialog:
     confirm: "Create"
     error:
       offset: "Enter a distance in metres, not zero and at most %{max} either way."
+  # The opening-hours editor, opened from the button beside an hours field.
+  opening_hours:
+    paste_label: "Paste hours from a website"
+    paste_placeholder: "e.g. Monday – Friday: 9 AM – 5 PM, Saturday 10–2"
+    convert: "Convert"
+    converted: "Converted — check the days and times below."
+    not_understood: "Couldn't find any days or times in that text. Nothing was changed."
+    partly_understood: "Couldn't read all of that text, so nothing was changed. Enter the hours below instead."
+    unsupported: "This value uses syntax the editor can't show. Applying will replace it."
+    groups_label: "Days and times"
+    closed: "Closed"
+    add_time: "Add time"
+    remove_time: "Remove time"
+    add_group: "Add days"
+    remove_group: "Remove these days"
+    result: "Result"
+    # Shown as the result when no day has hours (applying removes the tag).
+    empty: "(no hours: the tag will be removed)"
+    apply: "Apply"
+    error:
+      time: "\"%{time}\" isn't a time — use e.g. 09:00 or 5pm."
+      range: "%{start}–%{end} isn't a time range."
+    # Tooltip of the button beside an hours field.
+    open: "Edit hours…"
   nsi:
     title: "Apply NSI Preset"
     search_placeholder: "Search brands…"
