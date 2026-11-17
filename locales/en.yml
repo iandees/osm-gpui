@@ -1305,6 +1305,7 @@ gps_traces:
     reset: "Reset Trace Style"
   legend:
     title: "GPS traces by %{by}"
+    title_named: "%{name} by %{by}"
     unknown: "Unknown"
     kmh_max: "%{n}+ km/h"
     years:

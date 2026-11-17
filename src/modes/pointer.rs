@@ -93,6 +93,12 @@ impl MapViewer {
         if std::mem::take(&mut self.pointer.menu_swallow_press) {
             return;
         }
+        // A file dropped from Finder arrives as a left release with no
+        // press; it is handled by the window's drop listener, and must not
+        // also, say, apply a Rotate in progress.
+        if cx.has_active_drag() {
+            return;
+        }
         self.handle_mouse_up(ev, cx);
     }
 

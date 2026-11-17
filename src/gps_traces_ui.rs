@@ -33,7 +33,7 @@ use crate::MapViewer;
 
 actions!(osm_gpui, [DownloadGpsTraces]);
 
-/// Change how the GPS Traces layer at `index` draws (its Layers-list
+/// Change how the GPS Traces or GPX layer at `index` draws (its Layers-list
 /// context menu); with no `index`, the GPS Traces layer of the last download
 /// (for the script harness: `action SetGpsTraceStyle {"change":{"ColorBy":"Speed"}}`).
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
@@ -45,13 +45,14 @@ pub(crate) struct SetGpsTraceStyle {
     pub change: StyleChange,
 }
 
-/// The trace-style entries of a GPS Traces layer's context menu: submenus for
-/// the colouring, colour, width and age filter, a private-points toggle and
-/// a reset. `style` is the layer's current style, shown as check marks.
+/// The trace-style entries of a GPS Traces or GPX layer's context menu:
+/// submenus for the colouring, colour, width and age filter, a private-points
+/// toggle (GPS Traces only: a GPX file has no private points) and a reset.
+/// `style` is the layer's current style, shown as check marks.
 pub(crate) fn trace_style_menu(
     menu: PopupMenu,
     index: usize,
-    style: TraceStyle,
+    (style, format): (TraceStyle, Format),
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -123,18 +124,23 @@ pub(crate) fn trace_style_menu(
             m
         },
     )
-    .menu_with_check(
-        tr!("gps_traces.style.show_private"),
-        style.show_private,
-        set(StyleChange::ShowPrivate(!style.show_private)),
-    )
+    .when(format == Format::OsmTraces, |m| {
+        m.menu_with_check(
+            tr!("gps_traces.style.show_private"),
+            style.show_private,
+            set(StyleChange::ShowPrivate(!style.show_private)),
+        )
+    })
     .menu(tr!("gps_traces.style.reset"), set(StyleChange::Reset))
 }
 
-/// The trace style of `layer` if it is a GPS Traces layer.
-pub(crate) fn trace_style_of(layer: &dyn osm_gpui::layers::MapLayer) -> Option<TraceStyle> {
+/// The trace style of `layer` and its format, if it is a GPS Traces layer or
+/// a GPX file.
+pub(crate) fn trace_style_of(
+    layer: &dyn osm_gpui::layers::MapLayer,
+) -> Option<(TraceStyle, Format)> {
     let r = layer.as_reference()?;
-    (r.format() == Format::OsmTraces).then(|| *r.trace_style())
+    r.has_trace_style().then(|| (*r.trace_style(), r.format()))
 }
 
 /// Everything about downloaded GPS traces that the window holds.
@@ -288,7 +294,7 @@ impl MapViewer {
             if let Some(old) = self.layer_manager.find_layer(id) {
                 let mut layer = ReferenceLayer::new(id, old.name().to_string(), data);
                 layer.set_visible(old.is_visible());
-                if let Some(style) = trace_style_of(old) {
+                if let Some((style, _)) = trace_style_of(old) {
                     layer.set_trace_style(style);
                 }
                 self.layer_manager.replace(id, Box::new(layer));
@@ -318,30 +324,45 @@ impl MapViewer {
         let Some(layer) = id.and_then(|id| self.layer_manager.find_layer_mut(id)) else {
             return;
         };
-        let Some(layer) = layer
-            .as_reference_mut()
-            .filter(|l| l.format() == Format::OsmTraces)
-        else {
+        let Some(layer) = layer.as_reference_mut().filter(|l| l.has_trace_style()) else {
             return;
         };
+        let format = layer.format();
         let mut style = *layer.trace_style();
         style.apply(action.change);
+        if action.change == StyleChange::Reset {
+            style = ReferenceLayer::default_trace_style(format);
+        }
         layer.set_trace_style(style);
         // The next download starts out the same way, this run and the next.
-        settings_store::set_gps_trace_style(style, true);
+        // A GPX file's style is its own.
+        if format == Format::OsmTraces {
+            settings_store::set_gps_trace_style(style, true);
+        }
         cx.notify();
     }
 
-    /// What the colours mean, bottom left over the map, while a visible GPS
-    /// Traces layer is coloured by something.
+    /// What the colours mean, bottom left over the map, while the topmost
+    /// visible GPS Traces or GPX layer is coloured by something.
     pub(crate) fn render_gps_traces_legend(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let style = self
+        let (style, format, name) = self
             .layer_manager
             .layers()
             .iter()
             .rev()
             .filter(|l| l.is_visible())
-            .find_map(|l| trace_style_of(l.as_ref()))?;
+            .find_map(|l| trace_style_of(l.as_ref()).map(|(s, f)| (s, f, l.name())))?;
+        // A GPX file is named after itself; the downloaded layer is "GPS
+        // traces".
+        let title = if format == Format::Gpx {
+            tr!(
+                "gps_traces.legend.title_named",
+                name = name,
+                by = style.color_by.label()
+            )
+        } else {
+            tr!("gps_traces.legend.title", by = style.color_by.label())
+        };
         let muted = cx.theme().muted_foreground;
         let row = |rgb: u32, label: String| {
             h_flex()
@@ -412,11 +433,7 @@ impl MapViewer {
                 .rounded_md()
                 .text_size(muted_text_size())
                 .text_color(cx.theme().popover_foreground)
-                .child(
-                    div()
-                        .text_color(muted)
-                        .child(tr!("gps_traces.legend.title", by = style.color_by.label())),
-                )
+                .child(div().text_color(muted).child(title))
                 .children(rows)
                 .into_any_element(),
         )
