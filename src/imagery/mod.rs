@@ -35,9 +35,9 @@ pub struct ImageryEntry {
     pub max_zoom: Option<u32>,
     /// Global bounding box (axis-aligned) if the entry has a geometry.
     pub bbox: Option<GeoBounds>,
-    /// Polygon rings (lon, lat) for precise containment tests. Only the outer
-    /// ring of each polygon is retained (holes are not honored).
-    pub polygon: Option<Vec<Vec<(f64, f64)>>>,
+    /// Polygon rings for precise containment tests. Only the outer ring of
+    /// each polygon is retained (holes are not honored).
+    pub polygon: Option<Vec<Vec<LatLon>>>,
     pub best: bool,
     pub country_code: Option<String>,
     pub icon_url: Option<String>,
@@ -57,9 +57,7 @@ impl ImageryEntry {
         }
         // The bbox is only a first cut: any ring containing the point matches.
         if let Some(polygons) = &self.polygon {
-            return polygons
-                .iter()
-                .any(|ring| point_in_ring(at.lon, at.lat, ring));
+            return polygons.iter().any(|ring| point_in_ring(at, ring));
         }
         true
     }
@@ -250,9 +248,8 @@ fn parse_attribution(value: &serde_json::Value) -> Option<AttributionInfo> {
     None
 }
 
-/// Polygon rings decoded from GeoJSON coordinates: each ring is a sequence
-/// of (lon, lat) points.
-type GeoRings = Vec<Vec<(f64, f64)>>;
+/// Polygon rings decoded from GeoJSON coordinates.
+type GeoRings = Vec<Vec<LatLon>>;
 
 fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<GeoRings>) {
     let typ = geom.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -261,7 +258,7 @@ fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<GeoRin
         None => return (None, None),
     };
 
-    let rings: Vec<Vec<(f64, f64)>> = match typ {
+    let rings: GeoRings = match typ {
         "Polygon" => {
             let Some(arr) = coords.as_array() else {
                 return (None, None);
@@ -284,44 +281,26 @@ fn parse_geometry(geom: &serde_json::Value) -> (Option<GeoBounds>, Option<GeoRin
         return (None, None);
     }
 
-    let mut min_lat = f64::INFINITY;
-    let mut max_lat = f64::NEG_INFINITY;
-    let mut min_lon = f64::INFINITY;
-    let mut max_lon = f64::NEG_INFINITY;
-    for ring in &rings {
-        for &(lon, lat) in ring {
-            if lat < min_lat {
-                min_lat = lat;
-            }
-            if lat > max_lat {
-                max_lat = lat;
-            }
-            if lon < min_lon {
-                min_lon = lon;
-            }
-            if lon > max_lon {
-                max_lon = lon;
-            }
-        }
+    let mut bounds = None;
+    for &at in rings.iter().flatten() {
+        GeoBounds::extend(&mut bounds, at);
     }
-    if !min_lat.is_finite() {
+    let Some(bounds) = bounds else {
         return (None, None);
-    }
+    };
 
-    (
-        Some(GeoBounds::new(min_lat, max_lat, min_lon, max_lon)),
-        Some(rings),
-    )
+    (Some(bounds), Some(rings))
 }
 
-fn parse_ring(v: &serde_json::Value) -> Option<Vec<(f64, f64)>> {
+/// A GeoJSON ring of `[lon, lat]` positions.
+fn parse_ring(v: &serde_json::Value) -> Option<Vec<LatLon>> {
     let arr = v.as_array()?;
     let mut out = Vec::with_capacity(arr.len());
     for pair in arr {
         let p = pair.as_array()?;
         let lon = p.first()?.as_f64()?;
         let lat = p.get(1)?.as_f64()?;
-        out.push((lon, lat));
+        out.push(LatLon::new(lat, lon));
     }
     if out.len() < 3 {
         return None;
@@ -329,8 +308,9 @@ fn parse_ring(v: &serde_json::Value) -> Option<Vec<(f64, f64)>> {
     Some(out)
 }
 
-/// Ray-casting point-in-polygon test. Ring points are (lon, lat).
-fn point_in_ring(x: f64, y: f64, ring: &[(f64, f64)]) -> bool {
+/// Ray-casting point-in-polygon test.
+fn point_in_ring(at: LatLon, ring: &[LatLon]) -> bool {
+    let (x, y) = (at.lon, at.lat);
     let n = ring.len();
     if n < 3 {
         return false;
@@ -338,8 +318,8 @@ fn point_in_ring(x: f64, y: f64, ring: &[(f64, f64)]) -> bool {
     let mut inside = false;
     let mut j = n - 1;
     for i in 0..n {
-        let (xi, yi) = ring[i];
-        let (xj, yj) = ring[j];
+        let (xi, yi) = (ring[i].lon, ring[i].lat);
+        let (xj, yj) = (ring[j].lon, ring[j].lat);
         let intersects =
             ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi + f64::EPSILON) + xi);
         if intersects {
