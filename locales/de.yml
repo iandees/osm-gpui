@@ -176,7 +176,7 @@ status:
     select_relation: "Relation gewählt: ihre Mitglieder sind hervorgehoben · Esc zum Abwählen"
     select_member_way: "Ziehen zum Verschieben · Entf zum Löschen · Esc zum Abwählen · Relation im Seitenpanel"
     add_idle: "Klicken, um Knoten zu setzen oder Weg zu beginnen · Alt gedrückt halten für Setzen ohne Einrasten · Esc zum Beenden"
-    add_started: "Klicken, um den Weg fortzusetzen (rastet an Wegen und Knoten ein; Alt gedrückt halten, um das zu verhindern) · Enter oder Esc zum Abschließen"
+    add_started: "Klicken, um den Weg fortzusetzen (rastet an Wegen und Knoten ein; Alt gedrückt halten, um das zu verhindern) · Doppelklick, Enter oder Esc zum Abschließen"
     building_idle: "Klicken, um die erste Gebäudeecke zu setzen · Esc zum Beenden"
     building_started: "Klicken, um die zweite Ecke zu setzen · Esc zum Abbrechen"
     building_edge_placed: "Tiefe festlegen, dann klicken zum Abschließen · Esc zum Abbrechen"
@@ -721,7 +721,7 @@ action:
   extend:
     label: "Weg verlängern"
     hint: "Einen offenen Weg oder dessen Endknoten wählen, um weiterzuzeichnen"
-    started: "Klicken, um Knoten hinzuzufügen; Enter oder Esc zum Abschließen"
+    started: "Klicken, um Knoten hinzuzufügen; Doppelklick, Enter oder Esc zum Abschließen"
   # Pluralbausteine der Statusmeldungen von „Tags kopieren/einsetzen“.
   tag_count:
     one: "%{count} Tag"

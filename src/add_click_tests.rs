@@ -341,6 +341,26 @@ fn two_clicks_and_enter_make_a_two_node_way_in_two_steps(cx: &mut TestAppContext
     });
 }
 
+// A double-click finishes the way: the first click places the last node, the
+// second one only stops drawing (no duplicate node), and the next click starts
+// a fresh way rather than extending the finished one.
+#[gpui::test]
+fn double_click_finishes_the_way_without_a_duplicate_node(cx: &mut TestAppContext) {
+    with_refs(cx, all_refs, |view, _w, cx, layer| {
+        view.handle_add_click(screen(view, A_V1), false);
+        view.handle_add_click(far(view), false);
+        let before = state(view, layer);
+        assert!(view.add_progress().is_some());
+        view.mode_click(far(view), false, 2, false, cx);
+        assert!(view.add_progress().is_none());
+        assert_eq!(state(view, layer), before);
+        // The next click starts a new lone node, not a continuation.
+        view.mode_click(screen(view, A_V1), false, 1, false, cx);
+        assert_eq!(state(view, layer).ways, before.ways);
+        assert!(view.add_progress().is_some_and(|p| p.way_id.is_none()));
+    });
+}
+
 // Escape (cancelling the in-progress way) neither adds nor removes steps:
 // the first node stays and one undo still removes it.
 #[gpui::test]

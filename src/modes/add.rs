@@ -33,7 +33,19 @@ impl AddState {
     }
 }
 
-pub(super) fn click(view: &mut MapViewer, at: gpui::Point<gpui::Pixels>, snapping_off: bool) {
+pub(super) fn click(
+    view: &mut MapViewer,
+    at: gpui::Point<gpui::Pixels>,
+    click_count: usize,
+    snapping_off: bool,
+) {
+    // A double-click finishes the way: the first click already placed the
+    // last node, so the second one just stops drawing (like Esc) instead of
+    // stacking a duplicate node on top of it. The next click starts fresh.
+    if click_count >= 2 && view.add_progress().is_some() {
+        view.set_add_progress(None);
+        return;
+    }
     view.handle_add_click(at, snapping_off);
 }
 
