@@ -351,7 +351,7 @@ impl crate::MapViewer {
     ) {
         match self.mode_state {
             ModeState::Select(_) => select::click(self, at, shift_held, click_count),
-            ModeState::Add(_) => add::click(self, at, snapping_off),
+            ModeState::Add(_) => add::click(self, at, click_count, snapping_off),
             ModeState::Building(_) => building::click(self, at),
             ModeState::Arc(_) => arc::click(self, at, snapping_off),
             ModeState::Improve(_) => improve::click(self, at, cx),

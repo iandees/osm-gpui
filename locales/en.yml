@@ -181,7 +181,7 @@ status:
     select_relation: "Relation selected: its members are highlighted · Esc to deselect"
     select_member_way: "Drag to move · Delete to remove · Esc to deselect · pick its relation in the side panel"
     add_idle: "Click to place a node or start a way · hold Alt to place without snapping · Esc to exit"
-    add_started: "Click to continue the way (snaps onto ways and nodes; hold Alt to not snap) · Enter or Esc to finish"
+    add_started: "Click to continue the way (snaps onto ways and nodes; hold Alt to not snap) · double-click, Enter or Esc to finish"
     building_idle: "Click to place the building's first corner · Esc to exit"
     building_started: "Click to place the second corner · Esc to cancel"
     building_edge_placed: "Move to set the depth, then click to finish · Esc to cancel"
@@ -738,7 +738,7 @@ action:
   extend:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
-    started: "Click to add nodes to the way; Enter or Esc to finish"
+    started: "Click to add nodes to the way; double-click, Enter or Esc to finish"
   # Plural pieces of the Copy/Paste Tags status messages.
   tag_count:
     one: "%{count} tag"
