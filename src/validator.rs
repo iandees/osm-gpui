@@ -44,6 +44,13 @@
 //! | `tag_whitespace`        | warning  | leading or trailing whitespace in a key or value          |
 //! | `fixme`                 | warning  | a `fixme` / `FIXME` tag on a changed object               |
 //! | `deprecated_tag`        | warning  | a well-known deprecated tag                               |
+//! | `redundant_area_tag`    | warning  | `area=yes` on a closed way whose other tags make an area  |
+//! | `duplicate_relation_member` | warning | the same member and role twice in a row in a relation  |
+//! | `repeated_way_node`     | warning  | a node visited twice in a way that is not just closed     |
+//!
+//! Some findings carry a [`Fix`]: the edits that resolve them, applied by
+//! [`apply_fix`] through an undoable recording. A fix is only offered when it
+//! is unambiguous (it never guesses which of two tag values to keep).
 
 use crate::tags::Tags;
 use std::cmp::Ordering;
@@ -52,11 +59,13 @@ use std::collections::{HashMap, HashSet};
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{RTree, AABB};
 
+use crate::edit_ops::Recording;
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::diff::LayerDiff;
+use crate::layers::EditError;
 use crate::layers::LayerId;
 use crate::multipolygon;
-use crate::osm::{MemberType, OsmData, OsmRelation, OsmWay};
+use crate::osm::{MemberType, OsmData, OsmMember, OsmRelation, OsmWay};
 use crate::selection::FeatureKind;
 use crate::{tr, tr_count};
 
@@ -98,11 +107,14 @@ pub enum Check {
     TagWhitespace,
     Fixme,
     DeprecatedTag,
+    RedundantAreaTag,
+    DuplicateRelationMember,
+    RepeatedWayNode,
 }
 
 impl Check {
     /// Every check, in the order findings of equal severity are listed.
-    pub const ALL: [Check; 19] = [
+    pub const ALL: [Check; 22] = [
         Check::UntaggedWay,
         Check::UntaggedNode,
         Check::WayTooShort,
@@ -122,6 +134,9 @@ impl Check {
         Check::TagWhitespace,
         Check::Fixme,
         Check::DeprecatedTag,
+        Check::RedundantAreaTag,
+        Check::DuplicateRelationMember,
+        Check::RepeatedWayNode,
     ];
 
     /// The stable id, e.g. `crossing_ways`.
@@ -146,6 +161,9 @@ impl Check {
             Check::TagWhitespace => "tag_whitespace",
             Check::Fixme => "fixme",
             Check::DeprecatedTag => "deprecated_tag",
+            Check::RedundantAreaTag => "redundant_area_tag",
+            Check::DuplicateRelationMember => "duplicate_relation_member",
+            Check::RepeatedWayNode => "repeated_way_node",
         }
     }
 
@@ -179,6 +197,68 @@ pub struct Finding {
     pub message: String,
     /// The objects concerned (at least one), in a stable order.
     pub features: Vec<Feature>,
+    /// The edits that resolve the problem, when there is an unambiguous way.
+    pub fix: Option<Fix>,
+}
+
+/// One edit of a [`Fix`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum FixOp {
+    SetTag {
+        kind: FeatureKind,
+        id: i64,
+        key: String,
+        value: String,
+    },
+    RemoveTag {
+        kind: FeatureKind,
+        id: i64,
+        key: String,
+    },
+    SetWayNodes {
+        way: WayId,
+        nodes: Vec<NodeId>,
+    },
+    DeleteNode(NodeId),
+    DeleteRelation(RelationId),
+    SetRelationMembers {
+        relation: RelationId,
+        members: Vec<OsmMember>,
+    },
+}
+
+/// The edits that resolve a finding, with a name for the History list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fix {
+    pub label: String,
+    pub ops: Vec<FixOp>,
+}
+
+/// Carry out `fix` through `rec`, so it can be undone as one step. Stops at
+/// the first edit the layer refuses; the caller rolls the recording back.
+pub fn apply_fix(rec: &mut Recording<'_>, fix: &Fix) -> Result<(), EditError> {
+    for op in &fix.ops {
+        match op {
+            FixOp::SetTag {
+                kind,
+                id,
+                key,
+                value,
+            } => rec.set_tag(*kind, *id, key, value)?,
+            FixOp::RemoveTag { kind, id, key } => rec.remove_tag(*kind, *id, key)?,
+            FixOp::SetWayNodes { way, nodes } => rec.set_way_nodes(*way, nodes.clone())?,
+            FixOp::DeleteNode(id) => {
+                rec.delete_feature(FeatureKind::Node, id.get())?;
+            }
+            FixOp::DeleteRelation(id) => {
+                rec.delete_relation(*id)?;
+            }
+            FixOp::SetRelationMembers { relation, members } => {
+                rec.set_relation_members(*relation, members.clone())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The objects a pending upload would create or modify.
@@ -240,10 +320,14 @@ pub fn validate(data: &OsmData, changes: &Changes) -> Vec<Finding> {
     for &id in &nodes {
         if let Some(node) = data.nodes.get(&id) {
             if node.tags.is_empty() && !cx.node_in_way.contains(&id) && !cx.node_in_relation(id) {
-                out.push(finding(
-                    Check::UntaggedNode,
-                    tr!("validator.msg.untagged_node").to_string(),
-                    vec![(FeatureKind::Node, id.get())],
+                out.push(fixed(
+                    finding(
+                        Check::UntaggedNode,
+                        tr!("validator.msg.untagged_node").to_string(),
+                        vec![(FeatureKind::Node, id.get())],
+                    ),
+                    tr!("validator.fix.delete_node").to_string(),
+                    vec![FixOp::DeleteNode(id)],
                 ));
             }
             check_tags(FeatureKind::Node, id.get(), &node.tags, &mut out);
@@ -251,7 +335,7 @@ pub fn validate(data: &OsmData, changes: &Changes) -> Vec<Finding> {
     }
     for &id in &ways {
         if let Some(way) = data.ways.get(&id) {
-            check_way(way, &cx, &mut out);
+            check_way(way, data, &cx, &mut out);
             check_tags(FeatureKind::Way, id.get(), &way.tags, &mut out);
         }
     }
@@ -288,7 +372,13 @@ fn finding(check: Check, message: String, features: Vec<Feature>) -> Finding {
         check,
         message,
         features,
+        fix: None,
     }
+}
+
+fn fixed(mut f: Finding, label: String, ops: Vec<FixOp>) -> Finding {
+    f.fix = Some(Fix { label, ops });
+    f
 }
 
 fn kind_rank(kind: FeatureKind) -> u8 {
@@ -394,7 +484,7 @@ impl<'a> Context<'a> {
     }
 }
 
-fn check_way(way: &OsmWay, cx: &Context, out: &mut Vec<Finding>) {
+fn check_way(way: &OsmWay, data: &OsmData, cx: &Context, out: &mut Vec<Finding>) {
     let feature = vec![(FeatureKind::Way, way.id.get())];
     if way.tags.is_empty() && !cx.way_member.contains(&way.id) {
         out.push(finding(
@@ -421,21 +511,113 @@ fn check_way(way: &OsmWay, cx: &Context, out: &mut Vec<Finding>) {
         ));
     }
     if let Some(pair) = way.nodes.windows(2).find(|p| p[0] == p[1]) {
-        out.push(finding(
+        let mut deduped = way.nodes.clone();
+        deduped.dedup();
+        let mut f = finding(
             Check::DuplicateWayNode,
             tr!("validator.msg.duplicate_way_node", node = pair[0]).to_string(),
             feature.clone(),
+        );
+        // Collapsing the repeats must leave a way that is still valid.
+        if deduped.len() >= 2 {
+            f = fixed(
+                f,
+                tr!("validator.fix.remove_duplicate_way_node").to_string(),
+                vec![FixOp::SetWayNodes {
+                    way: way.id,
+                    nodes: deduped,
+                }],
+            );
+        }
+        out.push(f);
+    }
+    if let Some(node) = repeated_node(&way.nodes) {
+        out.push(finding(
+            Check::RepeatedWayNode,
+            tr!("validator.msg.repeated_way_node", node = node).to_string(),
+            feature.clone(),
         ));
     }
-    if way.nodes.len() >= 2 && !way.is_closed() && !cx.way_in_area_relation.contains(&way.id) {
-        if let Some(tag) = area_tag(&way.tags) {
-            out.push(finding(
-                Check::AreaTagsOnOpenWay,
-                tr!("validator.msg.area_tags_on_open_way", tag = tag).to_string(),
-                feature,
+    if way.is_closed() && way.tags.is("area", "yes") {
+        let mut without = way.tags.clone();
+        without.remove("area");
+        if crate::presets::area_keys().closed_way_is_area(&without) && area_tag(&without).is_some()
+        {
+            out.push(fixed(
+                finding(
+                    Check::RedundantAreaTag,
+                    tr!("validator.msg.redundant_area_tag").to_string(),
+                    feature.clone(),
+                ),
+                tr!("validator.fix.remove_area_tag").to_string(),
+                vec![FixOp::RemoveTag {
+                    kind: FeatureKind::Way,
+                    id: way.id.get(),
+                    key: "area".to_string(),
+                }],
             ));
         }
     }
+    if way.nodes.len() >= 2 && !way.is_closed() && !cx.way_in_area_relation.contains(&way.id) {
+        if let Some(tag) = area_tag(&way.tags) {
+            let mut f = finding(
+                Check::AreaTagsOnOpenWay,
+                tr!("validator.msg.area_tags_on_open_way", tag = tag).to_string(),
+                feature,
+            );
+            // Close the ring when its ends are a few metres apart: the gap
+            // is then an unfinished outline, not a line mis-tagged as area.
+            if let Some(first) = closable_ends(way, data) {
+                let mut nodes = way.nodes.clone();
+                nodes.push(first);
+                f = fixed(
+                    f,
+                    tr!("validator.fix.close_way").to_string(),
+                    vec![FixOp::SetWayNodes { way: way.id, nodes }],
+                );
+            }
+            out.push(f);
+        }
+    }
+}
+
+/// How far apart (metres) the ends of an area-tagged open way may be for
+/// the validator to offer closing it.
+const CLOSE_GAP_METRES: f64 = 10.0;
+
+/// A node that appears twice in `nodes` other than as consecutive repeats or
+/// as the first and last of a closed ring.
+fn repeated_node(nodes: &[NodeId]) -> Option<NodeId> {
+    let closed = nodes.len() > 1 && nodes.first() == nodes.last();
+    let body = if closed {
+        &nodes[..nodes.len() - 1]
+    } else {
+        nodes
+    };
+    let mut seen: HashSet<NodeId> = HashSet::new();
+    let mut previous = None;
+    for &n in body {
+        if previous != Some(n) && !seen.insert(n) {
+            return Some(n);
+        }
+        previous = Some(n);
+    }
+    None
+}
+
+/// The first node of `way` when its last node is within
+/// [`CLOSE_GAP_METRES`] of it (and the way would then be a valid ring).
+fn closable_ends(way: &OsmWay, data: &OsmData) -> Option<NodeId> {
+    if way.nodes.len() < 3 {
+        return None;
+    }
+    let first = *way.nodes.first()?;
+    let last = *way.nodes.last()?;
+    let a = data.nodes.get(&first)?;
+    let b = data.nodes.get(&last)?;
+    let dy = (a.lat - b.lat) * 111_320.0;
+    let dx = (a.lon - b.lon) * 111_320.0 * a.lat.to_radians().cos();
+    ((dx * dx + dy * dy).sqrt() <= CLOSE_GAP_METRES).then_some(first)
 }
 
 /// Keys that mark a way as a line however it is also tagged.
@@ -507,10 +689,38 @@ fn area_tag(tags: &Tags) -> Option<String> {
 fn check_relation(relation: &OsmRelation, out: &mut Vec<Finding>) {
     let feature = vec![(FeatureKind::Relation, relation.id.get())];
     if relation.members.is_empty() {
-        out.push(finding(
-            Check::RelationEmpty,
-            tr!("validator.msg.relation_empty").to_string(),
-            feature.clone(),
+        out.push(fixed(
+            finding(
+                Check::RelationEmpty,
+                tr!("validator.msg.relation_empty").to_string(),
+                feature.clone(),
+            ),
+            tr!("validator.fix.delete_relation").to_string(),
+            vec![FixOp::DeleteRelation(relation.id)],
+        ));
+    }
+    let mut members: Vec<OsmMember> = Vec::with_capacity(relation.members.len());
+    for m in &relation.members {
+        if members.last() != Some(m) {
+            members.push(m.clone());
+        }
+    }
+    if members.len() != relation.members.len() {
+        out.push(fixed(
+            finding(
+                Check::DuplicateRelationMember,
+                tr_count!(
+                    "validator.msg.duplicate_relation_member",
+                    relation.members.len() - members.len()
+                )
+                .to_string(),
+                feature.clone(),
+            ),
+            tr!("validator.fix.remove_duplicate_members").to_string(),
+            vec![FixOp::SetRelationMembers {
+                relation: relation.id,
+                members,
+            }],
         ));
     }
     if !relation.tags.contains_key("type") {
@@ -620,7 +830,7 @@ fn check_tags(kind: FeatureKind, id: i64, tags: &Tags, out: &mut Vec<Finding>) {
             found.push(finding(check, message, feature.clone()));
         }
     };
-    for (key, value) in entries {
+    for &(key, value) in &entries {
         if key.is_empty() {
             add(
                 Check::TagEmptyKey,
@@ -664,7 +874,7 @@ fn check_tags(kind: FeatureKind, id: i64, tags: &Tags, out: &mut Vec<Finding>) {
             DEPRECATED.iter().find(|(k, v, _)| key == k && value == v)
         {
             // Several deprecated tags on one object are each reported.
-            deprecated.push(finding(
+            let f = finding(
                 Check::DeprecatedTag,
                 tr!(
                     "validator.msg.deprecated_tag",
@@ -673,11 +883,128 @@ fn check_tags(kind: FeatureKind, id: i64, tags: &Tags, out: &mut Vec<Finding>) {
                 )
                 .to_string(),
                 feature.clone(),
-            ));
+            );
+            deprecated.push(match deprecated_fix(kind, id, tags, k, replacement) {
+                Some(ops) => fixed(f, tr!("validator.fix.replace_tag").to_string(), ops),
+                None => f,
+            });
+        }
+    }
+    // Attach the fixes of the tag-format findings now that every offending
+    // tag is known.
+    for f in &mut found {
+        let ops = match f.check {
+            Check::TagEmptyKey => Some(
+                entries
+                    .iter()
+                    .filter(|(k, _)| k.is_empty())
+                    .map(|(k, _)| remove_op(kind, id, k))
+                    .collect(),
+            ),
+            Check::TagEmptyValue => Some(
+                entries
+                    .iter()
+                    .filter(|(k, v)| !k.is_empty() && v.is_empty())
+                    .map(|(k, _)| remove_op(kind, id, k))
+                    .collect(),
+            ),
+            Check::TagWhitespace => whitespace_fix(kind, id, tags, &entries),
+            _ => None,
+        };
+        if let Some(ops) = ops.filter(|o: &Vec<FixOp>| !o.is_empty()) {
+            let label = match f.check {
+                Check::TagWhitespace => tr!("validator.fix.trim_tags"),
+                _ => tr!("validator.fix.remove_tags"),
+            };
+            f.fix = Some(Fix {
+                label: label.to_string(),
+                ops,
+            });
         }
     }
     out.extend(found);
     out.extend(deprecated);
+}
+
+fn remove_op(kind: FeatureKind, id: i64, key: &str) -> FixOp {
+    FixOp::RemoveTag {
+        kind,
+        id,
+        key: key.to_string(),
+    }
+}
+
+fn set_op(kind: FeatureKind, id: i64, key: &str, value: &str) -> FixOp {
+    FixOp::SetTag {
+        kind,
+        id,
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+/// Trim every key and value that has stray whitespace. A tag that is empty
+/// once trimmed is removed. `None` when a trimmed key would replace a
+/// different, existing tag (which one to keep is the mapper's call).
+fn whitespace_fix(
+    kind: FeatureKind,
+    id: i64,
+    tags: &Tags,
+    entries: &[(&String, &String)],
+) -> Option<Vec<FixOp>> {
+    let mut removals = Vec::new();
+    let mut sets: Vec<(String, String)> = Vec::new();
+    for &(key, value) in entries {
+        if key.trim() == key && value.trim() == value {
+            continue;
+        }
+        let (new_key, new_value) = (key.trim(), value.trim());
+        if new_key.is_empty() || new_value.is_empty() {
+            removals.push(remove_op(kind, id, key));
+            continue;
+        }
+        if new_key != key {
+            if tags.get(new_key).is_some_and(|v| v != new_value)
+                || sets.iter().any(|(k, v)| k == new_key && v != new_value)
+            {
+                return None;
+            }
+            removals.push(remove_op(kind, id, key));
+        }
+        sets.push((new_key.to_string(), new_value.to_string()));
+    }
+    removals.extend(sets.iter().map(|(k, v)| set_op(kind, id, k, v)));
+    Some(removals)
+}
+
+/// The edits that swap the deprecated tag `old_key` for `replacement`
+/// (`key=value`, or several joined with ` + `). `None` when the replacement
+/// is not a plain list of tags, or would overwrite a different value.
+fn deprecated_fix(
+    kind: FeatureKind,
+    id: i64,
+    tags: &Tags,
+    old_key: &str,
+    replacement: &str,
+) -> Option<Vec<FixOp>> {
+    let mut new_tags: Vec<(&str, &str)> = Vec::new();
+    for part in replacement.split(" + ") {
+        let (k, v) = part.split_once('=')?;
+        if k.is_empty() || v.is_empty() || v == "*" {
+            return None;
+        }
+        // Another tag already says something else for this key.
+        if k != old_key && tags.get(k).is_some_and(|existing| existing != v) {
+            return None;
+        }
+        new_tags.push((k, v));
+    }
+    let mut ops = Vec::new();
+    if !new_tags.iter().any(|(k, _)| *k == old_key) {
+        ops.push(remove_op(kind, id, old_key));
+    }
+    ops.extend(new_tags.iter().map(|(k, v)| set_op(kind, id, k, v)));
+    Some(ops)
 }
 
 fn position_key(lat: f64, lon: f64) -> (i64, i64) {

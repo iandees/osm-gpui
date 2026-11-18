@@ -1373,6 +1373,28 @@ validator:
     tag_whitespace: "Das Tag „%{key}“ hat führende oder abschließende Leerzeichen"
     fixme: "Enthält einen Korrekturhinweis: %{key}=%{value}"
     deprecated_tag: "Veraltetes Tag %{old}; stattdessen %{new} verwenden"
+    redundant_area_tag: "area=yes ist überflüssig; die übrigen Tags machen dies bereits zu einer Fläche"
+    duplicate_relation_member:
+      one: "Relation führt dasselbe Mitglied zweimal hintereinander auf (%{count} Wiederholung)"
+      other: "Relation führt dasselbe Mitglied zweimal hintereinander auf (%{count} Wiederholungen)"
+    repeated_way_node: "Weg führt mehr als einmal durch Knoten %{node}"
+  # Names of the automatic fixes, shown on the Fix button and in History.
+  fix:
+    button: "Beheben"
+    fix_all: "Alle beheben"
+    fixed:
+      one: "%{count} Problem behoben"
+      other: "%{count} Probleme behoben"
+    not_fixed: "Die Korrektur konnte nicht angewendet werden: %{detail}"
+    delete_node: "Unbenutzten Knoten löschen"
+    delete_relation: "Leere Relation löschen"
+    remove_duplicate_way_node: "Wiederholten Knoten entfernen"
+    remove_duplicate_members: "Wiederholte Mitglieder entfernen"
+    remove_area_tag: "area=yes entfernen"
+    close_way: "Weg schließen"
+    remove_tags: "Leere Tags entfernen"
+    trim_tags: "Leerzeichen in Tags entfernen"
+    replace_tag: "Veraltetes Tag ersetzen"
 pmtiles:
   state:
     opening: "%{name} wird geöffnet …"

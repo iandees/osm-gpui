@@ -994,6 +994,8 @@ fn every_message_is_translated() {
             way(15, &[3, 4], &[("area", "yes")]),
             way(16, &[7, 6], &[]),
             way(17, &[3, 9], &[]),
+            way(18, &[5, 6, 7, 6], &[("highway", "path")]),
+            way(19, &[3, 4, 5, 3], &[("building", "yes"), ("area", "yes")]),
         ],
         vec![
             relation(50, vec![], &[]),
@@ -1007,12 +1009,24 @@ fn every_message_is_translated() {
                 vec![member(MemberType::Way, 16, "inner")],
                 &[("type", "multipolygon")],
             ),
+            relation(
+                53,
+                vec![
+                    member(MemberType::Way, 16, ""),
+                    member(MemberType::Way, 16, ""),
+                ],
+                &[("type", "route")],
+            ),
         ],
     );
     let all_nodes: Vec<i64> = (1..=9).collect();
     let f = run(
         &d,
-        &changed(&all_nodes, &[10, 11, 12, 13, 14, 15, 16, 17], &[50, 51, 52]),
+        &changed(
+            &all_nodes,
+            &[10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+            &[50, 51, 52, 53],
+        ),
     );
     let seen: HashSet<Check> = f.iter().map(|x| x.check).collect();
     for check in Check::ALL {
@@ -1260,4 +1274,215 @@ fn timing_on_a_100k_node_download() {
         f.len()
     );
     assert!(took.as_millis() < 100, "{took:?}");
+}
+
+// ---- fixes and the newer checks -------------------------------------
+
+fn fix_of(findings: &[Finding], check: Check) -> Fix {
+    of(findings, check)
+        .first()
+        .and_then(|f| f.fix.clone())
+        .unwrap_or_else(|| panic!("no fix for {check:?}"))
+}
+
+fn apply_to_layer(d: &OsmData, fix: &Fix) -> OsmData {
+    use crate::edit_ops::Recording;
+    use crate::layers::osm_layer::OsmLayer;
+    use crate::layers::LayerId;
+    let mut layer = OsmLayer::new_with_data(LayerId(1), "L", std::sync::Arc::new(d.clone()));
+    let mut rec = Recording::new(LayerId(1), &mut layer);
+    apply_fix(&mut rec, fix).expect("fix applies");
+    layer.get_osm_data().expect("data").as_ref().clone()
+}
+
+#[test]
+fn whitespace_is_trimmed_by_the_fix() {
+    let d = data(
+        vec![node(1, 0.0, 0.0, &[(" name ", " Cafe "), ("a", "b")])],
+        vec![],
+        vec![],
+    );
+    let f = run(&d, &changed(&[1], &[], &[]));
+    let out = apply_to_layer(&d, &fix_of(&f, Check::TagWhitespace));
+    let t = &out.nodes[&NodeId(1)].tags;
+    assert_eq!(t.get("name"), Some("Cafe"));
+    assert_eq!(t.len(), 2);
+}
+
+#[test]
+fn trimming_into_an_existing_different_tag_offers_no_fix() {
+    let f = tag_findings(&[("name ", "A"), ("name", "B")]);
+    assert!(of(&f, Check::TagWhitespace)[0].fix.is_none());
+}
+
+#[test]
+fn empty_tags_are_removed_by_the_fix() {
+    let d = data(
+        vec![node(1, 0.0, 0.0, &[("name", ""), ("shop", "bakery")])],
+        vec![],
+        vec![],
+    );
+    let f = run(&d, &changed(&[1], &[], &[]));
+    let out = apply_to_layer(&d, &fix_of(&f, Check::TagEmptyValue));
+    let t = &out.nodes[&NodeId(1)].tags;
+    assert!(!t.contains_key("name"));
+    assert_eq!(t.get("shop"), Some("bakery"));
+}
+
+#[test]
+fn deprecated_tags_with_a_plain_replacement_are_fixed() {
+    let d = data(
+        vec![node(
+            1,
+            0.0,
+            0.0,
+            &[("amenity", "swimming_pool"), ("name", "x")],
+        )],
+        vec![],
+        vec![],
+    );
+    let f = run(&d, &changed(&[1], &[], &[]));
+    let out = apply_to_layer(&d, &fix_of(&f, Check::DeprecatedTag));
+    let t = &out.nodes[&NodeId(1)].tags;
+    assert!(!t.contains_key("amenity"));
+    assert_eq!(t.get("leisure"), Some("swimming_pool"));
+}
+
+#[test]
+fn deprecated_tags_are_not_fixed_over_a_conflicting_tag() {
+    let f = tag_findings(&[("amenity", "swimming_pool"), ("leisure", "park")]);
+    assert!(of(&f, Check::DeprecatedTag)[0].fix.is_none());
+    // A replacement that is only a hint (`entrance=*`) is never applied.
+    let f = tag_findings(&[("building", "entrance")]);
+    assert!(of(&f, Check::DeprecatedTag)[0].fix.is_none());
+}
+
+#[test]
+fn an_untagged_loose_node_is_deleted_by_the_fix() {
+    let d = data(vec![node(1, 0.0, 0.0, &[])], vec![], vec![]);
+    let f = run(&d, &changed(&[1], &[], &[]));
+    let out = apply_to_layer(&d, &fix_of(&f, Check::UntaggedNode));
+    assert!(!out.nodes.contains_key(&NodeId(1)));
+}
+
+#[test]
+fn a_repeated_way_node_is_collapsed_by_the_fix() {
+    let d = data(
+        vec![node(1, 0.0, 0.0, &[]), node(2, 0.0, 0.001, &[])],
+        vec![way(10, &[1, 2, 2], &[("highway", "path")])],
+        vec![],
+    );
+    let f = run(&d, &changed(&[], &[10], &[]));
+    let out = apply_to_layer(&d, &fix_of(&f, Check::DuplicateWayNode));
+    assert_eq!(out.ways[&WayId(10)].nodes, NodeId::from_raw_vec(&[1, 2]));
+}
+
+#[test]
+fn a_two_node_way_made_of_one_repeated_node_has_no_fix() {
+    let d = data(
+        vec![node(1, 0.0, 0.0, &[])],
+        vec![way(10, &[1, 1], &[("highway", "path")])],
+        vec![],
+    );
+    let f = run(&d, &changed(&[], &[10], &[]));
+    assert!(of(&f, Check::DuplicateWayNode)[0].fix.is_none());
+}
+
+#[test]
+fn a_node_visited_twice_is_reported_but_a_closed_ring_is_not() {
+    let nodes = || {
+        vec![
+            node(1, 0.0, 0.0, &[]),
+            node(2, 0.0, 0.001, &[]),
+            node(3, 0.001, 0.001, &[]),
+            node(4, 0.001, 0.0, &[]),
+        ]
+    };
+    let d = data(
+        nodes(),
+        vec![way(10, &[1, 2, 3, 2, 4], &[("highway", "path")])],
+        vec![],
+    );
+    let f = run(&d, &changed(&[], &[10], &[]));
+    assert_eq!(of(&f, Check::RepeatedWayNode).len(), 1);
+    let d = data(
+        nodes(),
+        vec![way(10, &[1, 2, 3, 4, 1], &[("building", "yes")])],
+        vec![],
+    );
+    let f = run(&d, &changed(&[], &[10], &[]));
+    assert!(!has(&f, Check::RepeatedWayNode));
+}
+
+#[test]
+fn area_yes_next_to_building_is_redundant_and_removed() {
+    let d = data(
+        square(1, 40.0, -74.0, 0.0005),
+        vec![way(
+            10,
+            &[1, 2, 3, 4, 1],
+            &[("building", "yes"), ("area", "yes")],
+        )],
+        vec![],
+    );
+    let f = run(&d, &changed(&[], &[10], &[]));
+    let out = apply_to_layer(&d, &fix_of(&f, Check::RedundantAreaTag));
+    assert!(!out.ways[&WayId(10)].tags.contains_key("area"));
+    // area=yes that is the only thing making the way an area is kept.
+    let d = data(
+        square(1, 40.0, -74.0, 0.0005),
+        vec![way(10, &[1, 2, 3, 4, 1], &[("area", "yes")])],
+        vec![],
+    );
+    let f = run(&d, &changed(&[], &[10], &[]));
+    assert!(!has(&f, Check::RedundantAreaTag));
+}
+
+#[test]
+fn an_area_that_nearly_closes_is_closed_by_the_fix() {
+    // The last node is about 1 m from the first.
+    let mut nodes = square(1, 40.0, -74.0, 0.0005);
+    nodes.push(node(5, 40.00001, -74.0, &[]));
+    let d = data(
+        nodes,
+        vec![way(10, &[1, 2, 3, 4, 5], &[("building", "yes")])],
+        vec![],
+    );
+    let f = run(&d, &changed(&[], &[10], &[]));
+    let out = apply_to_layer(&d, &fix_of(&f, Check::AreaTagsOnOpenWay));
+    assert!(out.ways[&WayId(10)].is_closed());
+}
+
+#[test]
+fn an_area_with_far_apart_ends_has_no_closing_fix() {
+    let d = data(
+        square(1, 40.0, -74.0, 0.0005),
+        vec![way(10, &[1, 2, 3, 4], &[("building", "yes")])],
+        vec![],
+    );
+    let f = run(&d, &changed(&[], &[10], &[]));
+    assert!(of(&f, Check::AreaTagsOnOpenWay)[0].fix.is_none());
+}
+
+#[test]
+fn repeated_relation_members_are_collapsed_and_empty_relations_deleted() {
+    let m = |id| member(MemberType::Way, id, "");
+    let d = data(
+        vec![],
+        vec![],
+        vec![
+            relation(20, vec![m(1), m(1), m(2)], &[("type", "route")]),
+            relation(21, vec![], &[("type", "route")]),
+        ],
+    );
+    let f = run(&d, &changed(&[], &[], &[20, 21]));
+    let out = apply_to_layer(&d, &fix_of(&f, Check::DuplicateRelationMember));
+    let r = out
+        .relations
+        .iter()
+        .find(|r| r.id == RelationId(20))
+        .unwrap();
+    assert_eq!(r.members.len(), 2);
+    let out = apply_to_layer(&d, &fix_of(&f, Check::RelationEmpty));
+    assert!(out.relations.iter().all(|r| r.id != RelationId(21)));
 }
