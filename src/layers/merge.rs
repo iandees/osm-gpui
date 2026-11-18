@@ -174,7 +174,7 @@ pub fn merge_download(
     for rect in incoming.bounds {
         for snapshot in [&mut *original, &mut *current] {
             if !snapshot.bounds.contains(&rect) {
-                snapshot.bounds.push(rect.clone());
+                snapshot.bounds.push(rect);
             }
         }
     }

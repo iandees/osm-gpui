@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 
+use crate::coordinates::GeoBounds;
 use crate::http::{fetch_with_retries, HttpClient, HttpRequest, RetryPolicy};
 
 const MAGIC: &[u8; 7] = b"PMTiles";
@@ -95,8 +96,8 @@ pub struct Header {
     pub tile_type: TileType,
     pub min_zoom: u8,
     pub max_zoom: u8,
-    /// `(min_lon, min_lat, max_lon, max_lat)` in degrees.
-    pub bounds: (f64, f64, f64, f64),
+    /// The archive's extent in degrees.
+    pub bounds: GeoBounds,
 }
 
 fn u64_at(b: &[u8], at: usize) -> u64 {
@@ -127,7 +128,8 @@ impl Header {
             tile_type: TileType::from_byte(b[99]),
             min_zoom: b[100],
             max_zoom: b[101],
-            bounds: (e7_at(b, 102), e7_at(b, 106), e7_at(b, 110), e7_at(b, 114)),
+            // The header stores min_lon, min_lat, max_lon, max_lat.
+            bounds: GeoBounds::new(e7_at(b, 106), e7_at(b, 114), e7_at(b, 102), e7_at(b, 110)),
         })
     }
 }
@@ -622,6 +624,9 @@ mod tests {
         h[100] = 0;
         h[101] = 2;
         h[102..106].copy_from_slice(&(-1_800_000_000i32).to_le_bytes());
+        h[106..110].copy_from_slice(&(-850_000_000i32).to_le_bytes());
+        h[110..114].copy_from_slice(&1_790_000_000i32.to_le_bytes());
+        h[114..118].copy_from_slice(&840_000_000i32.to_le_bytes());
         let mut out = h;
         out.extend(root);
         out.extend(leaf);
@@ -671,7 +676,7 @@ mod tests {
         let a = Archive::open(Box::new(Bytes(sample()))).unwrap();
         assert_eq!(a.header.tile_type, TileType::Mvt);
         assert_eq!(a.header.max_zoom, 2);
-        assert_eq!(a.header.bounds.0, -180.0);
+        assert_eq!(a.header.bounds, GeoBounds::new(-85.0, 84.0, -180.0, 179.0));
     }
 
     #[test]
