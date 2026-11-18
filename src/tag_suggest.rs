@@ -14,6 +14,7 @@
 //! present in the current selection, then the loaded data (most used first),
 //! then the schema, then taginfo (in taginfo's own order, by usage).
 
+use crate::coordinates::LatLon;
 use crate::fields::{FieldIndex, FieldType};
 use crate::osm::OsmData;
 use crate::presets::{Geometry, PresetIndex};
@@ -670,11 +671,11 @@ pub fn nearby_road_names(
     use crate::selection::FeatureKind;
 
     // The feature's position: a node's own, a way's mean node position.
-    let points: Vec<(f64, f64)> = match kind {
+    let points: Vec<LatLon> = match kind {
         FeatureKind::Node => data
             .nodes
             .get(&NodeId(id))
-            .map(|n| vec![(n.lat, n.lon)])
+            .map(|n| vec![n.lat_lon()])
             .unwrap_or_default(),
         FeatureKind::Way => data
             .ways
@@ -683,7 +684,7 @@ pub fn nearby_road_names(
                 w.nodes
                     .iter()
                     .filter_map(|n| data.nodes.get(n))
-                    .map(|n| (n.lat, n.lon))
+                    .map(|n| n.lat_lon())
                     .collect()
             })
             .unwrap_or_default(),
@@ -692,12 +693,12 @@ pub fn nearby_road_names(
     if points.is_empty() {
         return Vec::new();
     }
-    let lat0 = points.iter().map(|p| p.0).sum::<f64>() / points.len() as f64;
-    let lon0 = points.iter().map(|p| p.1).sum::<f64>() / points.len() as f64;
+    let lat0 = points.iter().map(|p| p.lat).sum::<f64>() / points.len() as f64;
+    let lon0 = points.iter().map(|p| p.lon).sum::<f64>() / points.len() as f64;
     // Local flat-earth meters around the feature; fine at street scale.
     const M_PER_DEG: f64 = 111_320.0;
     let kx = M_PER_DEG * lat0.to_radians().cos();
-    let project = |lat: f64, lon: f64| ((lon - lon0) * kx, (lat - lat0) * M_PER_DEG);
+    let project = |at: LatLon| ((at.lon - lon0) * kx, (at.lat - lat0) * M_PER_DEG);
 
     const NOT_STREETS: [&str; 10] = [
         "footway",
@@ -727,7 +728,7 @@ pub fn nearby_road_names(
             .nodes
             .iter()
             .filter_map(|n| data.nodes.get(n))
-            .map(|n| project(n.lat, n.lon))
+            .map(|n| project(n.lat_lon()))
             .collect();
         let dist = match pts.len() {
             0 => continue,
@@ -747,19 +748,20 @@ pub fn nearby_road_names(
     named.into_iter().map(|(n, _)| n.to_string()).collect()
 }
 
-/// Smallest distance from any of `lat_lons` to the segment `a`-`b` (meters).
+/// Smallest distance in metres from any of `positions` to the segment
+/// `a`-`b`, which are already projected to local metres.
 fn points_to_segment(
-    lat_lons: &[(f64, f64)],
-    project: &impl Fn(f64, f64) -> (f64, f64),
+    positions: &[LatLon],
+    project: &impl Fn(LatLon) -> (f64, f64),
     a: (f64, f64),
     b: (f64, f64),
 ) -> f64 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len2 = dx * dx + dy * dy;
-    lat_lons
+    positions
         .iter()
-        .map(|&(lat, lon)| {
-            let p = project(lat, lon);
+        .map(|&at| {
+            let p = project(at);
             let t = if len2 == 0.0 {
                 0.0
             } else {
