@@ -3,7 +3,6 @@
 //! modifiers held.
 
 use gpui::{px, Context, CursorStyle, Pixels, Point, Window};
-use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
 use osm_gpui::layers::LayerId;
 
@@ -56,8 +55,7 @@ impl MapViewer {
         let points: Vec<osm_gpui::improve_way::Pt> = node_ids
             .iter()
             .map(|&id| {
-                let (lat, lon) = editable.node_lat_lon(id)?;
-                let p = self.viewport.geo_to_screen(LatLon::new(lat, lon));
+                let p = self.viewport.geo_to_screen(editable.node_lat_lon(id)?);
                 Some((p.x.to_f64(), p.y.to_f64()))
             })
             .collect::<Option<_>>()?;
@@ -115,7 +113,7 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
     match plan {
         Plan::Move { node, to } => {
             let node = NodeId(node);
-            let LatLon { lat, lon } = to_geo(to);
+            let to = to_geo(to);
             let Some(editable) = view
                 .layer_manager
                 .find_layer_mut(layer_id)
@@ -126,11 +124,11 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
             let Some(before) = editable.node_lat_lon(node) else {
                 return;
             };
-            if editable.commit_node_moves(&[(node, lat, lon)]).is_err() {
+            if editable.commit_node_moves(&[(node, to)]).is_err() {
                 return;
             }
             view.undo_stack.push(UndoableAction::move_nodes(
-                vec![(layer_id, vec![(node, before, (lat, lon))])],
+                vec![(layer_id, vec![(node, before, to)])],
                 Some(vec![way_ref]),
             ));
         }
@@ -138,7 +136,7 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
             if view.refuse_way_growth(layer_id, way_id, 1) {
                 return;
             }
-            let LatLon { lat, lon } = to_geo(at);
+            let at = to_geo(at);
             let Some(editable) = view
                 .layer_manager
                 .find_layer_mut(layer_id)
@@ -147,7 +145,7 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
                 return;
             };
             let mut rec = Recording::new(layer_id, editable);
-            let Ok(node_id) = rec.insert_node_into_way(way_id, index, lat, lon) else {
+            let Ok(node_id) = rec.insert_node_into_way(way_id, index, at) else {
                 return;
             };
             let node_ref = FeatureRef {

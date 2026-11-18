@@ -14,6 +14,7 @@
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 
+use crate::coordinates::LatLon;
 use crate::reference::{Builder, FeatureKind, Format, RefError, ReferenceData};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,8 +61,8 @@ fn classify(local: &[u8]) -> Tag {
 struct Item {
     name: Option<String>,
     props: Vec<(String, String)>,
-    /// `(lon, lat)` runs: one per `trkseg`, or the single run of a route.
-    segments: Vec<Vec<(f64, f64)>>,
+    /// Runs of positions: one per `trkseg`, or the single run of a route.
+    segments: Vec<Vec<LatLon>>,
     /// Per segment: whether any of its points had a `<time>`.
     timed: Vec<bool>,
     /// Per segment, per point: its `<time>` (Unix seconds).
@@ -69,7 +70,7 @@ struct Item {
     /// The `trkpt` being read was kept (it had a usable position).
     in_point: bool,
     /// A waypoint's position.
-    point: Option<(f64, f64)>,
+    point: Option<LatLon>,
 }
 
 impl Item {
@@ -96,7 +97,7 @@ impl Item {
 
 /// `lat` and `lon` of a point element, `None` if either is missing or not a
 /// number (such a point is skipped rather than failing the file).
-fn position(e: &BytesStart) -> Option<(f64, f64)> {
+fn position(e: &BytesStart) -> Option<LatLon> {
     let (mut lat, mut lon) = (None, None);
     for attr in e.attributes().flatten() {
         let value = attr.unescape_value().ok()?;
@@ -106,7 +107,7 @@ fn position(e: &BytesStart) -> Option<(f64, f64)> {
             _ => {}
         }
     }
-    Some((lon?, lat?))
+    Some(LatLon::new(lat?, lon?))
 }
 
 /// Parse a GPX document.
@@ -333,8 +334,8 @@ fn add_trace(builder: &mut Builder, item: Item) -> Result<(), RefError> {
     }
     if loose.iter().any(|s| !s.is_empty()) {
         let id = builder.feature(FeatureKind::TracePoints, "", None, Vec::new());
-        for &(lon, lat) in loose.into_iter().flatten() {
-            builder.point(id, lon, lat)?;
+        for &at in loose.into_iter().flatten() {
+            builder.point(id, at)?;
         }
     }
     Ok(())
@@ -347,8 +348,8 @@ fn add_item(builder: &mut Builder, kind: Tag, item: Item) -> Result<(), RefError
         _ => FeatureKind::Route,
     };
     let id = builder.feature(feature_kind, "", item.name, item.props);
-    if let Some((lon, lat)) = item.point {
-        builder.point(id, lon, lat)?;
+    if let Some(at) = item.point {
+        builder.point(id, at)?;
     }
     // A track's first time dates all of it (for the age colours and filter).
     let start = item.times.iter().flatten().flatten().min().copied();
@@ -617,6 +618,15 @@ mod tests {
             parse_trackpoints(&[TRACKPOINTS.as_bytes(), empty, TRACKPOINTS.as_bytes()]).unwrap();
         assert_eq!(data.features.len(), 6);
         assert_eq!(data.markers.len(), 8);
+    }
+
+    #[test]
+    fn position_reads_lat_and_lon_attributes() {
+        let mut reader = Reader::from_str(r#"<trkpt lon="-74.5" lat="40.25"/>"#);
+        let Event::Empty(e) = reader.read_event().unwrap() else {
+            panic!("expected an empty element");
+        };
+        assert_eq!(position(&e), Some(LatLon::new(40.25, -74.5)));
     }
 
     #[test]

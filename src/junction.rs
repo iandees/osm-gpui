@@ -7,6 +7,7 @@
 //! [`JunctionSource`], so the model can be built from a live layer or from a
 //! plain [`OsmData`] in tests.
 
+use crate::coordinates::LatLon;
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::lanes::{is_road, lane_group, lanes_split_issue, Arrow, CountSource, LaneGroup};
 use crate::osm::{MemberType, OsmData, OsmRelation};
@@ -31,8 +32,8 @@ fn arrow_serves(arrow: Arrow, turn: TurnKind) -> bool {
 
 /// What the junction model needs to read.
 pub trait JunctionSource {
-    /// `(lat, lon)` of a node.
-    fn node_pos(&self, id: NodeId) -> Option<(f64, f64)>;
+    /// Where a node is.
+    fn node_pos(&self, id: NodeId) -> Option<LatLon>;
     /// The ways that use a node.
     fn ways_at(&self, id: NodeId) -> Vec<WayId>;
     fn way_nodes(&self, id: WayId) -> Option<Vec<NodeId>>;
@@ -42,8 +43,8 @@ pub trait JunctionSource {
 }
 
 impl JunctionSource for OsmData {
-    fn node_pos(&self, id: NodeId) -> Option<(f64, f64)> {
-        self.nodes.get(&id).map(|n| (n.lat, n.lon))
+    fn node_pos(&self, id: NodeId) -> Option<LatLon> {
+        self.nodes.get(&id).map(|n| LatLon::new(n.lat, n.lon))
     }
     fn ways_at(&self, id: NodeId) -> Vec<WayId> {
         let mut ways: Vec<WayId> = self
@@ -219,9 +220,9 @@ impl Junction {
 const BEARING_SAMPLE_M: f64 = 20.0;
 
 /// Local metres east/north of `b` from `a`.
-fn delta_m(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
-    let k = a.0.to_radians().cos();
-    ((b.1 - a.1) * 111_320.0 * k, (b.0 - a.0) * 110_540.0)
+fn delta_m(a: LatLon, b: LatLon) -> (f64, f64) {
+    let k = a.lat.to_radians().cos();
+    ((b.lon - a.lon) * 111_320.0 * k, (b.lat - a.lat) * 110_540.0)
 }
 
 /// The bearing from `nodes[0]` (the junction) along `nodes`, measured at a
@@ -237,7 +238,10 @@ fn arm_bearing(src: &dyn JunctionSource, nodes: &[NodeId]) -> Option<f32> {
         let seg = dx.hypot(dy);
         if walked + seg >= BEARING_SAMPLE_M && seg > 0.0 {
             let t = (BEARING_SAMPLE_M - walked) / seg;
-            target = Some((prev.0 + (p.0 - prev.0) * t, prev.1 + (p.1 - prev.1) * t));
+            target = Some(LatLon::new(
+                prev.lat + (p.lat - prev.lat) * t,
+                prev.lon + (p.lon - prev.lon) * t,
+            ));
             break;
         }
         walked += seg;

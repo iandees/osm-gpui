@@ -14,7 +14,11 @@ pub const SNAP_STEP_DEG: f64 = 15.0;
 /// The point a selection rotates around: the mean position of its nodes.
 /// `None` for an empty or non-finite selection.
 pub fn center(points: &[LatLon]) -> Option<LatLon> {
-    if points.is_empty() || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+    if points.is_empty()
+        || points
+            .iter()
+            .any(|p| !p.lat.is_finite() || !p.lon.is_finite())
+    {
         return None;
     }
     Some(mean_point(points))
@@ -90,10 +94,10 @@ mod tests {
     fn square(lat: f64, lon: f64) -> Vec<LatLon> {
         let d = 0.0005;
         vec![
-            (lat - d, lon - d),
-            (lat - d, lon + d),
-            (lat + d, lon + d),
-            (lat + d, lon - d),
+            LatLon::new(lat - d, lon - d),
+            LatLon::new(lat - d, lon + d),
+            LatLon::new(lat + d, lon + d),
+            LatLon::new(lat + d, lon - d),
         ]
     }
 
@@ -119,19 +123,19 @@ mod tests {
                 }
             }
             let c2 = center(&out).unwrap();
-            assert!((c2.0 - c.0).abs() < 1e-9 && (c2.1 - c.1).abs() < 1e-9);
+            assert!((c2.lat - c.lat).abs() < 1e-9 && (c2.lon - c.lon).abs() < 1e-9);
         }
     }
 
     #[test]
     fn quarter_turn_is_counter_clockwise_on_a_north_up_map() {
-        let c = (10.0, 20.0);
-        let east = (10.0, 20.001);
-        let out = rotate_points(&[east, (10.0, 19.999)], c, FRAC_PI_2);
+        let c = LatLon::new(10.0, 20.0);
+        let east = LatLon::new(10.0, 20.001);
+        let out = rotate_points(&[east, LatLon::new(10.0, 19.999)], c, FRAC_PI_2);
         // East goes to north.
-        assert!(out[0].0 > c.0 + 1e-4);
-        assert!((out[0].1 - c.1).abs() < 1e-9);
-        assert!(out[1].0 < c.0 - 1e-4);
+        assert!(out[0].lat > c.lat + 1e-4);
+        assert!((out[0].lon - c.lon).abs() < 1e-9);
+        assert!(out[1].lat < c.lat - 1e-4);
     }
 
     #[test]
@@ -140,7 +144,7 @@ mod tests {
         let c = center(&pts).unwrap();
         assert_eq!(rotate_points(&pts, c, 0.0), pts);
         for (a, b) in rotate_points(&pts, c, 2.0 * PI).iter().zip(&pts) {
-            assert!((a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9);
+            assert!((a.lat - b.lat).abs() < 1e-9 && (a.lon - b.lon).abs() < 1e-9);
         }
     }
 
@@ -151,18 +155,18 @@ mod tests {
         let there = rotate_points(&pts, c, 1.234);
         let back = rotate_points(&there, c, -1.234);
         for (a, b) in back.iter().zip(&pts) {
-            assert!((a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9);
+            assert!((a.lat - b.lat).abs() < 1e-9 && (a.lon - b.lon).abs() < 1e-9);
         }
     }
 
     #[test]
     fn can_rotate_needs_spread() {
-        let p = (47.0, 8.0);
+        let p = LatLon::new(47.0, 8.0);
         assert!(!can_rotate(&[]));
         assert!(!can_rotate(&[p]));
         assert!(!can_rotate(&[p, p, p]));
-        assert!(!can_rotate(&[p, (f64::NAN, 8.0)]));
-        assert!(can_rotate(&[p, (47.001, 8.0)]));
+        assert!(!can_rotate(&[p, LatLon::new(f64::NAN, 8.0)]));
+        assert!(can_rotate(&[p, LatLon::new(47.001, 8.0)]));
     }
 
     #[test]
@@ -173,8 +177,12 @@ mod tests {
         let angle = rotation_for_pointer(start, now);
         assert!((angle + FRAC_PI_2).abs() < 1e-9);
         // A quarter turn clockwise sends east to south.
-        let out = rotate_points(&[(10.0, 20.001), (10.0, 19.999)], (10.0, 20.0), angle);
-        assert!(out[0].0 < 10.0 - 1e-4);
+        let out = rotate_points(
+            &[LatLon::new(10.0, 20.001), LatLon::new(10.0, 19.999)],
+            LatLon::new(10.0, 20.0),
+            angle,
+        );
+        assert!(out[0].lat < 10.0 - 1e-4);
     }
 
     #[test]

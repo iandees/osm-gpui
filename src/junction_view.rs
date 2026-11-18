@@ -39,7 +39,7 @@ struct LayerSource<'a> {
 }
 
 impl JunctionSource for LayerSource<'_> {
-    fn node_pos(&self, id: NodeId) -> Option<(f64, f64)> {
+    fn node_pos(&self, id: NodeId) -> Option<osm_gpui::coordinates::LatLon> {
         self.layer.node_lat_lon(id)
     }
     fn ways_at(&self, id: NodeId) -> Vec<WayId> {

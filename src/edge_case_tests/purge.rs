@@ -3,6 +3,7 @@
 //! baseline together, so the upload diff never mentions them.
 
 use super::*;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::RelationId;
 
 fn road() -> [(&'static str, &'static str); 1] {
@@ -115,7 +116,7 @@ fn objects_with_pending_edits_are_refused(cx: &mut TestAppContext) {
     with_session(cx, data, |s| {
         s.set_tag(N, 1, "name", "edited");
         s.set_tag(W, 11, "name", "edited");
-        let new = s.editable_mut().add_node(40.0, -74.0);
+        let new = s.editable_mut().add_node(LatLon::new(40.0, -74.0));
         let diff = s.counts();
 
         // A modified node (way 10 is not selected, so 1 is also in a way).

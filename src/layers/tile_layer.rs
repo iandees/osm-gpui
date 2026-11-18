@@ -177,7 +177,7 @@ impl TileLayer {
     }
 
     /// The offset as a Web Mercator shift, scaled for the view's latitude.
-    fn mercator_offset(&self, viewport: &Viewport) -> (f64, f64) {
+    fn mercator_offset(&self, viewport: &Viewport) -> Mercator {
         offset_to_mercator(self.offset, viewport.center().lat)
     }
 
@@ -329,11 +329,11 @@ fn edge_bleed_margin(tile_width_px: f32, tile_texels: u32) -> f32 {
 /// Screen rect (x, y, width, height) for one tile with no imagery offset.
 #[cfg(test)]
 fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, Pixels, Pixels) {
-    tile_screen_rect_shifted(viewport, tile, (0.0, 0.0))
+    tile_screen_rect_shifted(viewport, tile, Mercator::new(0.0, 0.0))
 }
 
 /// Screen rect (x, y, width, height) for one tile, for imagery painted
-/// `(off_x, off_y)` Web Mercator metres away from where the tile says it is
+/// `offset` (Web Mercator metres) away from where the tile says it is
 /// (the layer's imagery offset).
 ///
 /// Each tile is projected independently at its exact sub-pixel position,
@@ -345,7 +345,7 @@ fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, P
 fn tile_screen_rect_shifted(
     viewport: &Viewport,
     tile: &TileCoord,
-    (off_x, off_y): (f64, f64),
+    offset: Mercator,
 ) -> (Pixels, Pixels, Pixels, Pixels) {
     let MercRect {
         min_x,
@@ -353,8 +353,9 @@ fn tile_screen_rect_shifted(
         min_y,
         max_y,
     } = tile.mercator_bounds();
-    let top_left = viewport.mercator_to_screen(Mercator::new(min_x + off_x, max_y + off_y));
-    let bottom_right = viewport.mercator_to_screen(Mercator::new(max_x + off_x, min_y + off_y));
+    let top_left = viewport.mercator_to_screen(Mercator::new(min_x + offset.x, max_y + offset.y));
+    let bottom_right =
+        viewport.mercator_to_screen(Mercator::new(max_x + offset.x, min_y + offset.y));
 
     let half_overlap = px(TILE_OVERLAP_PX / 2.0);
     let width = (bottom_right.x - top_left.x).abs() + px(TILE_OVERLAP_PX);
@@ -470,7 +471,7 @@ impl MapLayer for TileLayer {
             let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect_shifted(
                 viewport,
                 tile_coord,
-                (merc_offset.0 + placed.x_shift_m(), merc_offset.1),
+                Mercator::new(merc_offset.x + placed.x_shift_m(), merc_offset.y),
             );
 
             let tile_url = url_from_template(&self.url_template, tile_coord);
@@ -913,7 +914,7 @@ mod tests {
                 slot.min_y + eps,
                 slot.max_y - eps,
             ),
-            (0.0, 0.0),
+            Mercator::new(0.0, 0.0),
             5,
         );
         assert_eq!(tiles.len(), 4);

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 
+use crate::coordinates::LatLon;
 use crate::edit_ops::{EditOp, Recording};
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::{EditError, EditableLayer, LayerId};
@@ -108,7 +109,7 @@ struct Open {
     id: i64,
     version: i32,
     visible: bool,
-    lat_lon: Option<(f64, f64)>,
+    lat_lon: Option<LatLon>,
     tags: Tags,
     nodes: Vec<NodeId>,
     members: Vec<OsmMember>,
@@ -127,7 +128,10 @@ impl Open {
         // Objects from older servers carry no `visible`; absent means visible.
         let visible = attr(&attrs, "visible") != Some("false");
         let lat_lon = match (attr(&attrs, "lat"), attr(&attrs, "lon")) {
-            (Some(_), Some(_)) => Some((number(&attrs, "lat", &on)?, number(&attrs, "lon", &on)?)),
+            (Some(_), Some(_)) => Some(LatLon::new(
+                number(&attrs, "lat", &on)?,
+                number(&attrs, "lon", &on)?,
+            )),
             _ => None,
         };
         Ok(Open {
@@ -187,7 +191,7 @@ impl Open {
         } else {
             Some(match kind {
                 FeatureKind::Node => {
-                    let (lat, lon) = lat_lon.ok_or_else(|| {
+                    let LatLon { lat, lon } = lat_lon.ok_or_else(|| {
                         bad(format!("node {id} version {version} has no position"))
                     })?;
                     Object::Node(OsmNode {
@@ -735,8 +739,8 @@ fn retag(
 fn restore(rec: &mut Recording<'_>, before: &Object) -> Result<(), EditError> {
     match before {
         Object::Node(n) => {
-            if rec.layer().node_lat_lon(n.id) != Some((n.lat, n.lon)) {
-                rec.commit_node_moves(&[(n.id, n.lat, n.lon)])?;
+            if rec.layer().node_lat_lon(n.id) != Some(LatLon::new(n.lat, n.lon)) {
+                rec.commit_node_moves(&[(n.id, LatLon::new(n.lat, n.lon))])?;
             }
             retag(rec, FeatureKind::Node, n.id.get(), &n.tags)
         }

@@ -372,13 +372,13 @@ fn moving_a_node_updates_the_simplification() {
     let before = scene_vertices(&l, 17.0);
     // Node 3 starts on the line and is simplified away. Pull it 55 m off
     // the line: it becomes significant, so the way draws more segments.
-    l.commit_node_moves(&[(NodeId(3), LAT + 0.0005, LON + 0.001)])
+    l.commit_node_moves(&[(NodeId(3), LatLon::new(LAT + 0.0005, LON + 0.001))])
         .unwrap();
     assert_same_as_fresh(&l);
     let bent = scene_vertices(&l, 17.0);
     assert!(bent > before, "{bent} > {before}");
     // And back (what undo does): it is simplified away again.
-    l.commit_node_moves(&[(NodeId(3), LAT, LON + 0.001)])
+    l.commit_node_moves(&[(NodeId(3), LatLon::new(LAT, LON + 0.001))])
         .unwrap();
     assert_same_as_fresh(&l);
     assert_eq!(scene_vertices(&l, 17.0), before);
@@ -388,9 +388,9 @@ fn moving_a_node_updates_the_simplification() {
 fn adding_and_removing_ways_updates_the_scene() {
     let mut l = layer();
     let before = scene_vertices(&l, 17.0);
-    let a = l.add_node(LAT + 0.0002, LON);
-    let b = l.add_node(LAT + 0.0002, LON + 0.001);
-    let c = l.add_node(LAT + 0.0004, LON + 0.002);
+    let a = l.add_node(LatLon::new(LAT + 0.0002, LON));
+    let b = l.add_node(LatLon::new(LAT + 0.0002, LON + 0.001));
+    let c = l.add_node(LatLon::new(LAT + 0.0004, LON + 0.002));
     let id = l.add_way(vec![a, b, c], Tags::new());
     assert_same_as_fresh(&l);
     assert!(scene_vertices(&l, 17.0) > before);

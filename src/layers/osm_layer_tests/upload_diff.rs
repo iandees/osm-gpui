@@ -1,6 +1,7 @@
 //! The diff a layer reports for upload and how an upload result is applied.
 
 use super::{data_with, empty_tags};
+use crate::coordinates::LatLon;
 use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::EditableLayer;
@@ -59,7 +60,7 @@ fn diff_for_upload_detects_move_as_modified() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     layer
-        .commit_node_moves(&[(NodeId(1), 41.0, -75.0)])
+        .commit_node_moves(&[(NodeId(1), LatLon::new(41.0, -75.0))])
         .unwrap();
     let diff = layer.diff_for_upload();
     assert_eq!(diff.modified_nodes.len(), 1);
@@ -79,7 +80,7 @@ fn apply_upload_result_updates_version_for_modified_node() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     layer
-        .commit_node_moves(&[(NodeId(1), 41.0, -75.0)])
+        .commit_node_moves(&[(NodeId(1), LatLon::new(41.0, -75.0))])
         .unwrap();
     assert!(layer.is_modified());
 

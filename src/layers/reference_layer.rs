@@ -454,9 +454,16 @@ mod tests {
     fn line_layer(id: u64, format: Format) -> ReferenceLayer {
         let mut b = Builder::new(format);
         let f = b.feature(FeatureKind::Track, "", Some("t".into()), vec![]);
-        b.line(f, &[(-74.001, 40.0), (-74.0, 40.0), (-73.999, 40.001)])
-            .unwrap();
-        b.point(f, -74.0, 40.0005).unwrap();
+        b.line(
+            f,
+            &[
+                LatLon::new(40.0, -74.001),
+                LatLon::new(40.0, -74.0),
+                LatLon::new(40.001, -73.999),
+            ],
+        )
+        .unwrap();
+        b.point(f, LatLon::new(40.0005, -74.0)).unwrap();
         ReferenceLayer::new(LayerId(id), "ref", b.finish().unwrap())
     }
 
@@ -527,11 +534,11 @@ mod tests {
         let mut b = Builder::new(format);
         let f = b.feature(FeatureKind::Track, "", None, vec![]);
         let pts = [
-            (-74.001, 40.0),
-            (-74.0009, 40.0),
-            (-74.0008, 40.0),
-            (-73.9997, 40.0),
-            (-73.9977, 40.0),
+            LatLon::new(40.0, -74.001),
+            LatLon::new(40.0, -74.0009),
+            LatLon::new(40.0, -74.0008),
+            LatLon::new(40.0, -73.9997),
+            LatLon::new(40.0, -73.9977),
         ];
         let times = [0, 10, 20, 30, 40].map(|t| Some(start + t));
         b.line_timed(f, &pts, &times, Some(start)).unwrap();
@@ -633,7 +640,9 @@ mod tests {
         // and under one at zoom 8, yet the line still draws.
         let mut b = Builder::new(Format::Gpx);
         let f = b.feature(FeatureKind::Track, "", None, vec![]);
-        let pts: Vec<(f64, f64)> = (0..3000).map(|i| (-74.0 + i as f64 * 2e-5, 40.0)).collect();
+        let pts: Vec<LatLon> = (0..3000)
+            .map(|i| LatLon::new(40.0, -74.0 + i as f64 * 2e-5))
+            .collect();
         b.line(f, &pts).unwrap();
         let layer = ReferenceLayer::new(LayerId(1), "t", b.finish().unwrap());
         for z in [8.0, 12.0] {

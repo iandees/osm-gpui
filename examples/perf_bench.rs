@@ -500,7 +500,7 @@ fn main() {
         10,
         || {
             let mut l = OsmLayer::new_with_data(LayerId(1), "bench", data.clone());
-            l.commit_node_moves(&[(NodeId(0), CENTER_LAT, CENTER_LON)])
+            l.commit_node_moves(&[(NodeId(0), LatLon::new(CENTER_LAT, CENTER_LON))])
                 .unwrap();
             l.is_modified() as u64
         },
@@ -518,7 +518,7 @@ fn main() {
         30,
         || {
             l_unique
-                .commit_node_moves(&[(NodeId(0), CENTER_LAT, CENTER_LON)])
+                .commit_node_moves(&[(NodeId(0), LatLon::new(CENTER_LAT, CENTER_LON))])
                 .unwrap();
             l_unique.is_modified() as u64
         },
@@ -1047,14 +1047,20 @@ fn multipolygon_section(base: &Arc<OsmData>) {
         20,
         || {
             before
-                .commit_node_moves(&[(NodeId(10_000_000 + 5), CENTER_LAT + 0.01, CENTER_LON)])
+                .commit_node_moves(&[(
+                    NodeId(10_000_000 + 5),
+                    LatLon::new(CENTER_LAT + 0.01, CENTER_LON),
+                )])
                 .unwrap();
             before.is_modified() as u64
         },
     );
     bench("commit_node_moves, node of a small lake: AFTER", 20, || {
         after
-            .commit_node_moves(&[(NodeId(10_000_000 + 5), CENTER_LAT + 0.01, CENTER_LON)])
+            .commit_node_moves(&[(
+                NodeId(10_000_000 + 5),
+                LatLon::new(CENTER_LAT + 0.01, CENTER_LON),
+            )])
             .unwrap();
         after.is_modified() as u64
     });
@@ -1063,7 +1069,10 @@ fn multipolygon_section(base: &Arc<OsmData>) {
         10,
         || {
             before
-                .commit_node_moves(&[(NodeId(HUGE_RING_NODE), CENTER_LAT + 0.0101, CENTER_LON)])
+                .commit_node_moves(&[(
+                    NodeId(HUGE_RING_NODE),
+                    LatLon::new(CENTER_LAT + 0.0101, CENTER_LON),
+                )])
                 .unwrap();
             before.is_modified() as u64
         },
@@ -1073,20 +1082,23 @@ fn multipolygon_section(base: &Arc<OsmData>) {
         10,
         || {
             after
-                .commit_node_moves(&[(NodeId(HUGE_RING_NODE), CENTER_LAT + 0.0101, CENTER_LON)])
+                .commit_node_moves(&[(
+                    NodeId(HUGE_RING_NODE),
+                    LatLon::new(CENTER_LAT + 0.0101, CENTER_LON),
+                )])
                 .unwrap();
             after.is_modified() as u64
         },
     );
     bench("commit_node_moves, node in no relation: BEFORE", 20, || {
         before
-            .commit_node_moves(&[(NodeId(0), CENTER_LAT, CENTER_LON)])
+            .commit_node_moves(&[(NodeId(0), LatLon::new(CENTER_LAT, CENTER_LON))])
             .unwrap();
         before.is_modified() as u64
     });
     bench("commit_node_moves, node in no relation: AFTER", 20, || {
         after
-            .commit_node_moves(&[(NodeId(0), CENTER_LAT, CENTER_LON)])
+            .commit_node_moves(&[(NodeId(0), LatLon::new(CENTER_LAT, CENTER_LON))])
             .unwrap();
         after.is_modified() as u64
     });

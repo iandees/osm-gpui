@@ -3,6 +3,7 @@
 use super::{empty_tags, setup, setup_network, way_fixture, CENTER_LAT, CENTER_LON};
 use crate::{MapViewer, ToggleDownloadedArea, DOWNLOAD_LAYER_NAME};
 use gpui::{point, px, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::NodeId;
 use osm_gpui::osm::{OsmData, OsmNode};
 
@@ -34,7 +35,10 @@ fn download_merges_into_the_active_layer_and_keeps_local_edits(cx: &mut TestAppC
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .commit_node_moves(&[(NodeId(1), CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
+                .commit_node_moves(&[(
+                    NodeId(1),
+                    LatLon::new(CENTER_LAT + 0.0005, CENTER_LON - 0.001),
+                )])
                 .unwrap();
 
             view.apply_download(overlapping_download());
@@ -48,7 +52,7 @@ fn download_merges_into_the_active_layer_and_keeps_local_edits(cx: &mut TestAppC
             );
             assert_eq!(
                 editable.node_lat_lon(NodeId(1)),
-                Some((CENTER_LAT + 0.0005, CENTER_LON - 0.001)),
+                Some(LatLon::new(CENTER_LAT + 0.0005, CENTER_LON - 0.001)),
                 "local move kept"
             );
             // Still exactly one pending edit: the move.
@@ -91,7 +95,10 @@ fn exported_layer_reopens_with_the_same_pending_edits(cx: &mut TestAppContext) {
                 .find_layer_mut(layer_id)
                 .and_then(|l| l.as_editable_mut())
                 .unwrap()
-                .commit_node_moves(&[(NodeId(1), CENTER_LAT + 0.0005, CENTER_LON - 0.001)])
+                .commit_node_moves(&[(
+                    NodeId(1),
+                    LatLon::new(CENTER_LAT + 0.0005, CENTER_LON - 0.001),
+                )])
                 .unwrap();
             view.handle_add_click(point(px(50.0), px(50.0)), false);
             let pending = view

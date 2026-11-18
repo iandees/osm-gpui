@@ -322,8 +322,8 @@ impl MapViewer {
         if let Some(id) = self.notes.pending_open.take() {
             self.open_note(id, window, cx);
         }
-        if let Some(LatLon { lat, lon }) = self.notes.pending_new.take() {
-            self.open_new_note_dialog(lat, lon, window, cx);
+        if let Some(at) = self.notes.pending_new.take() {
+            self.open_new_note_dialog(at, window, cx);
         }
         if std::mem::take(&mut self.notes.clear_input) {
             if let Some(open) = &self.notes.open {
@@ -429,15 +429,14 @@ impl MapViewer {
 
     pub(crate) fn open_new_note_dialog(
         &mut self,
-        lat: f64,
-        lon: f64,
+        at: LatLon,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.notes.new_dialog.is_some() {
             return;
         }
-        let dialog = cx.new(|cx| NewNoteDialog::new(lat, lon, window, cx));
+        let dialog = cx.new(|cx| NewNoteDialog::new(at, window, cx));
         cx.subscribe(
             &dialog,
             move |this: &mut Self, dialog, event: &DialogEvent, cx| match event {
@@ -448,7 +447,7 @@ impl MapViewer {
                 DialogEvent::Submit(text) => {
                     dialog.update(cx, |d, cx| d.begin(cx));
                     if let Err(why) =
-                        this.start_note_write(NoteWrite::Create { lat, lon }, text.clone(), cx)
+                        this.start_note_write(NoteWrite::Create { at }, text.clone(), cx)
                     {
                         dialog.update(cx, |d, cx| d.fail(why.into(), cx));
                     }
@@ -826,8 +825,7 @@ impl MapViewer {
                 self.set_show_notes(true, cx);
                 self.start_note_write(
                     NoteWrite::Create {
-                        lat: *lat,
-                        lon: *lon,
+                        at: LatLon::new(*lat, *lon),
                     },
                     text.clone(),
                     cx,

@@ -4,6 +4,7 @@ use super::{editable, select, setup_network, tag_node_one};
 use crate::undo::UndoableAction;
 use crate::{key_bindings_from_settings, AddProgress, MapViewer, Redo, Undo};
 use gpui::{point, px, size, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 
 fn selected_ids(view: &MapViewer, kind: osm_gpui::selection::FeatureKind) -> Vec<i64> {
@@ -123,12 +124,19 @@ fn undo_selects_tagged_and_moved_features_and_prunes_stale_ids(cx: &mut TestAppC
             assert!(selected_ids(view, Way).is_empty());
 
             let layer_id = view.active_layer.unwrap();
-            let (lat, lon) = editable(view).node_lat_lon(NodeId(1)).unwrap();
+            let LatLon { lat, lon } = editable(view).node_lat_lon(NodeId(1)).unwrap();
             editable(view)
-                .commit_node_moves(&[(NodeId(1), lat + 0.001, lon)])
+                .commit_node_moves(&[(NodeId(1), LatLon::new(lat + 0.001, lon))])
                 .unwrap();
             view.undo_stack.push(UndoableAction::move_nodes(
-                vec![(layer_id, vec![(NodeId(1), (lat, lon), (lat + 0.001, lon))])],
+                vec![(
+                    layer_id,
+                    vec![(
+                        NodeId(1),
+                        LatLon::new(lat, lon),
+                        LatLon::new(lat + 0.001, lon),
+                    )],
+                )],
                 None,
             ));
             // A selection holding a feature that doesn't exist is pruned
@@ -156,12 +164,19 @@ fn undo_of_a_dragged_way_keeps_the_way_selected(cx: &mut TestAppContext) {
             let layer_id = view.active_layer.unwrap();
             select(view, Way, &[101]);
             let nodes = editable(view).way_node_ids(WayId(101)).unwrap();
-            let (lat, lon) = editable(view).node_lat_lon(nodes[0]).unwrap();
+            let LatLon { lat, lon } = editable(view).node_lat_lon(nodes[0]).unwrap();
             editable(view)
-                .commit_node_moves(&[(nodes[0], lat + 0.001, lon)])
+                .commit_node_moves(&[(nodes[0], LatLon::new(lat + 0.001, lon))])
                 .unwrap();
             view.undo_stack.push(UndoableAction::move_nodes(
-                vec![(layer_id, vec![(nodes[0], (lat, lon), (lat + 0.001, lon))])],
+                vec![(
+                    layer_id,
+                    vec![(
+                        nodes[0],
+                        LatLon::new(lat, lon),
+                        LatLon::new(lat + 0.001, lon),
+                    )],
+                )],
                 Some(view.selected.clone()),
             ));
             view.on_undo(&Undo, window, cx);

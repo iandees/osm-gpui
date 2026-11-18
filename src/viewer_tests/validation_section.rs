@@ -4,6 +4,7 @@ use super::{make_pending_change, status_text, validation_view, CENTER_LAT, CENTE
 use crate::undo::UndoableAction;
 use crate::{side_panel, side_panel_layout, validation_panel, MapViewer};
 use gpui::TestAppContext;
+use osm_gpui::coordinates::LatLon;
 
 #[gpui::test]
 fn tools_validate_shows_the_side_panel_section(cx: &mut TestAppContext) {
@@ -226,7 +227,7 @@ fn the_validation_section_ignores_changes_while_hidden_and_keeps_the_highlight(
             .find_layer_mut(id)
             .and_then(|l| l.as_editable_mut())
             .unwrap()
-            .create_node(CENTER_LAT + 0.0005, CENTER_LON, None)
+            .create_node(LatLon::new(CENTER_LAT + 0.0005, CENTER_LON), None)
             .unwrap();
         record_edit(view);
         view.show_validation(cx);

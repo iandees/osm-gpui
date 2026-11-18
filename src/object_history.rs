@@ -6,6 +6,7 @@
 //! the object's life on the server. Nothing here touches the UI toolkit, so
 //! all of it is unit-testable.
 
+use crate::coordinates::LatLon;
 use crate::tags::Tags;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,8 +34,8 @@ const MOVE_THRESHOLD_M: f64 = 0.05;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ObjectState {
     pub tags: Tags,
-    /// `(lat, lon)` of a node.
-    pub position: Option<(f64, f64)>,
+    /// Where a node is.
+    pub position: Option<LatLon>,
     /// A way's node ids, in order.
     pub nodes: Vec<i64>,
     /// A relation's members, in order.
@@ -159,7 +160,7 @@ fn start_version(attrs: &[(String, String)], kind: FeatureKind) -> HistoryVersio
             get(attrs, "lat").and_then(|v| v.parse::<f64>().ok()),
             get(attrs, "lon").and_then(|v| v.parse::<f64>().ok()),
         ) {
-            (Some(lat), Some(lon)) => Some((lat, lon)),
+            (Some(lat), Some(lon)) => Some(LatLon::new(lat, lon)),
             _ => None,
         }
     } else {
@@ -369,11 +370,8 @@ pub fn diff_states(prev: Option<&ObjectState>, cur: &ObjectState) -> StateChange
         }
     }
 
-    if let (Some((alat, alon)), Some((blat, blon))) = (before.position, cur.position) {
-        let d = crate::imagery_offset::distance_m(
-            crate::coordinates::LatLon::new(alat, alon),
-            crate::coordinates::LatLon::new(blat, blon),
-        );
+    if let (Some(a), Some(b)) = (before.position, cur.position) {
+        let d = crate::imagery_offset::distance_m(a, b);
         if d > MOVE_THRESHOLD_M {
             change.moved_m = Some(d);
         }
@@ -681,7 +679,7 @@ mod tests {
         assert_eq!(v1.uid, Some(7));
         assert_eq!(v1.changeset, Some(100));
         assert_eq!(v1.timestamp, Some(1_577_934_245));
-        assert_eq!(v1.state.position, Some((40.0, -74.0)));
+        assert_eq!(v1.state.position, Some(LatLon::new(40.0, -74.0)));
         assert_eq!(v1.state.tags["name"], "Joe & Co");
         let v3 = &h.versions[2];
         assert!(!v3.visible);
@@ -804,7 +802,7 @@ mod tests {
     #[test]
     fn a_moved_node_reports_metres_and_noise_is_ignored() {
         let at = |lat: f64, lon: f64| ObjectState {
-            position: Some((lat, lon)),
+            position: Some(LatLon::new(lat, lon)),
             ..ObjectState::default()
         };
         // 0.0001 degrees of latitude is about 11.1 m.

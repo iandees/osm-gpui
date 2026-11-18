@@ -57,7 +57,7 @@ fn preview_way_of(view: &MapViewer) -> Option<i64> {
 }
 
 fn node_screen(view: &MapViewer, id: i64) -> gpui::Point<gpui::Pixels> {
-    let (lat, lon) = view
+    let LatLon { lat, lon } = view
         .layer_manager
         .find_layer(view.active_layer.unwrap())
         .and_then(|l| l.as_editable())

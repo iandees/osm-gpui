@@ -247,10 +247,8 @@ impl MapViewer {
             return out;
         };
         let screen = |n: NodeId| {
-            layer.node_lat_lon(n).map(|(lat, lon)| {
-                let p = self
-                    .viewport
-                    .geo_to_screen(osm_gpui::coordinates::LatLon::new(lat, lon));
+            layer.node_lat_lon(n).map(|at| {
+                let p = self.viewport.geo_to_screen(at);
                 V(p.x.as_f32(), p.y.as_f32())
             })
         };

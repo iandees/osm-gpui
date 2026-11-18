@@ -4,7 +4,7 @@
 use std::f64::consts::PI;
 use std::ops::Range;
 
-use crate::coordinates::{GeoBounds, LatLon, MERCATOR_HALF_WORLD_M};
+use crate::coordinates::{GeoBounds, LatLon, Mercator, MERCATOR_HALF_WORLD_M};
 use crate::download_bounds::MercRect;
 
 /// A tile coordinate in the Web Mercator projection
@@ -209,15 +209,11 @@ const MAX_WORLD_COPIES: f64 = 4.0;
 
 /// The tiles at `zoom` that must be fetched and painted so that every pixel of
 /// a view covering the Web Mercator box `view` shows imagery, when the imagery
-/// is painted shifted by `(off_x, off_y)` Mercator metres: the tile under a
+/// is painted shifted by `offset` (Mercator metres): the tile under a
 /// view pixel is the one at that pixel *minus* the shift. Columns past the
 /// antimeridian wrap to the other edge of the grid (see [`PlacedTile`]), rows
 /// are clamped to the grid; listed column by column.
-pub fn tiles_covering_placed(
-    view: MercRect,
-    (off_x, off_y): (f64, f64),
-    zoom: u32,
-) -> Vec<PlacedTile> {
+pub fn tiles_covering_placed(view: MercRect, offset: Mercator, zoom: u32) -> Vec<PlacedTile> {
     let n = grid_size(zoom);
     let tile_m = MERCATOR_HALF_WORLD_M * 2.0 / n as f64;
     let col = |mx: f64| (mx + MERCATOR_HALF_WORLD_M) / tile_m;
@@ -226,13 +222,13 @@ pub fn tiles_covering_placed(
     let limit = MAX_WORLD_COPIES * n as f64;
     let column = |v: f64| v.floor().clamp(-limit, limit) as i64;
     let (x_lo, x_hi) = (
-        column(col(view.min_x - off_x)),
-        column(col(view.max_x - off_x)),
+        column(col(view.min_x - offset.x)),
+        column(col(view.max_x - offset.x)),
     );
     let rows = TileBlock::clamped(
         zoom,
         (0.0, 0.0),
-        (row(view.max_y - off_y), row(view.min_y - off_y)),
+        (row(view.max_y - offset.y), row(view.min_y - offset.y)),
     )
     .y;
     let mut out = Vec::new();
@@ -249,7 +245,7 @@ pub fn tiles_covering_placed(
 
 /// [`tiles_covering_placed`] without the placement: each tile to fetch once,
 /// in the order it first appears.
-pub fn tiles_covering(view: MercRect, offset: (f64, f64), zoom: u32) -> Vec<TileCoord> {
+pub fn tiles_covering(view: MercRect, offset: Mercator, zoom: u32) -> Vec<TileCoord> {
     let mut seen = std::collections::HashSet::new();
     tiles_covering_placed(view, offset, zoom)
         .into_iter()
@@ -513,7 +509,7 @@ mod tests {
 
     /// Every pixel of the view, when the imagery is painted shifted, must lie
     /// on one of the returned tiles.
-    fn assert_covered(view: MercRect, off: (f64, f64), zoom: u32) {
+    fn assert_covered(view: MercRect, off: Mercator, zoom: u32) {
         let tiles = tiles_covering(view, off, zoom);
         let n = 2f64.powi(zoom as i32);
         let half = MERCATOR_HALF_WORLD_M;
@@ -524,7 +520,7 @@ mod tests {
                 let px = view.min_x + (view.max_x - view.min_x) * i as f64 / steps as f64;
                 let py = view.min_y + (view.max_y - view.min_y) * j as f64 / steps as f64;
                 // The imagery point painted at this view point.
-                let (sx, sy) = (px - off.0, py - off.1);
+                let (sx, sy) = (px - off.x, py - off.y);
                 let tx = ((sx + half) / tile_m).floor() as u32;
                 let ty = ((half - sy) / tile_m).floor() as u32;
                 assert!(
@@ -551,7 +547,7 @@ mod tests {
         let big = [2.5 * tile_m, -3.2 * tile_m];
         for &ox in steps.iter().chain(big.iter()) {
             for &oy in steps.iter().chain(big.iter()) {
-                assert_covered(view, (ox, oy), zoom);
+                assert_covered(view, Mercator::new(ox, oy), zoom);
             }
         }
     }
@@ -562,7 +558,7 @@ mod tests {
         let half = MERCATOR_HALF_WORLD_M;
         let tile_m = half * 2.0 / 32.0;
         let view = MercRect::new(tile_m * 0.1 - half, tile_m * 1.9 - half, 0.0, 1.0);
-        let tiles = tiles_covering(view, (0.0, 0.0), zoom);
+        let tiles = tiles_covering(view, Mercator::new(0.0, 0.0), zoom);
         let xs: std::collections::BTreeSet<u32> = tiles.iter().map(|t| t.x).collect();
         assert_eq!(xs.into_iter().collect::<Vec<_>>(), vec![0, 1]);
     }
@@ -570,7 +566,7 @@ mod tests {
     #[test]
     fn tile_coverage_lists_whole_columns_before_the_next_column() {
         let everything = MercRect::new(-1.0e9, 1.0e9, -1.0e9, 1.0e9);
-        let tiles = tiles_covering(everything, (0.0, 0.0), 1);
+        let tiles = tiles_covering(everything, Mercator::new(0.0, 0.0), 1);
         let coords: Vec<(u32, u32)> = tiles.iter().map(|t| (t.x, t.y)).collect();
         assert_eq!(coords, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
     }
@@ -578,10 +574,10 @@ mod tests {
     #[test]
     fn tile_coverage_stays_on_the_grid_and_lists_each_tile_once() {
         let everything = MercRect::new(-1.0e9, 1.0e9, -1.0e9, 1.0e9);
-        let tiles = tiles_covering(everything, (0.0, 0.0), 2);
+        let tiles = tiles_covering(everything, Mercator::new(0.0, 0.0), 2);
         assert_eq!(tiles.len(), 16);
         assert!(tiles.iter().all(|t| t.x < 4 && t.y < 4));
-        let placed = tiles_covering_placed(everything, (0.0, 0.0), 2);
+        let placed = tiles_covering_placed(everything, Mercator::new(0.0, 0.0), 2);
         assert!(
             placed.len() <= 16 * 9,
             "a non-finite or huge view is bounded"
@@ -600,7 +596,7 @@ mod tests {
         // Centred on +180: half the view is past the east edge.
         let placed = tiles_covering_placed(
             view_at(MERCATOR_HALF_WORLD_M, 0.5 * tile_m),
-            (0.0, 0.0),
+            Mercator::new(0.0, 0.0),
             zoom,
         );
         let cols: Vec<(u32, i32)> = placed
@@ -616,7 +612,7 @@ mod tests {
         // The same on the western side: centred on -180.
         let placed = tiles_covering_placed(
             view_at(-MERCATOR_HALF_WORLD_M, 0.5 * tile_m),
-            (0.0, 0.0),
+            Mercator::new(0.0, 0.0),
             zoom,
         );
         let cols: Vec<(u32, i32)> = placed
@@ -628,7 +624,7 @@ mod tests {
         // The plain list names each tile to fetch once.
         let plain = tiles_covering(
             view_at(MERCATOR_HALF_WORLD_M, 0.5 * tile_m),
-            (0.0, 0.0),
+            Mercator::new(0.0, 0.0),
             zoom,
         );
         assert_eq!(plain.len(), 4);
@@ -642,7 +638,7 @@ mod tests {
         let tile_m = MERCATOR_HALF_WORLD_M * 2.0 / 1024.0;
         let placed = tiles_covering_placed(
             view_at(MERCATOR_HALF_WORLD_M, 1.5 * tile_m),
-            (0.0, 0.0),
+            Mercator::new(0.0, 0.0),
             zoom,
         );
         let mut cols: Vec<(u32, i32)> = placed.iter().map(|t| (t.coord.x, t.world_copy)).collect();
@@ -662,10 +658,11 @@ mod tests {
         // every column in several copies.
         let w = MERCATOR_HALF_WORLD_M * 2.0;
         let view = MercRect::new(-1.5 * w, 1.5 * w, 0.0, 1.0);
-        let copies: std::collections::BTreeSet<i32> = tiles_covering_placed(view, (0.0, 0.0), 1)
-            .iter()
-            .map(|t| t.world_copy)
-            .collect();
+        let copies: std::collections::BTreeSet<i32> =
+            tiles_covering_placed(view, Mercator::new(0.0, 0.0), 1)
+                .iter()
+                .map(|t| t.world_copy)
+                .collect();
         assert_eq!(copies.into_iter().collect::<Vec<_>>(), vec![-1, 0, 1, 2]);
     }
 
@@ -683,8 +680,8 @@ mod tests {
         let zoom = 10;
         let tile_m = MERCATOR_HALF_WORLD_M * 2.0 / 1024.0;
         let view = MercRect::new(0.5 * tile_m, 1.5 * tile_m, 0.5 * tile_m, 0.6 * tile_m);
-        let plain = tiles_covering(view, (0.0, 0.0), zoom);
-        let shifted = tiles_covering(view, (tile_m, 0.0), zoom);
+        let plain = tiles_covering(view, Mercator::new(0.0, 0.0), zoom);
+        let shifted = tiles_covering(view, Mercator::new(tile_m, 0.0), zoom);
         let min_x = |t: &[TileCoord]| t.iter().map(|t| t.x).min().unwrap();
         assert_eq!(min_x(&shifted) + 1, min_x(&plain));
     }

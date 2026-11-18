@@ -313,16 +313,15 @@ struct SetMode {
 #[derive(Clone, Debug, PartialEq)]
 enum SnapTarget {
     /// An existing node, reused / merged into.
-    Node { id: NodeId, lat: f64, lon: f64 },
-    /// A way segment: the node becomes a new vertex at `index + 1`, at
-    /// `(lat, lon)`, the nearest point of the segment.
+    Node { id: NodeId, at: LatLon },
+    /// A way segment: the node becomes a new vertex at `index + 1`, at `at`,
+    /// the nearest point of the segment.
     Way {
         way_id: WayId,
-        a: (f64, f64),
-        b: (f64, f64),
+        a: LatLon,
+        b: LatLon,
         index: usize,
-        lat: f64,
-        lon: f64,
+        at: LatLon,
     },
 }
 
@@ -1482,18 +1481,18 @@ impl MapViewer {
         if hit.kind != osm_gpui::selection::FeatureKind::Node || self.selected.contains(&hit) {
             return None;
         }
-        let (lat, lon) = self
+        let at = self
             .layer_manager
             .find_layer(hit.layer_id)?
             .as_editable()?
             .node_lat_lon(NodeId(hit.id))?;
-        Some((hit, vec![(hit.layer_id, vec![(NodeId(hit.id), lat, lon)])]))
+        Some((hit, vec![(hit.layer_id, vec![(NodeId(hit.id), at)])]))
     }
 
     /// Resolve the current selection into, per owning layer, the set of node
     /// ids to translate: a selected node contributes its own id; a selected
     /// way contributes every one of its member node ids. Each id's current
-    /// (lat, lon) is snapshotted for use as the drag's translation anchor.
+    /// position is snapshotted for use as the drag's translation anchor.
     fn resolve_move_targets(&self) -> NodeMoveTargets {
         use osm_gpui::selection::FeatureKind;
         use std::collections::{HashMap, HashSet};
@@ -1526,9 +1525,9 @@ impl MapViewer {
             .filter_map(|(layer_id, ids)| {
                 let layer = self.layer_manager.find_layer(layer_id)?;
                 let editable = layer.as_editable()?;
-                let originals: Vec<(NodeId, f64, f64)> = ids
+                let originals: Vec<(NodeId, LatLon)> = ids
                     .into_iter()
-                    .filter_map(|id| editable.node_lat_lon(id).map(|(lat, lon)| (id, lat, lon)))
+                    .filter_map(|id| editable.node_lat_lon(id).map(|at| (id, at)))
                     .collect();
                 if originals.is_empty() {
                     None
@@ -2168,7 +2167,7 @@ impl MapViewer {
 
     /// The rotation centre in map pixels under the current viewport.
     fn rotate_center_px(&self, center: osm_gpui::geometry::LatLon) -> (f64, f64) {
-        pointer_px(self.viewport.geo_to_screen(LatLon::new(center.0, center.1)))
+        pointer_px(self.viewport.geo_to_screen(center))
     }
 
     /// Turn the nodes of the Rotate in progress to follow the pointer.
@@ -2200,11 +2199,11 @@ impl MapViewer {
         };
         let before: Vec<_> = session.originals.iter().map(|&(_, p)| p).collect();
         let after = osm_gpui::rotate::rotate_points(&before, session.center, session.angle);
-        let moves: Vec<(NodeId, f64, f64)> = session
+        let moves: Vec<(NodeId, LatLon)> = session
             .originals
             .iter()
             .zip(&after)
-            .map(|(&(id, _), &(lat, lon))| (id, lat, lon))
+            .map(|(&(id, _), &a)| (id, a))
             .collect();
         let layer = session.layer;
         if let Some(editable) = self
@@ -2641,8 +2640,8 @@ impl MapViewer {
         use osm_gpui::selection::FeatureKind;
 
         let mut bounds: Option<GeoBounds> = None;
-        let mut extend = |(lat, lon): (f64, f64)| {
-            GeoBounds::extend(&mut bounds, LatLon::new(lat, lon));
+        let mut extend = |at: LatLon| {
+            GeoBounds::extend(&mut bounds, at);
         };
         for feature in features {
             let Some(editable) = self
@@ -2670,11 +2669,7 @@ impl MapViewer {
                     let Some(relation) = editable.relation(RelationId(feature.id)) else {
                         continue;
                     };
-                    let node = |id: NodeId| {
-                        editable
-                            .node_lat_lon(id)
-                            .map(|(lat, lon)| LatLon::new(lat, lon))
-                    };
+                    let node = |id: NodeId| editable.node_lat_lon(id);
                     let way_nodes = |id: WayId| editable.way_node_ids(id);
                     let find = |id: RelationId| editable.relation(id);
                     let lookup = osm_gpui::relations::MemberLookup {
@@ -2683,8 +2678,8 @@ impl MapViewer {
                         relation: &find,
                     };
                     if let Some(b) = osm_gpui::relations::members_bounds(&relation, &lookup) {
-                        extend((b.min_lat, b.min_lon));
-                        extend((b.max_lat, b.max_lon));
+                        extend(LatLon::new(b.min_lat, b.min_lon));
+                        extend(LatLon::new(b.max_lat, b.max_lon));
                     }
                 }
             }
@@ -3248,11 +3243,11 @@ impl MapViewer {
                 |n| snap_node_ok(editable, layer_id, sources, node, n),
             );
             if let Some(id) = hit {
-                let (lat, lon) = editable.node_lat_lon(id)?;
-                return Some(SnapTarget::Node { id, lat, lon });
+                let at = editable.node_lat_lon(id)?;
+                return Some(SnapTarget::Node { id, at });
             }
         }
-        let (way_id, a, b, _loaded_index, lat, lon) = osm_layer.snap_to_way_where(
+        let (way_id, a, b, _loaded_index, at) = osm_layer.snap_to_way_where(
             &self.viewport,
             screen_pt,
             osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
@@ -3272,8 +3267,7 @@ impl MapViewer {
             a: editable.node_lat_lon(a)?,
             b: editable.node_lat_lon(b)?,
             index,
-            lat,
-            lon,
+            at,
         })
     }
 
@@ -3282,7 +3276,7 @@ impl MapViewer {
     fn single_dragged_node(targets: &NodeMoveTargets) -> Option<(LayerId, NodeId)> {
         match targets.as_slice() {
             [(layer, nodes)] => match nodes.as_slice() {
-                [(id, _, _)] => Some((*layer, *id)),
+                [(id, _)] => Some((*layer, *id)),
                 _ => None,
             },
             _ => None,
@@ -3456,7 +3450,7 @@ impl MapViewer {
                     if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                         if let Some(editable) = layer.as_editable_mut() {
                             let ids: std::collections::HashSet<NodeId> =
-                                originals.iter().map(|&(id, _, _)| id).collect();
+                                originals.iter().map(|&(id, _)| id).collect();
                             editable.set_drag_preview(&ids, delta);
                         }
                     }
@@ -3545,11 +3539,7 @@ impl MapViewer {
                 if let Some((
                     (layer_id, node),
                     SnapTarget::Way {
-                        way_id,
-                        index,
-                        lat,
-                        lon,
-                        ..
+                        way_id, index, at, ..
                     },
                 )) = &snap
                 {
@@ -3564,7 +3554,7 @@ impl MapViewer {
                                 *node,
                                 *way_id,
                                 Some(*index),
-                                Some((*lat, *lon)),
+                                Some(*at),
                             )
                         });
                     match joined {
@@ -3587,22 +3577,19 @@ impl MapViewer {
 
                 let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
                 for (layer_id, originals) in &targets {
-                    let mut moves: Vec<(NodeId, f64, f64)> = Vec::with_capacity(originals.len());
+                    let mut moves: Vec<(NodeId, LatLon)> = Vec::with_capacity(originals.len());
                     let mut undo_entries: Vec<NodeMoveUndoEntry> =
                         Vec::with_capacity(originals.len());
-                    for &(id, lat, lon) in originals {
-                        let anchor = self.viewport.geo_to_screen(LatLon::new(lat, lon));
+                    for &(id, from) in originals {
+                        let anchor = self.viewport.geo_to_screen(from);
                         let new_screen = anchor + delta;
-                        let LatLon {
-                            lat: mut new_lat,
-                            lon: mut new_lon,
-                        } = self.viewport.screen_to_geo(new_screen);
+                        let mut to = self.viewport.screen_to_geo(new_screen);
                         // Onto an existing node: land exactly on it.
-                        if let Some((_, SnapTarget::Node { lat, lon, .. })) = &snap {
-                            (new_lat, new_lon) = (*lat, *lon);
+                        if let Some((_, SnapTarget::Node { at, .. })) = &snap {
+                            to = *at;
                         }
-                        moves.push((id, new_lat, new_lon));
-                        undo_entries.push((id, (lat, lon), (new_lat, new_lon)));
+                        moves.push((id, to));
+                        undo_entries.push((id, from, to));
                     }
                     let moved = self
                         .layer_manager
@@ -3999,7 +3986,7 @@ impl MapViewer {
         if nodes.len() < 3 || (nodes.len() >= 4 && nodes.first() == nodes.last()) {
             return None;
         }
-        let (_, a, b, _, lat, lon) = layer.as_osm()?.snap_to_way_where(
+        let (_, a, b, _, at) = layer.as_osm()?.snap_to_way_where(
             &self.viewport,
             map_pos,
             osm_gpui::snap::WAY_SNAP_TOLERANCE_PX * 2.0,
@@ -4012,7 +3999,7 @@ impl MapViewer {
             layer_id: hit.layer_id,
             way,
             segment,
-            at: (lat, lon),
+            at,
         })
     }
 
