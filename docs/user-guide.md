@@ -111,6 +111,8 @@ Choose **Tools > Validate**. A **Validation** section appears in the side panel 
 
 The list updates as you keep editing, so you can fix problems one after another. Close the section with its Close button.
 
+Some findings have a **Fix** button that resolves them in one step, for example removing a repeated node, trimming stray whitespace from tags, replacing a deprecated tag, closing a nearly closed building, or deleting an unused node. **Fix all** applies every available fix at once. A fix is only offered when it is unambiguous, so a tag is never overwritten with a guess. Each fix is an ordinary edit: it appears in History and **Undo** takes it back.
+
 The check also runs automatically when you open the upload dialog:
 
 - **Errors** block the upload. Fix them first.

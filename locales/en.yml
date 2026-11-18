@@ -1433,6 +1433,28 @@ validator:
     tag_whitespace: "Tag \"%{key}\" has leading or trailing whitespace"
     fixme: "Has a note to fix: %{key}=%{value}"
     deprecated_tag: "Deprecated tag %{old}; use %{new}"
+    redundant_area_tag: "area=yes is not needed; the other tags already make this an area"
+    duplicate_relation_member:
+      one: "Relation lists the same member twice in a row (%{count} repeat)"
+      other: "Relation lists the same member twice in a row (%{count} repeats)"
+    repeated_way_node: "Way passes through node %{node} more than once"
+  # Names of the automatic fixes, shown on the Fix button and in History.
+  fix:
+    button: "Fix"
+    fix_all: "Fix all"
+    fixed:
+      one: "Fixed %{count} problem"
+      other: "Fixed %{count} problems"
+    not_fixed: "Could not apply the fix: %{detail}"
+    delete_node: "Delete the unused node"
+    delete_relation: "Delete the empty relation"
+    remove_duplicate_way_node: "Remove the repeated node"
+    remove_duplicate_members: "Remove the repeated members"
+    remove_area_tag: "Remove area=yes"
+    close_way: "Close the way"
+    remove_tags: "Remove the empty tags"
+    trim_tags: "Trim whitespace from tags"
+    replace_tag: "Replace the deprecated tag"
 # Status-bar messages of PMTiles vector layers.
 pmtiles:
   state:
