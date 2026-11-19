@@ -1,6 +1,7 @@
 //! What the pending diff contains and the order the upload document puts it in.
 
 use super::*;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, RelationId};
 use osm_gpui::osm_upload::build_osm_change_xml;
 use osm_gpui::tags::Tags;
@@ -102,7 +103,7 @@ fn moving_a_node_and_deleting_its_way_uploads_both(cx: &mut TestAppContext) {
             .unwrap()
             .as_editable_mut()
             .unwrap()
-            .commit_node_moves(&[(NodeId(2), 40.5, -74.5)])
+            .commit_node_moves(&[(NodeId(2), LatLon::new(40.5, -74.5))])
             .unwrap();
         s.select(&[(W, 10)]);
         assert!(s.act("delete"));
@@ -133,8 +134,8 @@ fn created_then_deleted_in_one_session_uploads_nothing(cx: &mut TestAppContext) 
                 .unwrap()
                 .as_editable_mut()
                 .unwrap();
-            let a = e.add_node(40.1, -74.1);
-            let b = e.add_node(40.2, -74.2);
+            let a = e.add_node(LatLon::new(40.1, -74.1));
+            let b = e.add_node(LatLon::new(40.2, -74.2));
             (a, e.add_way(vec![a, b], Tags::new()))
         };
         assert_eq!(s.counts(), (3, 0, 0));

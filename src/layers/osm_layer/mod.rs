@@ -657,10 +657,10 @@ impl MapLayer for OsmLayer {
         // Turn restrictions: a sign-like marker beside the via position.
         if show_vertices {
             for r in self.derived.mp.restrictions.values() {
-                if r.x < vmin_x || r.x > vmax_x || r.y < vmin_y || r.y > vmax_y {
+                if r.at.x < vmin_x || r.at.x > vmax_x || r.at.y < vmin_y || r.at.y > vmax_y {
                     continue;
                 }
-                let sp = viewport.mercator_to_screen(Mercator::new(r.x, r.y));
+                let sp = viewport.mercator_to_screen(r.at);
                 if !is_point_valid(sp) {
                     continue;
                 }

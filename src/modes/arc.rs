@@ -14,7 +14,7 @@ use osm_gpui::layers::LayerId;
 
 /// The arc being drawn: the start point is fixed after click 1, the end point
 /// after click 2; the third click picks a point the arc passes through. Both
-/// are geo (lat, lon) coordinates.
+/// are geographic positions.
 #[derive(Clone, Copy)]
 pub(crate) struct ArcProgress {
     pub(crate) start: ArcPoint,
@@ -35,7 +35,7 @@ pub(crate) enum ArcSnap {
 /// when the click was near one) and what it snapped onto.
 #[derive(Clone, Copy)]
 pub(crate) struct ArcPoint {
-    pub(crate) geo: (f64, f64),
+    pub(crate) geo: LatLon,
     pub(crate) snap: Option<ArcSnap>,
 }
 
@@ -116,9 +116,9 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
         .last_mouse_pos
         .map(|p| match view.active_layer {
             Some(layer_id) => view.arc_point_at(layer_id, p, false).geo,
-            None => frame.viewport.screen_to_geo(p).to_pair(),
+            None => frame.viewport.screen_to_geo(p),
         });
-    let path_points: Vec<(f64, f64)> = match (progress.end, cursor_geo) {
+    let path_points: Vec<LatLon> = match (progress.end, cursor_geo) {
         (None, Some(cursor)) => vec![progress.start.geo, cursor],
         (None, None) => Vec::new(),
         (Some(end), cursor) => {
@@ -146,7 +146,7 @@ impl MapViewer {
         no_snap: bool,
     ) -> ArcPoint {
         let plain = ArcPoint {
-            geo: self.viewport.screen_to_geo(screen_pt).to_pair(),
+            geo: self.viewport.screen_to_geo(screen_pt),
             snap: None,
         };
         if no_snap {
@@ -182,8 +182,8 @@ impl MapViewer {
             )
         });
         match hit {
-            Some((way_id, _, _, idx, lat, lon)) => ArcPoint {
-                geo: (lat, lon),
+            Some((way_id, _, _, idx, geo)) => ArcPoint {
+                geo,
                 snap: Some(ArcSnap::Way(way_id, idx)),
             },
             None => plain,
@@ -197,12 +197,12 @@ impl MapViewer {
     /// are in a line.
     pub(crate) fn arc_from_geo(
         &self,
-        start: (f64, f64),
-        end: (f64, f64),
-        through: (f64, f64),
-    ) -> Option<Vec<(f64, f64)>> {
-        let to_screen = |g: (f64, f64)| {
-            let p = self.viewport.geo_to_screen(LatLon::new(g.0, g.1));
+        start: LatLon,
+        end: LatLon,
+        through: LatLon,
+    ) -> Option<Vec<LatLon>> {
+        let to_screen = |g: LatLon| {
+            let p = self.viewport.geo_to_screen(g);
             (p.x.to_f64(), p.y.to_f64())
         };
         let points = osm_gpui::arc::arc_through(
@@ -222,8 +222,7 @@ impl MapViewer {
                     i if i == last => end,
                     _ => self
                         .viewport
-                        .screen_to_geo(gpui::point(px(x as f32), px(y as f32)))
-                        .to_pair(),
+                        .screen_to_geo(gpui::point(px(x as f32), px(y as f32))),
                 })
                 .collect(),
         )
@@ -236,7 +235,7 @@ impl MapViewer {
         layer_id: LayerId,
         start: ArcPoint,
         end: ArcPoint,
-        through: (f64, f64),
+        through: LatLon,
     ) {
         if self.refuse_edit_during_upload() {
             return;
@@ -277,7 +276,9 @@ impl MapViewer {
             editable.node_lat_lon(id)
         };
         let along = |p: &ArcPoint| {
-            seg_start(p).map_or(0.0, |s| (p.geo.0 - s.0).powi(2) + (p.geo.1 - s.1).powi(2))
+            seg_start(p).map_or(0.0, |s| {
+                (p.geo.lat - s.lat).powi(2) + (p.geo.lon - s.lon).powi(2)
+            })
         };
         splices.sort_by(|(_, a), (_, b)| {
             let (aw, ai) = way_snap(a).unwrap();
@@ -307,7 +308,7 @@ impl MapViewer {
         }
         for (i, p) in &splices {
             let (way_id, idx) = way_snap(p).unwrap();
-            let Ok(id) = rec.insert_node_into_way(way_id, idx + 1, p.geo.0, p.geo.1) else {
+            let Ok(id) = rec.insert_node_into_way(way_id, idx + 1, p.geo) else {
                 // Put back the splices already made, so nothing is half done.
                 roll_back_recording(rec);
                 return;
@@ -319,7 +320,7 @@ impl MapViewer {
         let all_ids: Vec<NodeId> = node_ids
             .iter()
             .zip(&points)
-            .map(|(id, &(lat, lon))| id.unwrap_or_else(|| rec.add_node(lat, lon)))
+            .map(|(id, &at)| id.unwrap_or_else(|| rec.add_node(at)))
             .collect();
         let way_id = rec.add_way(all_ids, Tags::new());
         selects.push(feature(osm_gpui::selection::FeatureKind::Way, way_id.get()));

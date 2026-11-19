@@ -1,6 +1,7 @@
 //! Relation membership, tags, creation and deletion through the layer.
 
 use super::{data_with, empty_tags};
+use crate::coordinates::LatLon;
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
@@ -236,7 +237,7 @@ fn layer_with_server_relation() -> OsmLayer {
 fn create_relation_allocates_unique_negative_ids_shared_with_nodes_and_ways() {
     use crate::osm::MemberType::Way;
     let mut layer = layer_with_server_relation();
-    let n = layer.add_node(40.0, -74.0);
+    let n = layer.add_node(LatLon::new(40.0, -74.0));
     let w = layer.add_way(vec![n], Tags::new());
     let r1 = layer.create_relation(Tags::new(), vec![]).unwrap();
     let r2 = layer
@@ -251,7 +252,7 @@ fn create_relation_allocates_unique_negative_ids_shared_with_nodes_and_ways() {
         "below every node and way id handed out"
     );
     // Later nodes and ways stay clear of the relation ids.
-    let n2 = layer.add_node(40.1, -74.1);
+    let n2 = layer.add_node(LatLon::new(40.1, -74.1));
     assert!(n2.get() < r2.get());
     assert_eq!(layer.relation(r2).unwrap().version, 0);
     assert_eq!(layer.relations().len(), 3);
@@ -305,7 +306,7 @@ fn delete_relation_refuses_a_member_relation_and_restores_in_place() {
 fn created_relations_are_remapped_inside_other_relations_after_upload() {
     use crate::osm::MemberType::{Node, Relation, Way};
     let mut layer = layer_with_server_relation();
-    let n = layer.add_node(40.0, -74.0);
+    let n = layer.add_node(LatLon::new(40.0, -74.0));
     let w = layer.add_way(vec![n], Tags::new());
     let child = layer
         .create_relation(Tags::new(), vec![relation_member(Node, n.get())])

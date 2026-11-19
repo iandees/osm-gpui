@@ -14,19 +14,6 @@ impl LatLon {
     pub const fn new(lat: f64, lon: f64) -> Self {
         Self { lat, lon }
     }
-
-    /// For code that still passes `(lat, lon)` pairs. Each use marks a place
-    /// not yet converted to `LatLon`.
-    #[inline]
-    pub const fn from_pair((lat, lon): (f64, f64)) -> Self {
-        Self { lat, lon }
-    }
-
-    /// The `(lat, lon)` pair; see [`LatLon::from_pair`].
-    #[inline]
-    pub const fn to_pair(self) -> (f64, f64) {
-        (self.lat, self.lon)
-    }
 }
 
 /// A position in Web Mercator (EPSG:3857) metres: `x` grows east, `y` north.

@@ -219,19 +219,19 @@ fn moving_a_member_node_rebuilds_only_the_relations_it_belongs_to() {
     // A node of another relation's ring: this one's cache is untouched
     // but the version still counts the patch.
     layer
-        .commit_node_moves(&[(NodeId(nid(30, 0)), 40.0, -73.969)])
+        .commit_node_moves(&[(NodeId(nid(30, 0)), LatLon::new(40.0, -73.969))])
         .unwrap();
     assert!(layer.multipolygon_version() > before);
 
     // A node no relation uses: no patch at all.
     let before = layer.multipolygon_version();
     layer
-        .commit_node_moves(&[(NodeId(nid(12, 12)), 40.0121, -73.9881)])
+        .commit_node_moves(&[(NodeId(nid(12, 12)), LatLon::new(40.0121, -73.9881))])
         .unwrap();
     assert_eq!(layer.multipolygon_version(), before);
 
     layer
-        .commit_node_moves(&[(NodeId(nid(10, 10)), 40.0105, -73.9895)])
+        .commit_node_moves(&[(NodeId(nid(10, 10)), LatLon::new(40.0105, -73.9895))])
         .unwrap();
     assert!(layer.multipolygon_version() > before);
     let (new, tris) = layer
@@ -283,7 +283,7 @@ fn reshaping_splitting_and_removing_member_ways_updates_the_relation() {
 
     // Adding a vertex to the outer way keeps it valid and re-triangulates.
     layer
-        .insert_node_into_way(WayId(10), 1, 39.9997, -73.995)
+        .insert_node_into_way(WayId(10), 1, LatLon::new(39.9997, -73.995))
         .unwrap();
     assert_eq!(layer.multipolygon_state(RelationId(500)), valid(1, 1));
     let (_, tris) = layer

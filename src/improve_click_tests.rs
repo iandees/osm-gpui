@@ -36,14 +36,14 @@ fn a_plain_click_moves_the_nearest_node_to_the_cursor(cx: &mut TestAppContext) {
         crate::modes::improve::click(view, click, cx);
 
         assert_eq!(way_node_ids(view, layer, 10).unwrap(), vec![1, 2, 3, 4]);
-        let (lat, lon) = node_lat_lon(view, layer, 2).unwrap();
+        let LatLon { lat, lon } = node_lat_lon(view, layer, 2).unwrap();
         let p = view.viewport.geo_to_screen(LatLon::new(lat, lon));
         assert!((p.x - click.x).to_f64().abs() < 0.5 && (p.y - click.y).to_f64().abs() < 0.5);
         assert_eq!(view.undo_stack.cursor, 1);
         assert_eq!(view.selected.len(), 1, "the way stays selected");
 
         view.on_undo(&Undo, w, cx);
-        assert_eq!(node_lat_lon(view, layer, 2).unwrap().0, LAT);
+        assert_eq!(node_lat_lon(view, layer, 2).unwrap().lat, LAT);
     });
 }
 
@@ -63,7 +63,7 @@ fn the_add_modifier_inserts_a_node_on_the_way(cx: &mut TestAppContext) {
         assert_eq!(nodes.len(), 5);
         // Between nodes 2 and 3 in the way, at the cursor.
         assert_eq!((nodes[1], nodes[3]), (2, 3));
-        let (lat, lon) = node_lat_lon(view, layer, nodes[2]).unwrap();
+        let LatLon { lat, lon } = node_lat_lon(view, layer, nodes[2]).unwrap();
         let p = view.viewport.geo_to_screen(LatLon::new(lat, lon));
         assert!((p.x - click.x).to_f64().abs() < 0.5 && (p.y - click.y).to_f64().abs() < 0.5);
 

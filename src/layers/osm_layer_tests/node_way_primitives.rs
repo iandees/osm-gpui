@@ -1,6 +1,7 @@
 //! The low-level node and way edit primitives and feature geometry classification.
 
 use super::{data_with, empty_tags, viewport_centered_on};
+use crate::coordinates::LatLon;
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::LayerId;
@@ -16,8 +17,8 @@ fn add_node_assigns_decrementing_placeholder_ids_and_is_hit_testable() {
     let mut layer = OsmLayer::new(LayerId(1));
     let viewport = viewport_centered_on(40.0, -74.0);
 
-    let id1 = layer.add_node(40.0, -74.0);
-    let id2 = layer.add_node(40.0, -74.0);
+    let id1 = layer.add_node(LatLon::new(40.0, -74.0));
+    let id2 = layer.add_node(LatLon::new(40.0, -74.0));
     assert_eq!(id1, NodeId(-1), "first placeholder id should be -1");
     assert_eq!(id2, NodeId(-2), "ids should decrement");
     assert!(layer.is_modified());
@@ -32,7 +33,7 @@ fn add_node_assigns_decrementing_placeholder_ids_and_is_hit_testable() {
 fn remove_node_drops_it_from_data_and_index() {
     let mut layer = OsmLayer::new(LayerId(1));
     let viewport = viewport_centered_on(40.0, -74.0);
-    let id = layer.add_node(40.0, -74.0);
+    let id = layer.add_node(LatLon::new(40.0, -74.0));
 
     layer.remove_node(id).unwrap();
 
@@ -54,8 +55,8 @@ fn add_way_creates_closed_building_way_and_is_hit_testable() {
     // it (as `hit_test_falls_through_to_way` also does): `hit_test`
     // returns node hits before even considering ways, so a node sitting
     // exactly at the click point would shadow the way we're testing.
-    let n1 = layer.add_node(40.0, -74.001);
-    let n2 = layer.add_node(40.0, -73.999);
+    let n1 = layer.add_node(LatLon::new(40.0, -74.001));
+    let n2 = layer.add_node(LatLon::new(40.0, -73.999));
     let way_id = layer.add_way(vec![n1, n2, n1], Tags::from([("building", "yes")]));
     assert_eq!(way_id, WayId(-1), "first placeholder way id should be -1");
 
@@ -77,8 +78,8 @@ fn add_way_creates_closed_building_way_and_is_hit_testable() {
 fn remove_way_drops_it_from_data_and_index_but_keeps_its_nodes() {
     let mut layer = OsmLayer::new(LayerId(1));
     let viewport = viewport_centered_on(40.0, -74.0);
-    let n1 = layer.add_node(40.0, -74.001);
-    let n2 = layer.add_node(40.0, -74.0);
+    let n1 = layer.add_node(LatLon::new(40.0, -74.001));
+    let n2 = layer.add_node(LatLon::new(40.0, -74.0));
     let way_id = layer.add_way(vec![n1, n2], Tags::new());
 
     layer.remove_way(way_id).unwrap();
@@ -100,10 +101,10 @@ fn remove_way_drops_it_from_data_and_index_but_keeps_its_nodes() {
 #[test]
 fn extend_way_appends_node_and_updates_bbox() {
     let mut layer = OsmLayer::new(LayerId(1));
-    let n1 = layer.add_node(40.0, -74.001);
-    let n2 = layer.add_node(40.0, -74.0);
+    let n1 = layer.add_node(LatLon::new(40.0, -74.001));
+    let n2 = layer.add_node(LatLon::new(40.0, -74.0));
     let way_id = layer.add_way(vec![n1, n2], Tags::new());
-    let n3 = layer.add_node(40.001, -74.0);
+    let n3 = layer.add_node(LatLon::new(40.001, -74.0));
 
     layer.extend_way(way_id, n3).unwrap();
 
@@ -115,9 +116,9 @@ fn extend_way_appends_node_and_updates_bbox() {
 #[test]
 fn reverse_way_flips_node_order_and_is_its_own_inverse() {
     let mut layer = OsmLayer::new(LayerId(1));
-    let n1 = layer.add_node(40.0, -74.001);
-    let n2 = layer.add_node(40.0, -74.0);
-    let n3 = layer.add_node(40.001, -74.0);
+    let n1 = layer.add_node(LatLon::new(40.0, -74.001));
+    let n2 = layer.add_node(LatLon::new(40.0, -74.0));
+    let n3 = layer.add_node(LatLon::new(40.001, -74.0));
     let way_id = layer.add_way(vec![n1, n2, n3], Tags::new());
 
     assert!(layer.reverse_way(way_id).is_ok());
@@ -133,15 +134,15 @@ fn reverse_way_flips_node_order_and_is_its_own_inverse() {
 #[test]
 fn set_way_nodes_rewrites_the_list_and_tracks_node_usage() {
     let mut layer = OsmLayer::new(LayerId(1));
-    let n1 = layer.add_node(40.0, -74.001);
-    let n2 = layer.add_node(40.0, -74.0);
-    let n3 = layer.add_node(40.001, -74.0);
+    let n1 = layer.add_node(LatLon::new(40.0, -74.001));
+    let n2 = layer.add_node(LatLon::new(40.0, -74.0));
+    let n3 = layer.add_node(LatLon::new(40.001, -74.0));
     let w1 = layer.add_way(vec![n1, n2], Tags::new());
     let w2 = layer.add_way(vec![n2, n3], Tags::new());
     assert_eq!(layer.ways_using_node(n2), vec![w2, w1]);
 
     // Swap w2's use of n2 for a fresh node at the same spot.
-    let copy = layer.add_node(40.0, -74.0);
+    let copy = layer.add_node(LatLon::new(40.0, -74.0));
     assert!(layer.set_way_nodes(w2, vec![copy, n3]).is_ok());
     assert_eq!(layer.way_node_ids(w2), Some(vec![copy, n3]));
     assert_eq!(layer.ways_using_node(n2), vec![w1]);
@@ -208,12 +209,12 @@ fn relations_containing_way_reads_member_refs() {
 #[test]
 fn insert_node_into_way_splices_at_index_and_remove_node_from_way_undoes_it() {
     let mut layer = OsmLayer::new(LayerId(1));
-    let n1 = layer.add_node(40.0, -74.001);
-    let n2 = layer.add_node(40.0, -74.0);
+    let n1 = layer.add_node(LatLon::new(40.0, -74.001));
+    let n2 = layer.add_node(LatLon::new(40.0, -74.0));
     let way_id = layer.add_way(vec![n1, n2], Tags::new());
 
     let mid = layer
-        .insert_node_into_way(way_id, 1, 40.0, -74.0005)
+        .insert_node_into_way(way_id, 1, LatLon::new(40.0, -74.0005))
         .unwrap();
     let data = layer.get_osm_data().unwrap();
     let way = data.ways.get(&way_id).unwrap();

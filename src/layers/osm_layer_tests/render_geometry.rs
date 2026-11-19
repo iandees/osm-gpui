@@ -207,7 +207,7 @@ fn area_label_geometry_is_cached_and_follows_vertex_edits_only() {
 
     // Moving a corner rebuilds it, and the pole moves.
     layer
-        .commit_node_moves(&[(NodeId(3), 40.004, -73.997)])
+        .commit_node_moves(&[(NodeId(3), LatLon::new(40.004, -73.997))])
         .unwrap();
     validate(&layer, &mut cache);
     let g3 = layer.area_geom_for(&mut cache, key).unwrap();

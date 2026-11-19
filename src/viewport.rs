@@ -269,8 +269,11 @@ mod tests {
         assert_eq!(viewport.center().lon, 180.0);
         let (_, max_x, _, _) = viewport.mercator_view_bounds();
         assert!(max_x > crate::coordinates::MERCATOR_HALF_WORLD_M);
-        let placed =
-            crate::tiles::tiles_covering_placed(viewport.mercator_view_rect(), (0.0, 0.0), 5);
+        let placed = crate::tiles::tiles_covering_placed(
+            viewport.mercator_view_rect(),
+            Mercator::new(0.0, 0.0),
+            5,
+        );
         assert!(placed.iter().any(|t| t.world_copy == 1 && t.coord.x == 0));
     }
 

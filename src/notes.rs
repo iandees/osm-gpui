@@ -22,7 +22,7 @@ use std::time::Duration;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-use crate::coordinates::GeoBounds;
+use crate::coordinates::{GeoBounds, LatLon};
 use crate::http::{
     fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, Method, RetryPolicy,
 };
@@ -107,8 +107,7 @@ pub struct NoteComment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Note {
     pub id: i64,
-    pub lat: f64,
-    pub lon: f64,
+    pub at: LatLon,
     pub status: NoteStatus,
     pub created: Option<i64>,
     pub closed: Option<i64>,
@@ -261,8 +260,7 @@ pub fn parse_notes(xml: &str) -> Result<Vec<Note>, NotesError> {
                     };
                     note = Some(Note {
                         id: 0,
-                        lat,
-                        lon,
+                        at: LatLon::new(lat, lon),
                         status: NoteStatus::Open,
                         created: None,
                         closed: None,
@@ -385,7 +383,7 @@ pub fn fetch_notes_with(
 /// A write to the notes API.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NoteWrite {
-    Create { lat: f64, lon: f64 },
+    Create { at: LatLon },
     Comment(i64),
     Close(i64),
     Reopen(i64),
@@ -415,8 +413,10 @@ pub fn write_url(base_url: &str, write: NoteWrite, text: &str) -> String {
         }
     };
     match write {
-        NoteWrite::Create { lat, lon } => format!(
-            "{b}/api/0.6/notes?lat={lat:.7}&lon={lon:.7}&text={}",
+        NoteWrite::Create { at } => format!(
+            "{b}/api/0.6/notes?lat={:.7}&lon={:.7}&text={}",
+            at.lat,
+            at.lon,
             q(text)
         ),
         NoteWrite::Comment(id) => with_text(format!("{b}/api/0.6/notes/{id}/comment")),
@@ -727,7 +727,7 @@ second line</text>
         assert_eq!(notes.len(), 2);
         let a = &notes[0];
         assert_eq!(a.id, 101);
-        assert_eq!((a.lat, a.lon), (51.5, -0.1234567));
+        assert_eq!(a.at, LatLon::new(51.5, -0.1234567));
         assert_eq!(a.status, NoteStatus::Open);
         assert!(a.is_open());
         assert_eq!(a.comments.len(), 3);
@@ -879,8 +879,7 @@ second line</text>
             write_url(
                 BASE,
                 NoteWrite::Create {
-                    lat: -48.0,
-                    lon: -123.0
+                    at: LatLon::new(-48.0, -123.0)
                 },
                 nasty
             ),
@@ -901,7 +900,9 @@ second line</text>
     fn each_write_posts_with_the_bearer_token_and_returns_the_note() {
         for (write, text, status, path) in [
             (
-                NoteWrite::Create { lat: 1.0, lon: 2.0 },
+                NoteWrite::Create {
+                    at: LatLon::new(1.0, 2.0),
+                },
                 "new",
                 "open",
                 "notes?lat=1.0000000&lon=2.0000000&text=new",
@@ -933,7 +934,9 @@ second line</text>
         let client = FakeClient::new(vec![]);
         for write in [
             NoteWrite::Comment(1),
-            NoteWrite::Create { lat: 0.0, lon: 0.0 },
+            NoteWrite::Create {
+                at: LatLon::new(0.0, 0.0),
+            },
         ] {
             let err = write_note_with(&client, BASE, "t", write, "  \n ").unwrap_err();
             assert_eq!(err.status(), Some(400));

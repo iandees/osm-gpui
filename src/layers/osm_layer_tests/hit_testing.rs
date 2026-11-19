@@ -1,6 +1,7 @@
 //! Point, segment, rectangle and interior hit tests, and snapping to a way.
 
 use super::{data_with, empty_tags, viewport_centered_on};
+use crate::coordinates::LatLon;
 use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::EditableLayer;
@@ -388,7 +389,7 @@ fn snap_to_way_on_line_returns_exact_click_point() {
     let viewport = viewport_centered_on(center_lat, center_lon);
     let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    let (way_id, a, b, idx, lat, lon) = layer
+    let (way_id, a, b, idx, LatLon { lat, lon }) = layer
         .snap_to_way(&viewport, point(px(400.0), px(300.0)), 6.0)
         .expect("expected a snap hit");
     assert_eq!((way_id, a, b, idx), (WayId(10), NodeId(1), NodeId(2), 0));
@@ -425,7 +426,7 @@ fn snap_to_way_off_line_projects_onto_segment() {
     let layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     // 3px above the (horizontal) line, within the 6px tolerance.
-    let (way_id, a, b, idx, lat, lon) = layer
+    let (way_id, a, b, idx, LatLon { lat, lon }) = layer
         .snap_to_way(&viewport, point(px(403.0), px(297.0)), 6.0)
         .expect("expected a snap hit");
     assert_eq!((way_id, a, b, idx), (WayId(10), NodeId(1), NodeId(2), 0));

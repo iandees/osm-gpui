@@ -77,5 +77,5 @@ pub(crate) struct SplitTarget {
     pub(crate) layer_id: osm_gpui::layers::LayerId,
     pub(crate) way: osm_gpui::ids::WayId,
     pub(crate) segment: usize,
-    pub(crate) at: (f64, f64),
+    pub(crate) at: osm_gpui::coordinates::LatLon,
 }

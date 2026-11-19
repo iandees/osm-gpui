@@ -15,6 +15,7 @@
 //!   after it was applied (the response is lost: dropped connection, 5xx).
 
 use super::*;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::http::{Body, HttpClient, HttpError, HttpRequest, HttpResponse, Method};
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::osm_upload::{run_upload, ConflictKind, UploadConflict, UploadError, UploadFailure};
@@ -629,7 +630,7 @@ fn a_lost_response_after_the_server_applied_the_diff_is_reported_as_unknown_and_
     with_session(cx, data, move |s| {
         let before = server.visible_nodes();
         s.view.set_selection(Vec::new());
-        s.editable_mut().add_node(40.5, -74.5);
+        s.editable_mut().add_node(LatLon::new(40.5, -74.5));
         s.set_tag(N, 1, "name", "mine");
         assert_eq!(s.counts(), (1, 1, 0));
         server.fail_uploads(vec![Some(Fault::DropAfterApply)]);
@@ -672,7 +673,7 @@ fn sending_again_after_an_unknown_outcome_duplicates_creates_and_conflicts_on_mo
     let server = Server::holding(&data);
     with_session(cx, data, move |s| {
         let before = server.visible_nodes();
-        s.editable_mut().add_node(40.5, -74.5);
+        s.editable_mut().add_node(LatLon::new(40.5, -74.5));
         server.fail_uploads(vec![Some(Fault::DropAfterApply)]);
         let first = upload(s, &server, CAP);
         assert!(matches!(
@@ -701,7 +702,8 @@ fn a_refusal_in_a_later_changeset_keeps_the_accepted_ones_and_retry_sends_only_t
     with_session(cx, data, move |s| {
         let before = server.visible_nodes();
         for i in 0..5 {
-            s.editable_mut().add_node(40.5 + i as f64 * 0.001, -74.5);
+            s.editable_mut()
+                .add_node(LatLon::new(40.5 + i as f64 * 0.001, -74.5));
         }
         assert_eq!(s.counts(), (5, 0, 0));
         // Changesets of 2, 2 and 1. The second is refused with 429 (before
@@ -742,7 +744,8 @@ fn a_lost_response_in_a_later_changeset_leaves_that_chunk_pending_and_the_rest_u
     with_session(cx, data, move |s| {
         let before = server.visible_nodes();
         for i in 0..5 {
-            s.editable_mut().add_node(40.5 + i as f64 * 0.001, -74.5);
+            s.editable_mut()
+                .add_node(LatLon::new(40.5 + i as f64 * 0.001, -74.5));
         }
         server.fail_uploads(vec![None, Some(Fault::DropAfterApply)]);
         let up = upload(s, &server, 2);
@@ -1009,10 +1012,10 @@ fn big_net(count: i64) -> OsmData {
 }
 
 fn nudge_all(s: &mut Session, count: i64) {
-    let moves: Vec<(NodeId, f64, f64)> = (1..=count)
+    let moves: Vec<(NodeId, LatLon)> = (1..=count)
         .map(|id| {
-            let (lat, lon) = s.editable().node_lat_lon(NodeId(id)).unwrap();
-            (NodeId(id), lat + 0.01, lon + 0.01)
+            let LatLon { lat, lon } = s.editable().node_lat_lon(NodeId(id)).unwrap();
+            (NodeId(id), LatLon::new(lat + 0.01, lon + 0.01))
         })
         .collect();
     s.editable_mut().commit_node_moves(&moves).unwrap();
@@ -1272,7 +1275,7 @@ fn after_an_unknown_outcome_the_dialog_asks_for_a_check_and_offers_no_plain_retr
             view.active_layer = Some(layer);
             let dialog = cx.new(|cx| UploadDialog::new(window, cx, Vec::new()));
             let mut s = Session { view, cx, layer };
-            s.editable_mut().add_node(40.5, -74.5);
+            s.editable_mut().add_node(LatLon::new(40.5, -74.5));
             server.fail_uploads(vec![Some(Fault::DropAfterApply)]);
             let error = upload(&mut s, &server, CAP)
                 .failure
@@ -1367,7 +1370,8 @@ fn a_token_failure_between_changesets_stops_after_the_accepted_part_and_a_retry_
     with_session(cx, data, move |s| {
         let before = server.visible_nodes();
         for i in 0..5 {
-            s.editable_mut().add_node(40.5 + i as f64 * 0.001, -74.5);
+            s.editable_mut()
+                .add_node(LatLon::new(40.5 + i as f64 * 0.001, -74.5));
         }
         let mut calls = 0;
         let up = upload_with_token(s, &server, 2, &mut || {
@@ -1409,7 +1413,8 @@ fn an_unknown_outcome_on_part_two_stops_without_applying_or_resending_it(cx: &mu
     let server = Server::holding(&data);
     with_session(cx, data, move |s| {
         for i in 0..5 {
-            s.editable_mut().add_node(40.5 + i as f64 * 0.001, -74.5);
+            s.editable_mut()
+                .add_node(LatLon::new(40.5 + i as f64 * 0.001, -74.5));
         }
         server.fail_uploads(vec![None, Some(Fault::DropAfterApply)]);
         let up = upload_with_token(s, &server, 2, &mut || Ok("tok".to_string()));
@@ -1431,8 +1436,8 @@ fn a_refusal_on_part_two_stops_as_refused_with_part_one_applied(cx: &mut TestApp
     let server = Server::holding(&data);
     with_session(cx, data, move |s| {
         edit_tag(s, N, 1, "name", "mine");
-        s.editable_mut().add_node(40.5, -74.5);
-        s.editable_mut().add_node(40.6, -74.5);
+        s.editable_mut().add_node(LatLon::new(40.5, -74.5));
+        s.editable_mut().add_node(LatLon::new(40.6, -74.5));
         server.someone_else_edits_node(1);
         // Two creates, then the modify of node 1.
         let up = upload_with_token(s, &server, 2, &mut || Ok("tok".to_string()));
@@ -1508,7 +1513,7 @@ fn a_crash_after_part_two_was_accepted_but_before_it_was_applied_is_flagged_on_r
                 .as_editable_mut()
                 .unwrap();
             for i in 0..5 {
-                editable.add_node(40.5 + i as f64 * 0.001, -74.5);
+                editable.add_node(LatLon::new(40.5 + i as f64 * 0.001, -74.5));
             }
             view.autosave_now(cx);
             let diff = view
@@ -1713,7 +1718,7 @@ fn a_crash_while_the_request_is_in_flight_leaves_the_changeset_id_and_the_object
                 .as_editable_mut()
                 .unwrap();
             for i in 0..3 {
-                editable.add_node(40.5 + i as f64 * 0.001, -74.5);
+                editable.add_node(LatLon::new(40.5 + i as f64 * 0.001, -74.5));
             }
             view.autosave_now(cx);
             let diff = view
@@ -1838,7 +1843,7 @@ fn two_crashed_sessions_with_markers_are_both_carried_and_both_warned_about(
                 .unwrap()
                 .as_editable_mut()
                 .unwrap()
-                .add_node(40.5, -74.5);
+                .add_node(LatLon::new(40.5, -74.5));
             view.autosave_now(cx);
             view.autosave.as_ref().unwrap().session_dir().unwrap()
         })

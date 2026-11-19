@@ -1135,6 +1135,7 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinates::LatLon;
     use crate::layers::osm_layer::OsmLayer;
     use crate::layers::{EditableLayer, LayerId};
     use crate::osm::{MemberType, OsmMember, OsmNode, OsmRelation, OsmWay};
@@ -1235,7 +1236,7 @@ mod tests {
         let mut layer = OsmLayer::new_with_data(LayerId(1), "Edited", Arc::new(downloaded()));
         // Geometry and tags of existing objects.
         layer
-            .commit_node_moves(&[(NodeId(2), 40.00123456789, -74.00012345)])
+            .commit_node_moves(&[(NodeId(2), LatLon::new(40.00123456789, -74.00012345))])
             .unwrap();
         layer
             .set_tag(FeatureKind::Way, 100, "name", "Main Street")
@@ -1245,9 +1246,9 @@ mod tests {
             .unwrap();
         layer.remove_tag(FeatureKind::Node, 3, "highway").unwrap();
         // New objects.
-        let a = layer.add_node(40.02, -74.02);
-        let b = layer.add_node(40.021, -74.021);
-        let c = layer.add_node(40.022, -74.019);
+        let a = layer.add_node(LatLon::new(40.02, -74.02));
+        let b = layer.add_node(LatLon::new(40.021, -74.021));
+        let c = layer.add_node(LatLon::new(40.022, -74.019));
         assert!(a < NodeId(0) && b < NodeId(0) && c < NodeId(0));
         let new_way = layer.add_way(vec![a, b, c, a], Tags::from([("building", "house")]));
         assert!(new_way < WayId(0));
@@ -1283,7 +1284,7 @@ mod tests {
         layer.delete_feature(FeatureKind::Way, 101).unwrap();
         layer.delete_feature(FeatureKind::Node, 9).unwrap();
         // A node created and deleted again never existed on the server.
-        let gone = layer.add_node(41.0, -75.0);
+        let gone = layer.add_node(LatLon::new(41.0, -75.0));
         layer.delete_feature(FeatureKind::Node, gone.get()).unwrap();
         // Undone work: deleted and restored, changed and changed back.
         let snap = layer.delete_feature(FeatureKind::Node, 8).unwrap();
@@ -1534,7 +1535,7 @@ mod tests {
         layer
             .set_tag(FeatureKind::Way, 100, "name", "Changed")
             .unwrap();
-        let a = layer.add_node(40.5, -74.5);
+        let a = layer.add_node(LatLon::new(40.5, -74.5));
         layer
             .set_tag(FeatureKind::Node, 9, "name", "Second chunk")
             .unwrap();
@@ -2421,7 +2422,7 @@ mod tests {
                 .unwrap();
         }
         for i in 0..100 {
-            layer.add_node(41.0 + i as f64 * 1e-4, -75.0);
+            layer.add_node(LatLon::new(41.0 + i as f64 * 1e-4, -75.0));
         }
 
         let t = Instant::now();

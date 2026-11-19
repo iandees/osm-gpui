@@ -2,6 +2,7 @@
 //! each one the layer must hold exactly what a layer built from scratch on
 //! the same data holds.
 
+use crate::coordinates::LatLon;
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditError, EditableLayer, LayerId};
@@ -323,20 +324,20 @@ fn all_kinds_of_tag_edit_target() -> [(FeatureKind, i64); 8] {
 fn commit_node_moves_matches_a_fresh_rebuild() {
     let mut l = start();
     let there = [
-        (NodeId(3), 40.0004, -73.9975),
-        (NodeId(22), 40.0125, -73.9875),
-        (NodeId(7), 40.0011, -74.0003),
-        (NodeId(8), 40.0013, -73.9990),
-        (NodeId(1), 39.9996, -74.0004),
+        (NodeId(3), LatLon::new(40.0004, -73.9975)),
+        (NodeId(22), LatLon::new(40.0125, -73.9875)),
+        (NodeId(7), LatLon::new(40.0011, -74.0003)),
+        (NodeId(8), LatLon::new(40.0013, -73.9990)),
+        (NodeId(1), LatLon::new(39.9996, -74.0004)),
     ];
     l.commit_node_moves(&there).unwrap();
     assert_fresh(&l, "after moving five nodes");
     let back = [
-        (NodeId(3), 40.0, -73.998),
-        (NodeId(22), 40.012, -73.988),
-        (NodeId(7), 40.001, -74.0),
-        (NodeId(8), 40.001, -73.999),
-        (NodeId(1), 40.0, -74.0),
+        (NodeId(3), LatLon::new(40.0, -73.998)),
+        (NodeId(22), LatLon::new(40.012, -73.988)),
+        (NodeId(7), LatLon::new(40.001, -74.0)),
+        (NodeId(8), LatLon::new(40.001, -73.999)),
+        (NodeId(1), LatLon::new(40.0, -74.0)),
     ];
     l.commit_node_moves(&back).unwrap();
     assert_fresh(&l, "after moving them back");
@@ -413,13 +414,15 @@ fn tag_edits_match_a_fresh_rebuild_on_every_kind_of_target() {
 #[test]
 fn create_node_matches_a_fresh_rebuild() {
     let mut l = start();
-    let a = l.create_node(40.002, -73.999, None).unwrap();
+    let a = l.create_node(LatLon::new(40.002, -73.999), None).unwrap();
     assert_fresh(&l, "after a node with a fresh id");
-    let b = l.create_node(40.003, -73.997, Some(NodeId(-500))).unwrap();
+    let b = l
+        .create_node(LatLon::new(40.003, -73.997), Some(NodeId(-500)))
+        .unwrap();
     assert_eq!(b, NodeId(-500));
     assert_fresh(&l, "after a node with a forced id");
     assert_eq!(
-        l.create_node(40.0, -74.0, Some(a)),
+        l.create_node(LatLon::new(40.0, -74.0), Some(a)),
         Err(EditError::IdInUse(FeatureKind::Node, a.get()))
     );
     assert_fresh(&l, "after refusing an id that is taken");
@@ -428,18 +431,18 @@ fn create_node_matches_a_fresh_rebuild() {
 #[test]
 fn add_node_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.add_node(40.002, -73.999);
+    l.add_node(LatLon::new(40.002, -73.999));
     assert_fresh(&l, "after one node");
-    l.add_node(40.2, -73.5);
+    l.add_node(LatLon::new(40.2, -73.5));
     assert_fresh(&l, "after a node far outside the data");
 }
 
 #[test]
 fn add_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    let a = l.add_node(40.002, -73.999);
-    let b = l.add_node(40.002, -73.996);
-    let c = l.add_node(40.004, -73.996);
+    let a = l.add_node(LatLon::new(40.002, -73.999));
+    let b = l.add_node(LatLon::new(40.002, -73.996));
+    let c = l.add_node(LatLon::new(40.004, -73.996));
     l.add_way(vec![NodeId(1), a], Tags::new());
     assert_fresh(&l, "after an untagged open way off the road");
     let ring = l.add_way(vec![a, b, c, a], Tags::from([("building", "yes")]));
@@ -472,16 +475,16 @@ fn extend_way_matches_a_fresh_rebuild() {
 #[test]
 fn insert_node_into_way_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.insert_node_into_way(WayId(100), 1, 40.0003, -73.9985)
+    l.insert_node_into_way(WayId(100), 1, LatLon::new(40.0003, -73.9985))
         .unwrap();
     assert_fresh(&l, "into the middle of a road");
-    l.insert_node_into_way(WayId(102), 2, 40.0025, -73.9965)
+    l.insert_node_into_way(WayId(102), 2, LatLon::new(40.0025, -73.9965))
         .unwrap();
     assert_fresh(&l, "into a closed ring");
-    l.insert_node_into_way(WayId(103), 1, 40.0101, -73.9990)
+    l.insert_node_into_way(WayId(103), 1, LatLon::new(40.0101, -73.9990))
         .unwrap();
     assert_fresh(&l, "into a multipolygon member");
-    l.insert_node_into_way(WayId(101), 3, 40.003, -73.998)
+    l.insert_node_into_way(WayId(101), 3, LatLon::new(40.003, -73.998))
         .unwrap();
     assert_fresh(&l, "at the end of a road");
 }
@@ -745,7 +748,7 @@ fn purge_and_restore_purged_match_a_fresh_rebuild() {
 #[test]
 fn merge_download_matches_a_fresh_rebuild() {
     let mut l = start();
-    l.commit_node_moves(&[(NodeId(3), 40.0004, -73.9975)])
+    l.commit_node_moves(&[(NodeId(3), LatLon::new(40.0004, -73.9975))])
         .unwrap();
     l.set_tag(FeatureKind::Way, 102, "name", "mine").unwrap();
 
@@ -795,7 +798,7 @@ fn same_tables(a: &OsmLayer, b: &OsmLayer, step: &str) {
 fn set_stylesheet_matches_a_full_rebuild_under_that_stylesheet() {
     let sheet = Arc::new(crate::style::Stylesheet::parse(OTHER_CSS).unwrap());
     let mut l = start();
-    l.create_node(40.002, -73.999, None).unwrap();
+    l.create_node(LatLon::new(40.002, -73.999), None).unwrap();
     l.set_tag(FeatureKind::Way, 101, "building", "yes").unwrap();
     l.delete_feature(FeatureKind::Way, 106).unwrap();
     l.set_stylesheet(sheet.clone());

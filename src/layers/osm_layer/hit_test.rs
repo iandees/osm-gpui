@@ -180,7 +180,7 @@ impl OsmLayer {
     }
 
     /// Like `hit_test_segment`, but also returns the nearest point on the
-    /// winning segment as `(lat, lon)` — the coordinates a snapped node
+    /// winning segment as a position — the coordinates a snapped node
     /// should adopt. Shares the same rtree query and per-segment loop; see
     /// `hit_test_segment`'s doc comment for the shared parameters.
     pub fn snap_to_way(
@@ -188,7 +188,7 @@ impl OsmLayer {
         viewport: &Viewport,
         screen_pt: Point<Pixels>,
         tol_px: f32,
-    ) -> Option<(WayId, NodeId, NodeId, usize, f64, f64)> {
+    ) -> Option<(WayId, NodeId, NodeId, usize, LatLon)> {
         self.snap_to_way_where(viewport, screen_pt, tol_px, |_| true)
     }
 
@@ -200,7 +200,7 @@ impl OsmLayer {
         screen_pt: Point<Pixels>,
         tol_px: f32,
         accept: impl Fn(WayId) -> bool,
-    ) -> Option<(WayId, NodeId, NodeId, usize, f64, f64)> {
+    ) -> Option<(WayId, NodeId, NodeId, usize, LatLon)> {
         self.store.osm_data.as_ref()?;
         let pad = px(tol_px * 4.0);
         let Mercator { x: ex1, y: ey1 } =
@@ -240,8 +240,7 @@ impl OsmLayer {
             }
         }
         best.map(|(_, way_id, a, b, idx, nearest)| {
-            let LatLon { lat, lon } = viewport.screen_to_geo(nearest);
-            (way_id, a, b, idx, lat, lon)
+            (way_id, a, b, idx, viewport.screen_to_geo(nearest))
         })
     }
 }
@@ -271,7 +270,7 @@ impl OsmLayer {
         if viewport.zoom_level() >= VERTEX_MIN_ZOOM {
             let mut marker_hits: Vec<HitCandidate> = Vec::new();
             for (&relation_id, r) in &self.derived.mp.restrictions {
-                let sp = viewport.mercator_to_screen(Mercator::new(r.x, r.y));
+                let sp = viewport.mercator_to_screen(r.at);
                 if !is_point_valid(sp) {
                     continue;
                 }

@@ -139,9 +139,8 @@ fn copy_and_paste_features_is_one_undo_step_with_the_same_ids_on_redo(cx: &mut T
                 .collect();
             let (mut lo, mut hi) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
             for id in &pasted_nodes {
-                let (lat, lon) = node_position(view, *id);
                 let Mercator { x, y } =
-                    osm_gpui::coordinates::lat_lon_to_mercator(LatLon::new(lat, lon));
+                    osm_gpui::coordinates::lat_lon_to_mercator(node_position(view, *id));
                 lo = (lo.0.min(x), lo.1.min(y));
                 hi = (hi.0.max(x), hi.1.max(y));
             }
@@ -231,7 +230,7 @@ fn duplicate_pastes_at_the_source_and_leaves_the_clipboard_alone(cx: &mut TestAp
                 .unwrap()
                 .as_editable()
                 .unwrap();
-            let at = |way: i64| -> Vec<(f64, f64)> {
+            let at = |way: i64| -> Vec<LatLon> {
                 editable
                     .way_node_ids(WayId(way))
                     .unwrap()
@@ -260,8 +259,7 @@ fn paste_at_source_does_not_move_and_works_across_layers(cx: &mut TestAppContext
             let first = view.active_layer.unwrap();
             select(view, Way, &[101]);
             view.run_selection_action("copy_features", cx);
-            let original: Vec<(f64, f64)> =
-                [3, 4, 5].iter().map(|n| node_position(view, *n)).collect();
+            let original: Vec<LatLon> = [3, 4, 5].iter().map(|n| node_position(view, *n)).collect();
 
             // A second, empty data layer becomes the active one.
             let second = view.layer_manager.alloc_id();
@@ -286,8 +284,7 @@ fn paste_at_source_does_not_move_and_works_across_layers(cx: &mut TestAppContext
             };
             assert_eq!(pasted.layer_id, second);
             let nodes = way_nodes(view, second, pasted.id);
-            let positions: Vec<(f64, f64)> =
-                nodes.iter().map(|n| node_position(view, *n)).collect();
+            let positions: Vec<LatLon> = nodes.iter().map(|n| node_position(view, *n)).collect();
             assert_eq!(positions, original);
             // The step belongs to the second layer only.
             assert_eq!(view.undo_stack.actions[0].layers(), vec![second]);

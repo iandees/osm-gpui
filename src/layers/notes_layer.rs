@@ -6,7 +6,6 @@
 //! `as_editable`/`is_modified`/`autosave_snapshot`); its pins are found by
 //! `MapLayer::hit_test_point` here and by nothing else.
 
-use crate::coordinates::LatLon;
 use gpui::{AnyElement, Bounds, Pixels, Point, Window};
 
 use crate::layers::paint::{circle_outline, paint_polygon, PaintFrame};
@@ -75,7 +74,7 @@ fn hit_test(store: &NoteStore, viewport: &Viewport, pos: Point<Pixels>) -> Optio
         // Drawn open-last, so test that way round.
         let in_draw_order: Vec<&Note> = draw_order(&s.notes);
         in_draw_order.into_iter().rev().find_map(|n| {
-            let p = viewport.geo_to_screen(LatLon::new(n.lat, n.lon));
+            let p = viewport.geo_to_screen(n.at);
             let (x, y) = (p.x.as_f32(), p.y.as_f32());
             let near_head = {
                 let (dx, dy) = (mx - x, my - (y - HEAD_OFFSET));
@@ -134,7 +133,7 @@ impl MapLayer for NotesLayer {
         let (w, h) = frame.view_size();
         self.store.with(|s| {
             for n in draw_order(&s.notes) {
-                let (x, y) = frame.local_geo(n.lat, n.lon);
+                let (x, y) = frame.local_geo(n.at.lat, n.at.lon);
                 if !(x.is_finite() && y.is_finite())
                     || x < -20.0
                     || y < -4.0
@@ -177,14 +176,14 @@ impl MapLayer for NotesLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinates::LatLon;
     use crate::notes::{CommentAction, NoteComment, NoteStatus};
     use gpui::{point, px, size};
 
     fn note(id: i64, lat: f64, lon: f64, status: NoteStatus) -> Note {
         Note {
             id,
-            lat,
-            lon,
+            at: LatLon::new(lat, lon),
             status,
             created: None,
             closed: None,

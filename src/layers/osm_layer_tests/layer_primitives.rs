@@ -3,6 +3,7 @@
 //! `restore_purged`, `set_base_version`, `adopt_server_element`,
 //! `forget_local_delete` and `apply_chunk_result`.
 
+use crate::coordinates::LatLon;
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::osm_layer::OsmLayer;
 use crate::layers::{EditableLayer, LayerId};
@@ -113,10 +114,11 @@ fn has_pending_edit_is_false_for_everything_just_loaded_and_for_unknown_ids() {
 fn has_pending_edit_follows_each_kind_of_edit_and_clears_when_the_edit_is_undone() {
     let mut l = layer();
 
-    l.commit_node_moves(&[(NodeId(1), 40.5, -74.5)]).unwrap();
+    l.commit_node_moves(&[(NodeId(1), LatLon::new(40.5, -74.5))])
+        .unwrap();
     assert!(l.has_pending_edit(Node, 1));
     assert!(!l.has_pending_edit(Node, 2), "a neighbour is not edited");
-    l.commit_node_moves(&[(NodeId(1), 40.000, -74.000)])
+    l.commit_node_moves(&[(NodeId(1), LatLon::new(40.000, -74.000))])
         .unwrap();
     assert!(!l.has_pending_edit(Node, 1), "moved back to the baseline");
 
@@ -133,7 +135,7 @@ fn has_pending_edit_follows_each_kind_of_edit_and_clears_when_the_edit_is_undone
         .unwrap();
     assert!(!l.has_pending_edit(Relation, 50));
 
-    let created = l.add_node(40.2, -74.2);
+    let created = l.add_node(LatLon::new(40.2, -74.2));
     assert!(l.has_pending_edit(Node, created.get()), "a created node");
     let way = l.add_way(vec![created, NodeId(1)], Tags::new());
     assert!(l.has_pending_edit(Way, way.get()), "a created way");
@@ -223,7 +225,10 @@ fn restore_purged_puts_everything_back_in_place_and_in_the_baseline() {
 
     l.restore_purged(purged);
     assert!(l.has_feature(Node, 4));
-    assert_eq!(l.node_lat_lon(NodeId(4)), Some((40.010, -74.010)));
+    assert_eq!(
+        l.node_lat_lon(NodeId(4)),
+        Some(LatLon::new(40.010, -74.010))
+    );
     assert_eq!(
         l.relation_ids(),
         vec![RelationId(50), RelationId(51), RelationId(52)],
@@ -333,7 +338,8 @@ fn restore_purged_after_a_way_was_purged_rebuilds_its_geometry() {
 #[test]
 fn set_base_version_moves_the_base_of_a_pending_edit_and_keeps_the_edit() {
     let mut l = layer();
-    l.commit_node_moves(&[(NodeId(1), 40.5, -74.5)]).unwrap();
+    l.commit_node_moves(&[(NodeId(1), LatLon::new(40.5, -74.5))])
+        .unwrap();
     assert!(l.set_base_version(Node, 1, 9));
     let diff = l.diff_for_upload();
     assert_eq!(diff.modified_nodes.len(), 1);
@@ -392,11 +398,12 @@ fn server_with_node(id: i64, lat: f64, version: i32) -> ServerElement {
 #[test]
 fn adopting_the_servers_node_drops_the_local_change() {
     let mut l = layer();
-    l.commit_node_moves(&[(NodeId(1), 40.5, -74.5)]).unwrap();
+    l.commit_node_moves(&[(NodeId(1), LatLon::new(40.5, -74.5))])
+        .unwrap();
     assert!(l.is_modified());
 
     assert!(l.adopt_server_element(Node, 1, server_with_node(1, 40.123, 6)));
-    assert_eq!(l.node_lat_lon(NodeId(1)), Some((40.123, -74.0)));
+    assert_eq!(l.node_lat_lon(NodeId(1)), Some(LatLon::new(40.123, -74.0)));
     assert_eq!(l.feature_version(Node, 1), Some(6));
     assert!(l.diff_for_upload().is_empty(), "no edit of it is left");
     assert!(!l.is_modified(), "nothing left to upload");
@@ -428,7 +435,8 @@ fn adopting_a_server_way_replaces_it_and_its_nodes_but_keeps_other_node_edits() 
     let mut l = layer();
     l.set_way_nodes(WayId(10), vec![NodeId(1), NodeId(2)])
         .unwrap();
-    l.commit_node_moves(&[(NodeId(3), 40.9, -74.9)]).unwrap();
+    l.commit_node_moves(&[(NodeId(3), LatLon::new(40.9, -74.9))])
+        .unwrap();
 
     let mut theirs = OsmData {
         nodes: HashMap::new(),
@@ -455,10 +463,14 @@ fn adopting_a_server_way_replaces_it_and_its_nodes_but_keeps_other_node_edits() 
         Some(vec![NodeId(1), NodeId(2), NodeId(3)])
     );
     assert_eq!(l.feature_version(Way, 10), Some(6));
-    assert_eq!(l.node_lat_lon(NodeId(2)), Some((40.0011, -74.0)), "theirs");
+    assert_eq!(
+        l.node_lat_lon(NodeId(2)),
+        Some(LatLon::new(40.0011, -74.0)),
+        "theirs"
+    );
     assert_eq!(
         l.node_lat_lon(NodeId(3)),
-        Some((40.9, -74.9)),
+        Some(LatLon::new(40.9, -74.9)),
         "the user's own move of node 3 stays"
     );
     let diff = l.diff_for_upload();
@@ -484,14 +496,15 @@ fn adopting_a_server_relation_replaces_it_in_data_and_baseline() {
 #[test]
 fn adopting_an_element_the_server_data_does_not_hold_is_false_and_changes_nothing() {
     let mut l = layer();
-    l.commit_node_moves(&[(NodeId(1), 40.5, -74.5)]).unwrap();
+    l.commit_node_moves(&[(NodeId(1), LatLon::new(40.5, -74.5))])
+        .unwrap();
     let before = counts(&l);
     assert!(!l.adopt_server_element(Node, 1, server_with_node(2, 40.0, 6)));
     assert!(!l.adopt_server_element(Way, 10, server_with_node(1, 40.0, 6)));
     assert!(!l.adopt_server_element(Relation, 50, server_with_node(1, 40.0, 6)));
     assert!(!l.adopt_server_element(Node, 999, ServerElement::Gone));
     assert_eq!(counts(&l), before);
-    assert_eq!(l.node_lat_lon(NodeId(1)), Some((40.5, -74.5)));
+    assert_eq!(l.node_lat_lon(NodeId(1)), Some(LatLon::new(40.5, -74.5)));
 }
 
 #[test]
@@ -522,7 +535,8 @@ fn forgetting_a_local_delete_covers_ways_and_relations() {
 #[test]
 fn forgetting_a_delete_of_something_not_deleted_here_does_nothing() {
     let mut l = layer();
-    l.commit_node_moves(&[(NodeId(1), 40.5, -74.5)]).unwrap();
+    l.commit_node_moves(&[(NodeId(1), LatLon::new(40.5, -74.5))])
+        .unwrap();
     let before = counts(&l);
     assert!(!l.forget_local_delete(Node, 1), "present, only edited");
     assert!(!l.forget_local_delete(Node, 999), "unknown");
@@ -567,11 +581,12 @@ fn answer_for(chunk: &crate::layers::diff::LayerDiff) -> UploadResult {
 /// node and relation, and a created node, way and relation.
 fn edited_layer() -> OsmLayer {
     let mut l = layer();
-    l.commit_node_moves(&[(NodeId(1), 40.5, -74.5)]).unwrap();
+    l.commit_node_moves(&[(NodeId(1), LatLon::new(40.5, -74.5))])
+        .unwrap();
     l.set_tag(Way, 10, "name", "Main").unwrap();
     l.delete_relation(RelationId(51)).unwrap();
     l.delete_feature(Node, 4).unwrap();
-    let n = l.add_node(40.2, -74.2);
+    let n = l.add_node(LatLon::new(40.2, -74.2));
     let w = l.add_way(vec![n, NodeId(3)], Tags::from([("highway", "path")]));
     l.create_relation(Tags::from([("type", "route")]), vec![way_member(w.get())])
         .unwrap();
@@ -643,7 +658,7 @@ fn a_partial_chunk_confirms_only_its_own_edits() {
     assert!(!l.is_locally_deleted(Node, 4));
     assert_eq!(
         l.node_lat_lon(NodeId(1)),
-        Some((40.5, -74.5)),
+        Some(LatLon::new(40.5, -74.5)),
         "the move is kept"
     );
 }

@@ -2,6 +2,7 @@
 //! the ops an edit performed.
 
 use super::fresh_rebuild::{assert_fresh, layer};
+use crate::coordinates::LatLon;
 use crate::edit_ops::{replay, EditOp, Recording};
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::osm_layer::OsmLayer;
@@ -58,7 +59,7 @@ fn put_and_remove_a_node() {
             id: -7,
             tags: Tags::from([("a", "b")]),
             way_nodes: Vec::new(),
-            node_lat_lon: Some((40.5, -74.5)),
+            node_lat_lon: Some(LatLon::new(40.5, -74.5)),
             version: 0,
         },
     });
@@ -69,7 +70,7 @@ fn put_and_remove_a_node() {
             id: 8,
             tags: Tags::new(),
             way_nodes: Vec::new(),
-            node_lat_lon: Some((40.001, -73.999)),
+            node_lat_lon: Some(LatLon::new(40.001, -73.999)),
             version: 1,
         },
     });
@@ -79,7 +80,7 @@ fn put_and_remove_a_node() {
             id: 7,
             tags: Tags::from([("amenity", "bench")]),
             way_nodes: Vec::new(),
-            node_lat_lon: Some((40.001, -74.0)),
+            node_lat_lon: Some(LatLon::new(40.001, -74.0)),
             version: 1,
         },
     });
@@ -119,8 +120,16 @@ fn put_and_remove_a_relation_keeps_its_list_position() {
 fn move_nodes_set_tag_way_nodes_members_and_reverse() {
     round_trips(EditOp::MoveNodes {
         moves: vec![
-            (NodeId(3), (40.0, -73.998), (40.01, -73.99)),
-            (NodeId(22), (40.012, -73.988), (40.02, -73.98)),
+            (
+                NodeId(3),
+                LatLon::new(40.0, -73.998),
+                LatLon::new(40.01, -73.99),
+            ),
+            (
+                NodeId(22),
+                LatLon::new(40.012, -73.988),
+                LatLon::new(40.02, -73.98),
+            ),
         ],
     });
     for (kind, id, before, after) in [
@@ -177,8 +186,8 @@ fn touches_names_what_an_op_changes() {
     assert_eq!(reverse.touches(LayerId(4)), vec![at(FeatureKind::Way, 3)]);
     let moves = EditOp::MoveNodes {
         moves: vec![
-            (NodeId(1), (0.0, 0.0), (1.0, 1.0)),
-            (NodeId(2), (0.0, 0.0), (1.0, 1.0)),
+            (NodeId(1), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)),
+            (NodeId(2), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)),
         ],
     };
     assert_eq!(
@@ -193,10 +202,10 @@ fn a_recording_replays_both_ways_and_rolls_back() {
     let before = data(&l);
     let ops = {
         let mut rec = Recording::new(LayerId(1), &mut l);
-        let a = rec.add_node(40.5, -74.5);
-        let b = rec.add_node(40.6, -74.6);
+        let a = rec.add_node(LatLon::new(40.5, -74.5));
+        let b = rec.add_node(LatLon::new(40.6, -74.6));
         let way = rec.add_way(vec![a, b], Tags::from([("highway", "path")]));
-        rec.insert_node_into_way(WayId(100), 1, 40.1, -74.1)
+        rec.insert_node_into_way(WayId(100), 1, LatLon::new(40.1, -74.1))
             .unwrap();
         rec.extend_way(way, NodeId(8)).unwrap();
         rec.remove_node_from_way(WayId(100), 3).unwrap();
@@ -205,7 +214,8 @@ fn a_recording_replays_both_ways_and_rolls_back() {
             .unwrap();
         rec.set_tag(FeatureKind::Way, 100, "name", "Main").unwrap();
         rec.remove_tag(FeatureKind::Way, 102, "building").unwrap();
-        rec.commit_node_moves(&[(NodeId(7), 41.0, -75.0)]).unwrap();
+        rec.commit_node_moves(&[(NodeId(7), LatLon::new(41.0, -75.0))])
+            .unwrap();
         rec.set_relation_members(RelationId(201), vec![member(100)])
             .unwrap();
         let relation = rec.create_relation(Tags::new(), vec![member(101)]).unwrap();
@@ -238,8 +248,9 @@ fn a_recording_replays_both_ways_and_rolls_back() {
     // Rolling a recording back leaves the layer as it was.
     let mut l = layer();
     let mut rec = Recording::new(LayerId(1), &mut l);
-    let n = rec.add_node(1.0, 2.0);
-    rec.insert_node_into_way(WayId(100), 0, 3.0, 4.0).unwrap();
+    let n = rec.add_node(LatLon::new(1.0, 2.0));
+    rec.insert_node_into_way(WayId(100), 0, LatLon::new(3.0, 4.0))
+        .unwrap();
     rec.set_tag(FeatureKind::Node, n.get(), "a", "b").unwrap();
     assert!(rec.roll_back().is_empty());
     assert_eq!(data(&l), before);
@@ -264,8 +275,9 @@ fn a_recording_rolls_back_to_a_mark() {
     let mut rec = Recording::new(LayerId(1), &mut l);
     rec.set_tag(FeatureKind::Way, 100, "name", "Kept").unwrap();
     let mark = rec.mark();
-    let n = rec.add_node(1.0, 2.0);
-    rec.insert_node_into_way(WayId(100), 0, 3.0, 4.0).unwrap();
+    let n = rec.add_node(LatLon::new(1.0, 2.0));
+    rec.insert_node_into_way(WayId(100), 0, LatLon::new(3.0, 4.0))
+        .unwrap();
     rec.set_tag(FeatureKind::Node, n.get(), "a", "b").unwrap();
     rec.purge_features(&[NodeId(8)], &[], &[]);
     assert!(rec.roll_back_to(mark).is_empty());

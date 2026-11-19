@@ -7,6 +7,7 @@ use super::{
 use crate::{validation_panel, MapViewer};
 use gpui::prelude::*;
 use gpui::TestAppContext;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::layers::osm_layer::OsmLayer;
 use osm_gpui::layers::tile_layer::TileLayer;
@@ -446,7 +447,9 @@ fn the_upload_dialog_has_nothing_to_show_in_the_panel_without_findings(cx: &mut 
             .find_layer_mut(id)
             .and_then(|l| l.as_editable_mut())
             .unwrap();
-        let node = layer.create_node(CENTER_LAT, CENTER_LON, None).unwrap();
+        let node = layer
+            .create_node(LatLon::new(CENTER_LAT, CENTER_LON), None)
+            .unwrap();
         layer
             .set_tag(
                 osm_gpui::selection::FeatureKind::Node,

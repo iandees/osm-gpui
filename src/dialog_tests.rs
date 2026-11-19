@@ -3,6 +3,7 @@
 
 use super::*;
 use gpui::TestAppContext;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ui;
 
 type Opener = fn(&mut MapViewer, &mut Window, &mut Context<MapViewer>);
@@ -111,7 +112,7 @@ fn openers() -> Vec<(&'static str, Opener)> {
                 Some(cx.new(|cx| ui::notice_dialog::NoticeDialog::new("t", "m", w, cx)));
         }),
         ("new note", |v, w, cx| {
-            v.open_new_note_dialog(1.0, 2.0, w, cx)
+            v.open_new_note_dialog(LatLon::new(1.0, 2.0), w, cx)
         }),
     ]
 }
@@ -352,7 +353,7 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
     );
     closes_on_escape!(
         cx,
-        |w, cx| note_dialog::NewNoteDialog::new(1.0, 2.0, w, cx),
+        |w, cx| note_dialog::NewNoteDialog::new(LatLon::new(1.0, 2.0), w, cx),
         note_dialog::DialogEvent,
         note_dialog::DialogEvent::Cancelled
     );
@@ -466,8 +467,9 @@ fn find_up_arrow_twice_shows_the_second_newest_query(cx: &mut TestAppContext) {
 #[gpui::test]
 fn new_note_ignores_escape_while_sending_and_enter_never_submits(cx: &mut TestAppContext) {
     use ui::note_dialog::{DialogEvent, NewNoteDialog};
-    let build =
-        |w: &mut Window, cx: &mut Context<NewNoteDialog>| NewNoteDialog::new(1.0, 2.0, w, cx);
+    let build = |w: &mut Window, cx: &mut Context<NewNoteDialog>| {
+        NewNoteDialog::new(LatLon::new(1.0, 2.0), w, cx)
+    };
     let name = |e: &DialogEvent| match e {
         DialogEvent::Submit(_) => "submit".to_string(),
         DialogEvent::Cancelled => "cancelled".to_string(),

@@ -191,7 +191,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     ) else {
         return;
     };
-    let cursor_geo = frame.viewport.screen_to_geo(mouse_pos).to_pair();
+    let cursor_geo = frame.viewport.screen_to_geo(mouse_pos);
     let (far_a, far_b) = view.rectangle_from_geo_edge(a_geo, b_geo, cursor_geo);
     let a = frame.geo(a_geo);
     stroke_polyline(
@@ -223,7 +223,7 @@ impl MapViewer {
         let Some(b_geo) = editable.node_lat_lon(drag.node_b) else {
             return;
         };
-        let cursor_geo = self.viewport.screen_to_geo(up_pos).to_pair();
+        let cursor_geo = self.viewport.screen_to_geo(up_pos);
 
         let (far_a, far_b) = self.rectangle_from_geo_edge(a_geo, b_geo, cursor_geo);
         let Some(layer) = self.layer_manager.find_layer_mut(drag.layer) else {
@@ -233,8 +233,8 @@ impl MapViewer {
             return;
         };
         let mut rec = Recording::new(drag.layer, editable);
-        let new_a = rec.add_node(far_a.0, far_a.1);
-        let new_b = rec.add_node(far_b.0, far_b.1);
+        let new_a = rec.add_node(far_a);
+        let new_b = rec.add_node(far_b);
         let way_nodes = vec![drag.node_a, drag.node_b, new_b, new_a, drag.node_a];
         let way_id = rec.add_way(way_nodes, Tags::new());
 
@@ -270,8 +270,7 @@ impl MapViewer {
         let editable = self.layer_manager.find_layer(drag.layer)?.as_editable()?;
         let ids = editable.way_node_ids(drag.way_id)?;
         let screen_of = |id: NodeId| -> Option<(f64, f64)> {
-            let (lat, lon) = editable.node_lat_lon(id)?;
-            let p = self.viewport.geo_to_screen(LatLon::new(lat, lon));
+            let p = self.viewport.geo_to_screen(editable.node_lat_lon(id)?);
             Some((p.x.to_f64(), p.y.to_f64()))
         };
         let mut nodes = Vec::with_capacity(ids.len());
@@ -350,10 +349,9 @@ impl MapViewer {
         let to_geo = |p: (f64, f64)| {
             self.viewport
                 .screen_to_geo(gpui::point(px(p.0 as f32), px(p.1 as f32)))
-                .to_pair()
         };
-        let new_geo: Vec<(f64, f64)> = plan.new_nodes.iter().map(|&p| to_geo(p)).collect();
-        let moved_geo: Vec<(NodeId, (f64, f64))> = plan
+        let new_geo: Vec<LatLon> = plan.new_nodes.iter().map(|&p| to_geo(p)).collect();
+        let moved_geo: Vec<(NodeId, LatLon)> = plan
             .moved
             .iter()
             .map(|&(id, p)| (NodeId(id), to_geo(p)))
@@ -371,8 +369,8 @@ impl MapViewer {
         };
         let mut rec = Recording::new(drag.layer, editable);
         let mut new_ids = Vec::with_capacity(new_geo.len());
-        for &(lat, lon) in &new_geo {
-            let Ok(id) = rec.create_node(lat, lon, None) else {
+        for &at in &new_geo {
+            let Ok(id) = rec.create_node(at, None) else {
                 return;
             };
             new_ids.push(id);
@@ -390,10 +388,10 @@ impl MapViewer {
             return;
         }
         if !moved_geo.is_empty() {
-            let moves: Vec<(NodeId, f64, f64)> = moved_geo
+            let moves: Vec<(NodeId, LatLon)> = moved_geo
                 .iter()
-                .filter(|&&(id, _)| rec.layer().node_lat_lon(id).is_some())
-                .map(|&(id, (lat, lon))| (id, lat, lon))
+                .copied()
+                .filter(|&(id, _)| rec.layer().node_lat_lon(id).is_some())
                 .collect();
             if rec.commit_node_moves(&moves).is_err() {
                 roll_back_recording(rec);
@@ -446,9 +444,9 @@ impl MapViewer {
         ) else {
             return;
         };
-        let LatLon { lat, lon } = {
-            let a = self.viewport.geo_to_screen(LatLon::new(a_geo.0, a_geo.1));
-            let b = self.viewport.geo_to_screen(LatLon::new(b_geo.0, b_geo.1));
+        let at = {
+            let a = self.viewport.geo_to_screen(a_geo);
+            let b = self.viewport.geo_to_screen(b_geo);
             let (dx, dy) = ((b.x - a.x).to_f64(), (b.y - a.y).to_f64());
             let len_sq = dx * dx + dy * dy;
             let t = if len_sq <= f64::EPSILON {
@@ -471,7 +469,7 @@ impl MapViewer {
         let insert_index = idx_a + 1;
 
         let mut rec = Recording::new(drag.layer, editable);
-        let Ok(new_id) = rec.insert_node_into_way(drag.way_id, insert_index, lat, lon) else {
+        let Ok(new_id) = rec.insert_node_into_way(drag.way_id, insert_index, at) else {
             return;
         };
         let feature = |kind, id| osm_gpui::selection::FeatureRef {

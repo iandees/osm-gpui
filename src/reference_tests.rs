@@ -10,8 +10,11 @@ fn track() -> osm_gpui::reference::ReferenceData {
     let mut b = Builder::new(Format::Gpx);
     let f = b.feature(FeatureKind::Track, "", Some("Walk".into()), vec![]);
     // A line through the view centre, west to east.
-    b.line(f, &[(LON - 0.001, LAT), (LON + 0.001, LAT)])
-        .unwrap();
+    b.line(
+        f,
+        &[LatLon::new(LAT, LON - 0.001), LatLon::new(LAT, LON + 0.001)],
+    )
+    .unwrap();
     b.finish().unwrap()
 }
 
@@ -71,7 +74,7 @@ fn add_mode_snaps_a_new_node_onto_the_reference_line(cx: &mut TestAppContext) {
         // 4 px below the line, between its two vertices.
         view.handle_add_click(point(px(430.0), px(304.0)), false);
         let node = view.selected[0];
-        let (lat, _lon) = view
+        let LatLon { lat, .. } = view
             .layer_manager
             .find_layer(data_id)
             .and_then(|l| l.as_editable())
@@ -83,7 +86,7 @@ fn add_mode_snaps_a_new_node_onto_the_reference_line(cx: &mut TestAppContext) {
         view.set_add_progress(None);
         view.handle_add_click(point(px(430.0), px(304.0)), true);
         let node = view.selected[0];
-        let (lat, _) = view
+        let LatLon { lat, .. } = view
             .layer_manager
             .find_layer(data_id)
             .and_then(|l| l.as_editable())
@@ -113,7 +116,7 @@ fn a_single_point_is_centred_at_an_editing_zoom(cx: &mut TestAppContext) {
     with_view(cx, |view, _w, cx| {
         let mut b = Builder::new(Format::GeoJson);
         let f = b.feature(FeatureKind::Geo, "Point", None, vec![]);
-        b.point(f, 8.5, 47.25).unwrap();
+        b.point(f, LatLon::new(47.25, 8.5)).unwrap();
         view.add_reference_dataset("pt".into(), b.finish().unwrap(), cx);
         let LatLon { lat, lon } = view.viewport.center();
         assert!((lat - 47.25).abs() < 1e-6 && (lon - 8.5).abs() < 1e-6);

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::coordinates::GeoBounds;
+use crate::coordinates::{GeoBounds, LatLon};
 use crate::http::{
     fetch_with_retries, HttpClient, HttpError, HttpFailure, HttpRequest, RetryPolicy,
 };
@@ -191,9 +191,9 @@ pub fn fetch_image_with(client: &dyn HttpClient, url: &str) -> Result<Vec<u8>, I
     Ok(resp.body)
 }
 
-fn point_of(v: &Value) -> Option<(f64, f64)> {
+fn point_of(v: &Value) -> Option<LatLon> {
     let c = v.get("coordinates")?.as_array()?;
-    Some((c.get(1)?.as_f64()?, c.first()?.as_f64()?))
+    Some(LatLon::new(c.get(1)?.as_f64()?, c.first()?.as_f64()?))
 }
 
 fn str_of(v: Option<&Value>) -> Option<String> {
@@ -216,7 +216,7 @@ pub fn parse_mapillary_image(item: &Value) -> Option<StreetPhoto> {
             .map(str::to_string)
             .or_else(|| i.as_i64().map(|n| n.to_string()))
     })?;
-    let (lat, lon) = item
+    let LatLon { lat, lon } = item
         .get("computed_geometry")
         .and_then(point_of)
         .or_else(|| item.get("geometry").and_then(point_of))?;
@@ -255,12 +255,12 @@ pub fn parse_mapillary(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
 }
 
 /// The first `[lon, lat]` position in a GeoJSON geometry, whatever its type.
-fn first_position(geometry: &Value) -> Option<(f64, f64)> {
-    fn dig(v: &Value) -> Option<(f64, f64)> {
+fn first_position(geometry: &Value) -> Option<LatLon> {
+    fn dig(v: &Value) -> Option<LatLon> {
         let arr = v.as_array()?;
         if let (Some(lon), Some(lat)) = (arr.first()?.as_f64(), arr.get(1).and_then(Value::as_f64))
         {
-            return Some((lat, lon));
+            return Some(LatLon::new(lat, lon));
         }
         arr.iter().find_map(dig)
     }
@@ -271,7 +271,7 @@ fn first_position(geometry: &Value) -> Option<(f64, f64)> {
 /// `properties`, `assets`) and a photo embedded in a feature of the data API
 /// (`photo_id`, `captured_at`, `username`, `assets`, with the position, if
 /// any, on the photo or else on the feature: `fallback`).
-fn fotoshi_photo(item: &Value, fallback: Option<(f64, f64)>) -> Option<StreetPhoto> {
+fn fotoshi_photo(item: &Value, fallback: Option<LatLon>) -> Option<StreetPhoto> {
     let id = str_of(item.get("photo_id")).or_else(|| {
         item.get("id").and_then(|i| {
             i.as_str()
@@ -279,7 +279,7 @@ fn fotoshi_photo(item: &Value, fallback: Option<(f64, f64)>) -> Option<StreetPho
                 .or_else(|| i.as_i64().map(|n| n.to_string()))
         })
     })?;
-    let (lat, lon) = item.get("geometry").and_then(point_of).or(fallback)?;
+    let LatLon { lat, lon } = item.get("geometry").and_then(point_of).or(fallback)?;
     // STAC items nest these in `properties`; embedded photos do not.
     let props = item.get("properties").unwrap_or(item);
     let prop = |key: &str| props.get(key).or_else(|| item.get(key));
@@ -409,7 +409,7 @@ pub fn parse_panoramax(body: &str) -> Result<Vec<StreetPhoto>, ImageryError> {
         let Some(id) = str_of(f.get("id")) else {
             continue;
         };
-        let Some((lat, lon)) = f.get("geometry").and_then(point_of) else {
+        let Some(LatLon { lat, lon }) = f.get("geometry").and_then(point_of) else {
             continue;
         };
         let props = f.get("properties").unwrap_or(&Value::Null);

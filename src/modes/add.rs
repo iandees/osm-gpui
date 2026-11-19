@@ -2,7 +2,6 @@
 //! and ways.
 
 use gpui::{CursorStyle, Window};
-use osm_gpui::coordinates::LatLon;
 
 use super::preview::{blue, line_width, stroke_polyline, PreviewFrame};
 use crate::undo::{roll_back_recording, EditLabel, UndoableAction};
@@ -125,7 +124,7 @@ impl MapViewer {
         let Some(layer_id) = self.active_layer else {
             return;
         };
-        let LatLon { mut lat, mut lon } = self.viewport.screen_to_geo(screen_pt);
+        let mut at = self.viewport.screen_to_geo(screen_pt);
 
         let drawing_way = self.add_progress().and_then(|p| p.way_id);
         if let Some(way_id) = drawing_way {
@@ -204,13 +203,8 @@ impl MapViewer {
         // point (GPX, GeoJSON) under the cursor pulls the new, ordinary node
         // onto itself: onto a vertex, else onto the nearest point of a segment.
         if snap_hit.is_none() && !ctrl_held {
-            if let Some(LatLon {
-                lat: snap_lat,
-                lon: snap_lon,
-            }) = self.reference_snap_at(screen_pt)
-            {
-                lat = snap_lat;
-                lon = snap_lon;
+            if let Some(snapped) = self.reference_snap_at(screen_pt) {
+                at = snapped;
             }
         }
 
@@ -238,10 +232,8 @@ impl MapViewer {
                 };
                 let mut rec = Recording::new(layer_id, editable);
                 let new_id = match snap_hit {
-                    Some((way_id, _, _, idx, snap_lat, snap_lon)) => {
-                        let Ok(new_id) =
-                            rec.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon)
-                        else {
+                    Some((way_id, _, _, idx, snap)) => {
+                        let Ok(new_id) = rec.insert_node_into_way(way_id, idx + 1, snap) else {
                             return;
                         };
                         let feature =
@@ -256,7 +248,7 @@ impl MapViewer {
                         new_id
                     }
                     None => {
-                        let new_id = rec.add_node(lat, lon);
+                        let new_id = rec.add_node(at);
                         self.undo_stack.push(UndoableAction::edit(
                             layer_id,
                             EditLabel::CreatedNode,
@@ -288,14 +280,13 @@ impl MapViewer {
                 };
                 let mut rec = Recording::new(layer_id, editable);
                 let (new_id, snap) = match snap_hit {
-                    Some((way_id, _, _, idx, snap_lat, snap_lon)) => {
-                        let Ok(id) = rec.insert_node_into_way(way_id, idx + 1, snap_lat, snap_lon)
-                        else {
+                    Some((way_id, _, _, idx, snap)) => {
+                        let Ok(id) = rec.insert_node_into_way(way_id, idx + 1, snap) else {
                             return;
                         };
                         (id, Some(way_id))
                     }
-                    None => (rec.add_node(lat, lon), None),
+                    None => (rec.add_node(at), None),
                 };
                 let at_start = progress.at_start;
                 let node_ops = rec.into_ops();

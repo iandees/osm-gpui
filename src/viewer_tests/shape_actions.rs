@@ -95,41 +95,41 @@ fn align_and_distribute_nodes_are_one_undo_step_each_and_redoable(cx: &mut TestA
     let window = setup_network(cx);
     window
         .update(cx, |view, _window, cx| {
-            let original: Vec<(f64, f64)> = [1, 2, 4, 5]
+            let original: Vec<LatLon> = [1, 2, 4, 5]
                 .iter()
                 .map(|&id| node_position(view, id))
                 .collect();
             select(view, Node, &[1, 2, 4, 5]);
             view.run_selection_action("align", cx);
             assert_eq!(view.undo_stack.actions.len(), 1);
-            let aligned: Vec<(f64, f64)> = [1, 2, 4, 5]
+            let aligned: Vec<LatLon> = [1, 2, 4, 5]
                 .iter()
                 .map(|&id| node_position(view, id))
                 .collect();
             assert_ne!(aligned, original);
             view.run_selection_action("distribute", cx);
             assert_eq!(view.undo_stack.actions.len(), 2);
-            let spaced: Vec<(f64, f64)> = [1, 2, 4, 5]
+            let spaced: Vec<LatLon> = [1, 2, 4, 5]
                 .iter()
                 .map(|&id| node_position(view, id))
                 .collect();
             assert_ne!(spaced, aligned);
 
             undo_step(view);
-            let now: Vec<(f64, f64)> = [1, 2, 4, 5]
+            let now: Vec<LatLon> = [1, 2, 4, 5]
                 .iter()
                 .map(|&id| node_position(view, id))
                 .collect();
             assert_eq!(now, aligned);
             undo_step(view);
-            let now: Vec<(f64, f64)> = [1, 2, 4, 5]
+            let now: Vec<LatLon> = [1, 2, 4, 5]
                 .iter()
                 .map(|&id| node_position(view, id))
                 .collect();
             assert_eq!(now, original);
             redo_step(view);
             redo_step(view);
-            let now: Vec<(f64, f64)> = [1, 2, 4, 5]
+            let now: Vec<LatLon> = [1, 2, 4, 5]
                 .iter()
                 .map(|&id| node_position(view, id))
                 .collect();
@@ -145,7 +145,7 @@ fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext)
     window
         .update(cx, |view, _window, cx| {
             let ids = [1, 2, 3];
-            let original: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+            let original: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             select(view, Way, &[100]);
             view.run_selection_action("rotate", cx);
             let center = view
@@ -166,21 +166,21 @@ fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext)
             // ... and circles a quarter turn clockwise (to the south).
             view.update_rotate(at(0.0, 100.0), false);
             assert!((view.rotate_degrees().unwrap() - 90.0).abs() < 1e-6);
-            let during: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+            let during: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_ne!(during, original);
             // Nothing is on the undo stack until it is applied.
             assert_eq!(view.undo_stack.actions.len(), 0);
             view.finish_rotate();
             assert!(view.pointer.rotate_session.is_none());
             assert_eq!(view.undo_stack.actions.len(), 1);
-            let done: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+            let done: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_eq!(done, during);
 
             undo_step(view);
-            let now: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+            let now: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_eq!(now, original);
             redo_step(view);
-            let now: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+            let now: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_eq!(now, done);
         })
         .unwrap();
@@ -193,7 +193,7 @@ fn rotate_snaps_with_shift_and_cancel_restores_everything(cx: &mut TestAppContex
     window
         .update(cx, |view, _window, cx| {
             let ids = [1, 2, 4];
-            let original: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+            let original: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             select(view, Node, &ids);
             view.run_selection_action("rotate", cx);
             let center = view.pointer.rotate_session.as_ref().unwrap().center;
@@ -214,7 +214,7 @@ fn rotate_snaps_with_shift_and_cancel_restores_everything(cx: &mut TestAppContex
 
             assert!(view.cancel_rotate());
             assert!(view.pointer.rotate_session.is_none());
-            let now: Vec<(f64, f64)> = ids.iter().map(|&id| node_position(view, id)).collect();
+            let now: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_eq!(now, original);
             assert_eq!(view.undo_stack.actions.len(), 0);
         })
@@ -262,13 +262,13 @@ fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
         .update(cx, |view, _window, cx| {
             let layer_id = view.active_layer.unwrap();
             let on_line = node_position(view, 2);
-            let off_line = (on_line.0 + 0.00005, on_line.1);
+            let off_line = LatLon::new(on_line.lat + 0.00005, on_line.lon);
             view.layer_manager
                 .find_layer_mut(layer_id)
                 .unwrap()
                 .as_editable_mut()
                 .unwrap()
-                .commit_node_moves(&[(NodeId(2), off_line.0, off_line.1)])
+                .commit_node_moves(&[(NodeId(2), off_line)])
                 .unwrap();
             select(view, Way, &[100]);
             view.run_selection_action("straighten", cx);
@@ -277,7 +277,7 @@ fn straighten_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
             // Moved back to the line through nodes 1 and 3 (which also
             // slides it a little along it, since the line is diagonal).
             assert_ne!(straightened, off_line);
-            assert!((straightened.0 - on_line.0).abs() < 1e-4);
+            assert!((straightened.lat - on_line.lat).abs() < 1e-4);
 
             undo_step(view);
             assert_eq!(node_position(view, 2), off_line);
@@ -426,7 +426,7 @@ fn extrude_triangle_drag(
     dist: f32,
 ) -> (ExtrudeDrag, gpui::Point<gpui::Pixels>) {
     let screen = |id: i64| {
-        let (lat, lon) = view
+        let LatLon { lat, lon } = view
             .layer_manager
             .find_layer(layer_id)
             .and_then(|l| l.as_editable())

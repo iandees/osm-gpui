@@ -11,6 +11,7 @@
 //!   middle of the `via` way, or the node shared by the `from` and `to` ways
 //!   when there is no `via`).
 
+use crate::coordinates::Mercator;
 use crate::ids::{NodeId, WayId};
 use crate::osm::{MemberType, OsmData, OsmRelation};
 use crate::tags::Tags;
@@ -144,9 +145,8 @@ pub fn build_route(relation: &OsmRelation) -> Option<RouteEntry> {
 /// A turn restriction as drawn.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RestrictionEntry {
-    /// Mercator position of the marker.
-    pub x: f64,
-    pub y: f64,
+    /// Position of the marker.
+    pub at: Mercator,
     /// `only_*` (blue disc) rather than `no_*` (red ring).
     pub only: bool,
     /// Node ids whose movement can move the marker (the `via` node).
@@ -175,7 +175,7 @@ fn restriction_value(tags: &Tags) -> Option<&str> {
 pub fn build_restriction(
     data: &OsmData,
     relation: &OsmRelation,
-    position: &dyn Fn(NodeId) -> Option<(f64, f64)>,
+    position: &dyn Fn(NodeId) -> Option<Mercator>,
 ) -> Option<RestrictionEntry> {
     if !is_restriction(&relation.tags) {
         return None;
@@ -207,13 +207,13 @@ pub fn build_restriction(
 
     let has_via = relation.members.iter().any(|m| m.role == "via");
     let mut via_node = None;
-    let (x, y) = if let Some(m) = by_role("via", MemberType::Node).next() {
+    let at = if let Some(m) = by_role("via", MemberType::Node).next() {
         via_node = Some(NodeId(m.reference));
         position(NodeId(m.reference))?
     } else if let Some(m) = by_role("via", MemberType::Way).next() {
         let nodes = way_nodes(m.reference)?;
         let (a, b) = (position(*nodes.first()?)?, position(*nodes.last()?)?);
-        ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0)
+        Mercator::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)
     } else if has_via {
         // A via of a kind we don't draw (a relation).
         return None;
@@ -226,8 +226,7 @@ pub fn build_restriction(
         position(*shared)?
     };
     Some(RestrictionEntry {
-        x,
-        y,
+        at,
         only,
         via_node,
         ways,
@@ -283,9 +282,9 @@ mod tests {
         d
     }
 
-    fn pos(id: NodeId) -> Option<(f64, f64)> {
+    fn pos(id: NodeId) -> Option<Mercator> {
         let id = id.get();
-        (id < 100).then_some((id as f64, id as f64 * 10.0))
+        (id < 100).then_some(Mercator::new(id as f64, id as f64 * 10.0))
     }
 
     #[test]
@@ -352,7 +351,7 @@ mod tests {
             ],
         );
         let e = build_restriction(&d, &r, &pos).unwrap();
-        assert_eq!((e.x, e.y), (11.0, 110.0));
+        assert_eq!(e.at, Mercator::new(11.0, 110.0));
         assert!(!e.only);
         assert_eq!(e.via_node, Some(NodeId(11)));
         assert_eq!(e.ways, vec![WayId(1), WayId(2)]);
@@ -390,7 +389,7 @@ mod tests {
             ],
         );
         let e = build_restriction(&d, &r, &pos).unwrap();
-        assert_eq!((e.x, e.y), (25.0, 250.0));
+        assert_eq!(e.at, Mercator::new(25.0, 250.0));
         assert_eq!(e.via_node, None);
     }
 
@@ -406,7 +405,7 @@ mod tests {
             ],
         );
         let e = build_restriction(&d, &r, &pos).unwrap();
-        assert_eq!((e.x, e.y), (11.0, 110.0));
+        assert_eq!(e.at, Mercator::new(11.0, 110.0));
     }
 
     #[test]

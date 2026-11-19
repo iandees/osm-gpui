@@ -43,7 +43,7 @@ fn node_is_inserted_on_the_nearest_segment_and_moved_onto_the_line(cx: &mut Test
         s.select(&[(N, 15), (W, 10)]);
         assert!(s.act("join_node_way"), "{}", s.status());
         assert_eq!(s.way_nodes(10), Some(vec![7, 14, 15, 21, 28]));
-        let (lat, _) = s.snap().nodes[&15].0;
+        let LatLon { lat, .. } = s.snap().nodes[&15].0;
         assert!(
             (lat - 40.0).abs() < 1e-9,
             "node lies on the line, lat {lat}"
@@ -186,7 +186,9 @@ fn a_node_that_is_a_relation_member_stays_one_and_the_way_relations_are_unchange
 fn a_new_node_goes_up_before_the_modified_way(cx: &mut TestAppContext) {
     with_session(cx, line().done(), |s| {
         // A node created in this session, near the second segment.
-        let id = s.editable_mut().add_node(40.0004, -74.0 + 0.0003 * 15.0);
+        let id = s
+            .editable_mut()
+            .add_node(LatLon::new(40.0004, -74.0 + 0.0003 * 15.0));
         assert!(id < NodeId(0));
         s.select(&[(N, id.get()), (W, 10)]);
         assert!(s.act("join_node_way"), "{}", s.status());
@@ -272,7 +274,7 @@ fn dragging_a_node_onto_a_way_inserts_it_as_one_undo_step(cx: &mut TestAppContex
         let to = screen(s, 40.0, -74.0);
         drag_node_three(s, point(to.x, to.y + gpui::px(2.0)), Modifiers::none());
         assert_eq!(s.way_nodes(10), Some(vec![1, 3, 2]));
-        let (lat, _) = s.snap().nodes[&3].0;
+        let LatLon { lat, .. } = s.snap().nodes[&3].0;
         assert!((lat - 40.0).abs() < 1e-9, "snapped onto the line: {lat}");
         assert_eq!(s.steps(), steps + 1);
         undo_redo(s, &before);
@@ -341,7 +343,7 @@ fn the_disable_modifier_leaves_a_dragged_node_free(cx: &mut TestAppContext) {
             let to = screen(s, 40.0, -74.0);
             drag_node_three(s, point(to.x, to.y + gpui::px(2.0)), mods);
             assert_eq!(s.way_nodes(10), Some(vec![1, 2]), "{mods:?}");
-            let (lat, _) = s.snap().nodes[&3].0;
+            let LatLon { lat, .. } = s.snap().nodes[&3].0;
             assert!(
                 (lat - 40.0).abs() > 1e-7,
                 "moved, but not put on the line: {lat}"

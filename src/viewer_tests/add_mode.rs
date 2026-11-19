@@ -386,8 +386,8 @@ fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut Te
                     e.node_lat_lon(NodeId(2)).unwrap(),
                 )
             };
-            let a = view.viewport.geo_to_screen(LatLon::new(a_geo.0, a_geo.1));
-            let b = view.viewport.geo_to_screen(LatLon::new(b_geo.0, b_geo.1));
+            let a = view.viewport.geo_to_screen(a_geo);
+            let b = view.viewport.geo_to_screen(b_geo);
             // A click 30px off the middle of the segment.
             let (dx, dy) = ((b.x - a.x).to_f64(), (b.y - a.y).to_f64());
             let len = (dx * dx + dy * dy).sqrt();
@@ -414,9 +414,7 @@ fn double_click_inserts_the_node_on_the_segment_not_under_the_cursor(cx: &mut Te
                 .unwrap()
                 .node_lat_lon(NodeId(nodes[1]))
                 .unwrap();
-            let n = view
-                .viewport
-                .geo_to_screen(LatLon::new(new_geo.0, new_geo.1));
+            let n = view.viewport.geo_to_screen(new_geo);
             let dist = osm_gpui::selection::point_to_segment_distance(n, a, b);
             assert!(dist < 0.5, "new node is {dist}px off the segment");
             assert!((n.x - click.x).to_f64().hypot((n.y - click.y).to_f64()) > 20.0);

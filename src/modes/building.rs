@@ -15,11 +15,11 @@ use crate::MapViewer;
 use osm_gpui::edit_ops::Recording;
 
 /// The rectangle being drawn: corner A is fixed after click 1; corner B after
-/// click 2. Both are geo (lat, lon) coordinates.
+/// click 2. Both are geographic positions.
 #[derive(Clone, Copy)]
 pub(crate) struct BuildingProgress {
-    pub(crate) corner_a: (f64, f64),
-    pub(crate) corner_b: Option<(f64, f64)>,
+    pub(crate) corner_a: LatLon,
+    pub(crate) corner_b: Option<LatLon>,
 }
 
 /// The squared way whose orientation Building mode borrows: captured when
@@ -75,7 +75,7 @@ pub(super) fn press(view: &mut MapViewer, position: Point<Pixels>) -> bool {
     }
     let placed_first_corner = view.building_progress().is_none();
     if placed_first_corner {
-        let corner = view.viewport.screen_to_geo(position).to_pair();
+        let corner = view.viewport.screen_to_geo(position);
         view.set_building_progress(Some(BuildingProgress {
             corner_a: corner,
             corner_b: None,
@@ -109,7 +109,7 @@ pub(super) fn release(view: &mut MapViewer, up_pos: Point<Pixels>) -> bool {
     if press.placed_first_corner && !moved {
         return true;
     }
-    let opposite = view.viewport.screen_to_geo(up_pos).to_pair();
+    let opposite = view.viewport.screen_to_geo(up_pos);
     if let Some(corners) = osm_gpui::building::rectangle_from_opposite_corners(
         progress.corner_a,
         opposite,
@@ -128,12 +128,12 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>) {
     let Some(layer_id) = view.active_layer else {
         return;
     };
-    let LatLon { lat, lon } = view.viewport.screen_to_geo(screen_pt);
+    let at = view.viewport.screen_to_geo(screen_pt);
 
     match view.take_building_progress() {
         None => {
             view.set_building_progress(Some(BuildingProgress {
-                corner_a: (lat, lon),
+                corner_a: at,
                 corner_b: None,
             }));
         }
@@ -143,14 +143,14 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>) {
         }) => {
             view.set_building_progress(Some(BuildingProgress {
                 corner_a,
-                corner_b: Some((lat, lon)),
+                corner_b: Some(at),
             }));
         }
         Some(BuildingProgress {
             corner_a,
             corner_b: Some(corner_b),
         }) => {
-            view.commit_building(layer_id, corner_a, corner_b, (lat, lon));
+            view.commit_building(layer_id, corner_a, corner_b, at);
             view.set_building_progress(None);
         }
     }
@@ -212,7 +212,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
                 .and_then(|(reference, mouse)| {
                     osm_gpui::building::rectangle_from_opposite_corners(
                         progress.corner_a,
-                        frame.viewport.screen_to_geo(mouse).to_pair(),
+                        frame.viewport.screen_to_geo(mouse),
                         reference.orientation,
                     )
                 });
@@ -241,7 +241,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
             let cursor_geo = view
                 .pointer
                 .last_mouse_pos
-                .map(|p| frame.viewport.screen_to_geo(p).to_pair())
+                .map(|p| frame.viewport.screen_to_geo(p))
                 .unwrap_or(corner_b);
             let (far_a, far_b) =
                 view.rectangle_from_geo_edge(progress.corner_a, corner_b, cursor_geo);
@@ -268,9 +268,9 @@ impl MapViewer {
     pub(crate) fn commit_building(
         &mut self,
         layer_id: LayerId,
-        corner_a: (f64, f64),
-        corner_b: (f64, f64),
-        cursor: (f64, f64),
+        corner_a: LatLon,
+        corner_b: LatLon,
+        cursor: LatLon,
     ) {
         let (far_a, far_b) = self.rectangle_from_geo_edge(corner_a, corner_b, cursor);
         self.commit_building_corners(layer_id, [corner_a, corner_b, far_b, far_a]);
@@ -278,7 +278,7 @@ impl MapViewer {
 
     /// Create 4 nodes and a closed `building=yes` way through them (corners
     /// in ring order) as one undo action, and select the new way.
-    pub(crate) fn commit_building_corners(&mut self, layer_id: LayerId, corners: [(f64, f64); 4]) {
+    pub(crate) fn commit_building_corners(&mut self, layer_id: LayerId, corners: [LatLon; 4]) {
         if self.refuse_edit_during_upload() {
             return;
         }
@@ -291,7 +291,7 @@ impl MapViewer {
         };
         let mut rec = Recording::new(layer_id, editable);
 
-        let [n0, n1, n2, n3] = corners.map(|(lat, lon)| rec.add_node(lat, lon));
+        let [n0, n1, n2, n3] = corners.map(|at| rec.add_node(at));
         let tags = Tags::from([("building", "yes")]);
         let way_id = rec.add_way(vec![n0, n1, n2, n3, n0], tags);
 
@@ -329,7 +329,7 @@ impl MapViewer {
         if node_ids.len() < 4 || node_ids.first() != node_ids.last() {
             return None;
         }
-        let ring: Vec<(f64, f64)> = node_ids
+        let ring: Vec<LatLon> = node_ids
             .iter()
             .map(|&id| editable.node_lat_lon(id))
             .collect::<Option<_>>()?;

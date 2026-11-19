@@ -93,7 +93,11 @@ fn dist(a: P, b: P) -> f64 {
 /// input. `None` if there is nothing to offset: fewer than two distinct
 /// points (three for a ring), or a non-finite coordinate or offset.
 pub fn offset_way(points: &[LatLon], offset_m: f64) -> Option<Vec<LatLon>> {
-    if !offset_m.is_finite() || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+    if !offset_m.is_finite()
+        || points
+            .iter()
+            .any(|p| !p.lat.is_finite() || !p.lon.is_finite())
+    {
         return None;
     }
     let closed = points.len() >= 4 && points.first() == points.last();
@@ -132,7 +136,7 @@ pub fn offset_way(points: &[LatLon], offset_m: f64) -> Option<Vec<LatLon>> {
     }
     let out: Vec<LatLon> = line.into_iter().map(|p| projection.unproject(p)).collect();
     out.iter()
-        .all(|p| p.0.is_finite() && p.1.is_finite())
+        .all(|p| p.lat.is_finite() && p.lon.is_finite())
         .then_some(out)
 }
 
@@ -282,7 +286,7 @@ fn remove_loops(line: &[P], closed: bool) -> Option<Vec<P>> {
 mod tests {
     use super::*;
 
-    const ORIGIN: LatLon = (47.0, 8.0);
+    const ORIGIN: LatLon = LatLon::new(47.0, 8.0);
 
     fn proj() -> LocalProjection {
         LocalProjection::new(ORIGIN)
@@ -345,7 +349,11 @@ mod tests {
 
     #[test]
     fn the_copy_is_at_the_offset_distance_on_the_ground_at_high_latitude() {
-        let line = vec![(70.0, 20.0), (70.001, 20.002), (70.002, 20.004)];
+        let line = vec![
+            LatLon::new(70.0, 20.0),
+            LatLon::new(70.001, 20.002),
+            LatLon::new(70.002, 20.004),
+        ];
         let out = offset_way(&line, 12.0).unwrap();
         let proj = LocalProjection::new(mean_point(&line));
         let original: Vec<P> = line.iter().map(|&q| proj.project(q)).collect();
@@ -473,18 +481,18 @@ mod tests {
         assert!(offset_way(&[ORIGIN], 5.0).is_none());
         assert!(offset_way(&[ORIGIN, ORIGIN], 5.0).is_none());
         assert!(offset_way(&[ORIGIN, ORIGIN, ORIGIN, ORIGIN], 5.0).is_none());
-        let a = (47.0, 8.0);
-        let b = (47.001, 8.0);
+        let a = LatLon::new(47.0, 8.0);
+        let b = LatLon::new(47.001, 8.0);
         assert!(offset_way(&[a, b], f64::NAN).is_none());
-        assert!(offset_way(&[a, (f64::NAN, 8.0)], 5.0).is_none());
+        assert!(offset_way(&[a, LatLon::new(f64::NAN, 8.0)], 5.0).is_none());
         // Duplicate points and a collinear run are fine.
-        let out = offset_way(&[a, a, b, b, (47.002, 8.0)], 5.0).unwrap();
+        let out = offset_way(&[a, a, b, b, LatLon::new(47.002, 8.0)], 5.0).unwrap();
         assert_eq!(out.len(), 3);
-        assert!(out.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+        assert!(out.iter().all(|p| p.lat.is_finite() && p.lon.is_finite()));
         // A full U-turn does not produce NaN.
         let out = offset_way(&[a, b, a, b], 5.0);
         if let Some(out) = out {
-            assert!(out.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+            assert!(out.iter().all(|p| p.lat.is_finite() && p.lon.is_finite()));
         }
     }
 
