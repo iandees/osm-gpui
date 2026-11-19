@@ -72,6 +72,11 @@ fn default_match_score() -> f32 {
 pub struct Preset {
     pub id: String,
     pub name: String,
+    /// Set when the schema spells the name as `{other/preset}`: the id of the
+    /// preset whose name this one borrows (`name` already holds its English
+    /// text; this lets a translation of that preset apply too).
+    #[serde(default, skip)]
+    pub name_source: Option<String>,
     #[serde(default)]
     pub icon: Option<String>,
     #[serde(default)]
@@ -104,6 +109,33 @@ struct RawPreset {
 /// `{highway/primary}` -> `highway/primary`.
 fn preset_reference(entry: &str) -> Option<&str> {
     entry.strip_prefix('{')?.strip_suffix('}')
+}
+
+/// For each preset whose name is a `{preset_id}` reference (e.g. the
+/// `{amenity/post_box}` US post box), the referenced preset's name and the id
+/// it came from, following chains of references. `None` for ordinary names,
+/// and for a reference that dangles or loops (its text is kept as is).
+fn resolve_name_references(raw: &[RawPreset]) -> Vec<Option<(String, String)>> {
+    let by_id: HashMap<&str, &RawPreset> = raw.iter().map(|r| (r.preset.id.as_str(), r)).collect();
+    raw.iter()
+        .map(|r| {
+            let mut source = preset_reference(&r.preset.name)?;
+            let mut seen = vec![r.preset.id.as_str()];
+            loop {
+                if seen.contains(&source) {
+                    return None;
+                }
+                seen.push(source);
+                let target = by_id.get(source)?;
+                match preset_reference(&target.preset.name) {
+                    Some(next) => source = next,
+                    None => {
+                        return Some((target.preset.name.clone(), source.to_string()));
+                    }
+                }
+            }
+        })
+        .collect()
 }
 
 /// Resolves the `fields` / `moreFields` lists of every preset the way iD's
@@ -199,7 +231,10 @@ impl Preset {
     /// the English schema name. Borrows, so it costs nothing per frame.
     pub fn display_name<'a>(&'a self, translations: Option<&'a PresetTranslations>) -> &'a str {
         translations
-            .and_then(|t| t.preset_name(&self.id))
+            .and_then(|t| {
+                t.preset_name(&self.id)
+                    .or_else(|| t.preset_name(self.name_source.as_deref()?))
+            })
             .unwrap_or(&self.name)
     }
 }
@@ -230,9 +265,14 @@ impl PresetIndex {
             let more_fields = resolver.resolve(index, 1, &mut Vec::new());
             lists.push((fields, more_fields));
         }
+        let names = resolve_name_references(&raw);
         let (mut presets, mut templates) = (Vec::new(), Vec::new());
-        for (raw, (fields, more_fields)) in raw.into_iter().zip(lists) {
+        for ((raw, (fields, more_fields)), names) in raw.into_iter().zip(lists).zip(names) {
             let mut preset = raw.preset;
+            if let Some((name, source)) = names {
+                preset.name = name;
+                preset.name_source = Some(source);
+            }
             preset.fields = fields;
             preset.more_fields = more_fields;
             if preset.id.starts_with('@') {
@@ -1105,6 +1145,23 @@ mod tests {
             index.match_feature(&fence, Geometry::Line).unwrap().id,
             "barrier/fence"
         );
+    }
+
+    #[test]
+    fn a_name_that_is_a_preset_reference_takes_the_referenced_name() {
+        let index = PresetIndex::from_json(
+            r#"[
+            {"id":"a","name":"Mail Drop Box","geometry":["point"]},
+            {"id":"b","name":"{a}","geometry":["point"]},
+            {"id":"c","name":"{b}","geometry":["point"]},
+            {"id":"d","name":"{missing}","geometry":["point"]}
+        ]"#,
+        )
+        .unwrap();
+        assert_eq!(index.get("b").unwrap().name, "Mail Drop Box");
+        assert_eq!(index.get("c").unwrap().name, "Mail Drop Box");
+        assert_eq!(index.get("c").unwrap().name_source.as_deref(), Some("a"));
+        assert_eq!(index.get("d").unwrap().name, "{missing}");
     }
 
     #[test]
