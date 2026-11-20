@@ -9,8 +9,9 @@ use gpui_component::ActiveTheme;
 
 use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::lanes::{
-    is_road, parking_is_physical, Arrow, Category, Contraflow, ContraflowKind, DirLanes, Group,
-    LaneConfig, LaneEdit, ParkingSide, Side, PARKING_KINDS, PARKING_ORIENTATIONS,
+    is_road, lane_tags_text, parking_is_physical, parse_lane_tags, paste_changes, Arrow, Category,
+    Contraflow, ContraflowKind, DirLanes, Group, LaneConfig, LaneEdit, ParkingSide, Side,
+    PARKING_KINDS, PARKING_ORIENTATIONS,
 };
 use osm_gpui::layers::{EditableLayer, LayerId};
 use osm_gpui::selection::{FeatureKind, FeatureRef};
@@ -72,7 +73,9 @@ struct Row {
 /// The strip's rows top to bottom: backward lanes (their driver's leftmost
 /// at the bottom, by the centre line), shared centre lanes, then forward
 /// lanes (leftmost at the top). Forward traffic drives to the right.
-fn rows(c: &LaneConfig) -> Vec<Row> {
+///
+/// Left-hand traffic swaps the directions: the forward lanes are on top.
+fn rows(c: &LaneConfig, left_hand: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     let mut push = |group, count: u32, rev: bool| {
         let lanes: Vec<usize> = (0..count as usize).collect();
@@ -82,12 +85,24 @@ fn rows(c: &LaneConfig) -> Vec<Row> {
             rows.extend(lanes.into_iter().map(|lane| Row { group, lane }));
         }
     };
-    if let Some(b) = &c.backward {
-        push(Group::Backward, b.count, true);
-    }
-    push(Group::BothWays, c.both_ways.count, false);
-    if let Some(f) = &c.forward {
-        push(Group::Forward, f.count, false);
+    let backward = |push: &mut dyn FnMut(Group, u32, bool)| {
+        if let Some(b) = &c.backward {
+            push(Group::Backward, b.count, true);
+        }
+    };
+    let forward = |push: &mut dyn FnMut(Group, u32, bool)| {
+        if let Some(f) = &c.forward {
+            push(Group::Forward, f.count, false);
+        }
+    };
+    if left_hand {
+        forward(&mut push);
+        push(Group::BothWays, c.both_ways.count, false);
+        backward(&mut push);
+    } else {
+        backward(&mut push);
+        push(Group::BothWays, c.both_ways.count, false);
+        forward(&mut push);
     }
     rows
 }
@@ -121,7 +136,13 @@ fn road_top(c: &LaneConfig) -> f32 {
 
 /// Height of the whole strip.
 fn strip_height(c: &LaneConfig) -> f32 {
-    road_top(c) + rows(c).len() as f32 * LANE_H + side_extra(c, Side::Right) + MARGIN
+    road_top(c)
+        + (c.forward.as_ref().map_or(0, |d| d.count)
+            + c.backward.as_ref().map_or(0, |d| d.count)
+            + c.both_ways.count) as f32
+            * LANE_H
+        + side_extra(c, Side::Right)
+        + MARGIN
 }
 
 /// A lane's fill when its tags give it a purpose, or `None` for ordinary
@@ -204,8 +225,8 @@ fn paint_parking(
     }
 }
 
-fn paint_strip(c: &LaneConfig, width: f32, o: Point<Pixels>, window: &mut Window) {
-    let rows = rows(c);
+fn paint_strip(c: &LaneConfig, left_hand: bool, width: f32, o: Point<Pixels>, window: &mut Window) {
+    let rows = rows(c, left_hand);
     let (x0, x1) = (INSET, width - INSET);
     let top = road_top(c);
     let bottom = top + rows.len() as f32 * LANE_H;
@@ -460,6 +481,46 @@ impl MapViewer {
             return;
         }
         let changes = config.tag_changes(&tags);
+        self.commit_lane_changes(layer_id, way, changes);
+    }
+
+    /// Paste lane tags from the clipboard (`key=value` per line) onto the
+    /// selected road: its lane tags become exactly the pasted ones.
+    pub(crate) fn paste_lane_tags(&mut self, cx: &mut Context<Self>) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
+        let Some((layer_id, way, tags)) = self.selected_road() else {
+            return;
+        };
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .unwrap_or_default();
+        let pasted = parse_lane_tags(&text);
+        if pasted.is_empty() {
+            self.set_status(tr!("panel.lanes.paste_none").to_string());
+            return;
+        }
+        self.commit_lane_changes(layer_id, way, paste_changes(&tags, &pasted));
+    }
+
+    /// Copy the selected road's lane tags to the clipboard.
+    pub(crate) fn copy_lane_tags(&mut self, cx: &mut Context<Self>) {
+        let Some((_, _, tags)) = self.selected_road() else {
+            return;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(lane_tags_text(&tags)));
+        self.set_status(tr!("panel.lanes.copied").to_string());
+    }
+
+    /// Set and remove tags on a way as one undo step.
+    fn commit_lane_changes(
+        &mut self,
+        layer_id: LayerId,
+        way: WayId,
+        changes: Vec<(String, Option<String>)>,
+    ) {
         if changes.is_empty() {
             return;
         }
@@ -503,7 +564,8 @@ impl MapViewer {
         let (layer_id, way, tags) = self.selected_road()?;
         let layer = self.layer_manager.find_layer(layer_id)?.as_editable()?;
         let config = LaneConfig::read(&tags);
-        let rows = rows(&config);
+        let left_hand = self.lane_left_hand;
+        let rows = rows(&config, left_hand);
         let nodes = layer.way_node_ids(way)?;
         let (first, last) = (*nodes.first()?, *nodes.last()?);
 
@@ -573,7 +635,7 @@ impl MapViewer {
                     |_, _, _| {},
                     move |bounds, _, window, _| {
                         let o = point(bounds.origin.x, bounds.origin.y);
-                        paint_strip(&config, width, o, window);
+                        paint_strip(&config, left_hand, width, o, window);
                     },
                 )
                 .absolute()
@@ -657,7 +719,11 @@ impl MapViewer {
                     .child(small_button(("lanes-add", k), "+", false).on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                            this.apply_lane_edit(LaneEdit::Count { group, add: true });
+                            let defaults = Category::ALL
+                                .into_iter()
+                                .zip(this.lane_defaults.iter().cloned())
+                                .collect::<Vec<_>>();
+                            this.apply_lane_edit(LaneEdit::AddLane { group, defaults });
                             cx.notify();
                         }),
                     )),
@@ -692,9 +758,13 @@ impl MapViewer {
                 .child(small_button(("lanes-add", 2), "+", false).on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                        this.apply_lane_edit(LaneEdit::Count {
+                        let defaults = Category::ALL
+                            .into_iter()
+                            .zip(this.lane_defaults.iter().cloned())
+                            .collect::<Vec<_>>();
+                        this.apply_lane_edit(LaneEdit::AddLane {
                             group: Group::BothWays,
-                            add: true,
+                            defaults,
                         });
                         cx.notify();
                     }),
@@ -729,11 +799,35 @@ impl MapViewer {
                     Group::Backward => tr!("panel.lanes.arrows_backward", lane = lane + 1),
                     Group::BothWays => tr!("panel.lanes.arrows_both_ways", lane = lane + 1),
                 };
+                let count = d.map_or(0, |d| d.count as usize);
+                let move_button = |id: usize, label: &'static str, left: bool, ok: bool| {
+                    small_button(("lane-move", id), label, false)
+                        .when(!ok, |b| b.opacity(0.4))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                if ok {
+                                    let to = if left { lane - 1 } else { lane + 1 };
+                                    this.apply_lane_edit(LaneEdit::Move { group, lane, left });
+                                    this.lane_selected = Some((way, group, to));
+                                    cx.notify();
+                                }
+                            }),
+                        )
+                };
                 let mut col = div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(caption(title))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().flex_1().child(caption(title)))
+                            .child(move_button(0, "◀", true, lane > 0))
+                            .child(move_button(1, "▶", false, lane + 1 < count)),
+                    )
                     .child(div().flex().flex_wrap().gap_1().children(buttons));
                 for (ci, cat) in Category::ALL.into_iter().enumerate() {
                     let now = d.map_or("", |d| d.attr(cat, lane)).to_string();
@@ -877,6 +971,101 @@ impl MapViewer {
                 .child(div().flex().flex_wrap().gap_1().children(orientations));
         }
 
+        // Display and clipboard tools.
+        let tool = |id: usize, label: gpui::SharedString, on: bool| {
+            div()
+                .id(("lane-tool", id))
+                .h(px(24.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded_sm()
+                .border_1()
+                .border_color(border)
+                .cursor_pointer()
+                .when(on, |d| d.bg(primary).text_color(primary_fg))
+                .when(!on, |d| d.text_color(fg).hover(|d| d.bg(ground)))
+                .child(label)
+        };
+        let toolbar = div()
+            .flex()
+            .flex_wrap()
+            .gap_1()
+            .child(
+                tool(0, tr!("panel.lanes.left_hand"), left_hand).on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        this.lane_left_hand = !this.lane_left_hand;
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(tool(1, tr!("panel.lanes.copy"), false).on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.copy_lane_tags(cx);
+                    cx.notify();
+                }),
+            ))
+            .child(tool(2, tr!("panel.lanes.paste"), false).on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.paste_lane_tags(cx);
+                    cx.notify();
+                }),
+            ));
+
+        // Values new lanes start with, and a button to give them to all lanes.
+        let mut defaults = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(caption(tr!("panel.lanes.defaults")));
+        for (ci, cat) in Category::ALL.into_iter().enumerate() {
+            let now = self.lane_defaults[ci].clone();
+            let buttons = cat.values().iter().enumerate().map(|(vi, &value)| {
+                small_button(("lane-default", ci * 10 + vi), value, now == value).on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        let d = &mut this.lane_defaults[ci];
+                        *d = if d == value {
+                            String::new()
+                        } else {
+                            value.to_string()
+                        };
+                        cx.notify();
+                    }),
+                )
+            });
+            defaults = defaults.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .child(div().w(px(70.)).child(caption(match cat {
+                        Category::Bicycle => "bicycle".into(),
+                        Category::Vehicle => "vehicle".into(),
+                        Category::Cycleway => "cycleway".into(),
+                        Category::Bus => "psv".into(),
+                    })))
+                    .children(buttons),
+            );
+        }
+        defaults = defaults.child(div().flex().child(
+            tool(3, tr!("panel.lanes.apply_all"), false).on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    let values = Category::ALL
+                        .into_iter()
+                        .zip(this.lane_defaults.iter().cloned())
+                        .collect();
+                    this.apply_lane_edit(LaneEdit::SetAll(values));
+                    cx.notify();
+                }),
+            ),
+        ));
+
         Some(
             div()
                 .flex()
@@ -889,10 +1078,12 @@ impl MapViewer {
                         .flex_col()
                         .gap_1()
                         .px_3()
+                        .child(toolbar)
                         .children(forward_row)
                         .children(backward_row)
                         .children(both_ways_row)
                         .child(div().pt_1().child(lane_editor))
+                        .child(defaults)
                         .children(contraflow)
                         .child(parking),
                 )
@@ -918,7 +1109,7 @@ mod tests {
             ("lanes:backward", "1"),
         ]);
         assert_eq!(
-            rows(&LaneConfig::read(&tags)),
+            rows(&LaneConfig::read(&tags), false),
             [
                 r(Group::Backward, 0),
                 r(Group::Forward, 0),
@@ -932,10 +1123,28 @@ mod tests {
             ("lanes:backward", "2"),
             ("lanes:both_ways", "1"),
         ]);
-        let rows = rows(&LaneConfig::read(&tags));
+        let rows = rows(&LaneConfig::read(&tags), false);
         assert_eq!(rows[0], r(Group::Backward, 1));
         assert_eq!(rows[2], r(Group::BothWays, 0));
         assert_eq!(rows[3], r(Group::Forward, 0));
+    }
+
+    #[test]
+    fn left_hand_traffic_puts_the_forward_lanes_on_top() {
+        let tags = Tags::from([
+            ("highway", "primary"),
+            ("lanes", "3"),
+            ("lanes:forward", "2"),
+            ("lanes:backward", "1"),
+        ]);
+        assert_eq!(
+            rows(&LaneConfig::read(&tags), true),
+            [
+                r(Group::Forward, 0),
+                r(Group::Forward, 1),
+                r(Group::Backward, 0)
+            ]
+        );
     }
 
     #[test]

@@ -455,6 +455,21 @@ pub enum LaneEdit {
         cat: Category,
         value: String,
     },
+    /// Swap a lane with its neighbour to the left (`left`) or right, as that
+    /// group's driver sees them.
+    Move {
+        group: Group,
+        lane: usize,
+        left: bool,
+    },
+    /// Add a lane to a group, giving it the `defaults` access values.
+    AddLane {
+        group: Group,
+        defaults: Vec<(Category, String)>,
+    },
+    /// Give every lane of every group these access values; when they all
+    /// have a value already, clear it instead.
+    SetAll(Vec<(Category, String)>),
     /// Set (or with `None`, remove) contraflow cycling.
     Contraflow(Option<Contraflow>),
     /// Set a side's parking; choosing the current type clears it.
@@ -657,6 +672,65 @@ impl LaneConfig {
                 };
                 true
             }
+            LaneEdit::Move { group, lane, left } => {
+                let Some(d) = self.group_mut(group) else {
+                    return false;
+                };
+                let other = if left {
+                    match lane.checked_sub(1) {
+                        Some(o) => o,
+                        None => return false,
+                    }
+                } else {
+                    lane + 1
+                };
+                if lane >= d.count as usize || other >= d.count as usize {
+                    return false;
+                }
+                if let Some(a) = &mut d.arrows {
+                    a.swap(lane, other);
+                }
+                for v in d.attrs.values_mut() {
+                    v.swap(lane, other);
+                }
+                true
+            }
+            LaneEdit::AddLane { group, defaults } => {
+                if !self.apply(LaneEdit::Count { group, add: true }) {
+                    return false;
+                }
+                let d = self
+                    .group_mut(group)
+                    .expect("group exists after a count edit");
+                let n = d.count as usize;
+                for (cat, value) in defaults.into_iter().filter(|(_, v)| !v.is_empty()) {
+                    d.attrs.entry(cat).or_insert_with(|| vec![String::new(); n])[n - 1] = value;
+                }
+                true
+            }
+            LaneEdit::SetAll(values) => {
+                for (cat, value) in values.into_iter().filter(|(_, v)| !v.is_empty()) {
+                    let groups = [Group::Forward, Group::Backward, Group::BothWays];
+                    let all_set = groups
+                        .iter()
+                        .filter_map(|&g| self.group(g))
+                        .all(|d| (0..d.count as usize).all(|i| d.attr(cat, i) == value));
+                    for g in groups {
+                        let Some(d) = self.group_mut(g) else { continue };
+                        let n = d.count as usize;
+                        if n == 0 {
+                            continue;
+                        }
+                        let list = d.attrs.entry(cat).or_insert_with(|| vec![String::new(); n]);
+                        list.fill(if all_set {
+                            String::new()
+                        } else {
+                            value.clone()
+                        });
+                    }
+                }
+                true
+            }
             LaneEdit::Contraflow(c) => {
                 // Only a oneway has a contraflow.
                 if c.is_some() && self.forward.is_some() == self.backward.is_some() {
@@ -838,6 +912,57 @@ impl LaneConfig {
             .filter(|(k, v)| tags.get(k) != v.as_deref())
             .collect()
     }
+}
+
+/// Whether `key` is one the Lanes editor owns: lane counts and per-lane
+/// tags, oneway, contraflow cycling and parking.
+pub fn is_lane_key(key: &str) -> bool {
+    key == "oneway"
+        || key == "oneway:bicycle"
+        || key.starts_with("lanes")
+        || key.contains(":lanes")
+        || key.starts_with("cycleway:")
+        || key.starts_with("parking:")
+}
+
+/// The lane tags of `tags` as `key=value` lines, for copying.
+pub fn lane_tags_text(tags: &Tags) -> String {
+    let mut pairs: Vec<_> = tags.iter().filter(|(k, _)| is_lane_key(k)).collect();
+    pairs.sort();
+    pairs
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}\n"))
+        .collect()
+}
+
+/// The lane tags in pasted text (`key=value` per line, as JOSM and iD copy
+/// them; a `\t`-separated pair works too), ignoring other keys.
+pub fn parse_lane_tags(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let (k, v) = line.split_once('=').or_else(|| line.split_once('\t'))?;
+            let (k, v) = (k.trim(), v.trim());
+            (!v.is_empty() && is_lane_key(k)).then(|| (k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+/// The changes that make `tags`' lane tags exactly `pasted`: new values set,
+/// lane tags missing from the paste removed.
+pub fn paste_changes(tags: &Tags, pasted: &[(String, String)]) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = pasted
+        .iter()
+        .filter(|(k, v)| tags.get(k) != Some(v.as_str()))
+        .map(|(k, v)| (k.clone(), Some(v.clone())))
+        .collect();
+    let mut gone: Vec<_> = tags
+        .iter()
+        .map(|(k, _)| k)
+        .filter(|k| is_lane_key(k) && !pasted.iter().any(|(pk, _)| pk == *k))
+        .collect();
+    gone.sort();
+    out.extend(gone.into_iter().map(|k| (k.clone(), None)));
+    out
 }
 
 #[cfg(test)]
@@ -1199,5 +1324,115 @@ mod tests {
         let mut cfg = LaneConfig::read(&Tags::from([("parking:left", "no")]));
         cfg.apply(edit(Side::Left, "", "diagonal"));
         assert_eq!(cfg.parking_left.orientation, "");
+    }
+
+    #[test]
+    fn lanes_move_with_their_arrows_and_access_values() {
+        let c = changes(
+            &[
+                ("highway", "primary"),
+                ("oneway", "yes"),
+                ("lanes", "2"),
+                ("turn:lanes", "left|through"),
+                ("bicycle:lanes", "no|yes"),
+            ],
+            |c| {
+                assert!(c.apply(LaneEdit::Move {
+                    group: Group::Forward,
+                    lane: 0,
+                    left: false
+                }));
+                // Nothing to the left of the first lane or right of the last.
+                assert!(!c.apply(LaneEdit::Move {
+                    group: Group::Forward,
+                    lane: 0,
+                    left: true
+                }));
+                assert!(!c.apply(LaneEdit::Move {
+                    group: Group::Forward,
+                    lane: 1,
+                    left: false
+                }));
+            },
+        );
+        assert_eq!(
+            c,
+            [
+                set("bicycle:lanes", "yes|no"),
+                set("turn:lanes", "through|left")
+            ]
+        );
+    }
+
+    #[test]
+    fn new_lanes_take_the_defaults_and_set_all_toggles() {
+        let tags = &[("highway", "primary"), ("oneway", "yes"), ("lanes", "1")];
+        let c = changes(tags, |c| {
+            c.apply(LaneEdit::AddLane {
+                group: Group::Forward,
+                defaults: vec![(Category::Bus, "designated".into())],
+            });
+        });
+        assert_eq!(c, [set("lanes", "2"), set("psv:lanes", "|designated")]);
+        let c = changes(tags, |c| {
+            c.apply(LaneEdit::SetAll(vec![(Category::Bicycle, "yes".into())]));
+        });
+        assert_eq!(c, [set("bicycle:lanes", "yes")]);
+        let c = changes(
+            &[
+                ("highway", "primary"),
+                ("oneway", "yes"),
+                ("lanes", "1"),
+                ("bicycle:lanes", "yes"),
+            ],
+            |c| {
+                c.apply(LaneEdit::SetAll(vec![(Category::Bicycle, "yes".into())]));
+            },
+        );
+        assert_eq!(c, [unset("bicycle:lanes")]);
+    }
+
+    #[test]
+    fn pasting_replaces_the_lane_tags_only() {
+        let pasted = parse_lane_tags(
+            "highway=primary\nlanes = 3\noneway=yes\nturn:lanes=left|through|through;right\nname=x\nlanes:forward=",
+        );
+        assert_eq!(
+            pasted,
+            [
+                ("lanes".to_string(), "3".to_string()),
+                ("oneway".to_string(), "yes".to_string()),
+                (
+                    "turn:lanes".to_string(),
+                    "left|through|through;right".to_string()
+                ),
+            ]
+        );
+        let tags = Tags::from([
+            ("highway", "primary"),
+            ("name", "Main"),
+            ("lanes", "3"),
+            ("lanes:forward", "2"),
+            ("parking:both", "lane"),
+        ]);
+        let mut c = paste_changes(&tags, &pasted);
+        c.sort();
+        assert_eq!(
+            c,
+            [
+                unset("lanes:forward"),
+                set("oneway", "yes"),
+                unset("parking:both"),
+                set("turn:lanes", "left|through|through;right"),
+            ]
+        );
+        assert_eq!(
+            lane_tags_text(&Tags::from([
+                ("name", "x"),
+                ("lanes", "2"),
+                ("oneway", "yes")
+            ])),
+            "lanes=2\noneway=yes\n"
+        );
     }
 }
