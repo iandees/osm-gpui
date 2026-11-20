@@ -802,6 +802,10 @@ struct MapViewer {
     junction_from: Option<(NodeId, usize)>,
     /// The Lanes editor's chosen lane: `(way, group, lane from the left)`.
     lane_selected: Option<(WayId, osm_gpui::lanes::Group, usize)>,
+    /// The Lanes diagram draws left-hand traffic (display only).
+    lane_left_hand: bool,
+    /// Access values new lanes start with, one per `Category`, "" for none.
+    lane_defaults: [String; 4],
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
@@ -1027,6 +1031,8 @@ impl MapViewer {
             },
             junction_from: None,
             lane_selected: None,
+            lane_left_hand: false,
+            lane_defaults: Default::default(),
             focus_handle,
             undo_stack: UndoStack::default(),
             mode_state: modes::ModeState::fresh(EditMode::Select),
