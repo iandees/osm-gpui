@@ -5,7 +5,7 @@ use crate::ImageryLoadState;
 use osm_gpui::coordinates::LatLon;
 
 pub(crate) struct MenuSync {
-    /// Last (lat, lon) the Imagery menu was rebuilt for. None forces a rebuild.
+    /// Last position the Imagery menu was rebuilt for. None forces a rebuild.
     pub(crate) last_menu_center: Option<LatLon>,
     /// Where the Editor Layer Index load stands.
     pub(crate) imagery_load_state: ImageryLoadState,

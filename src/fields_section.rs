@@ -28,7 +28,51 @@ fn field_label(text: impl Into<gpui::SharedString>, cx: &gpui::App) -> gpui::Div
         .child(text.into())
 }
 
+/// Whether `key` holds an `opening_hours`-syntax value the hours editor can
+/// open (`opening_hours`, `opening_hours:drive_through`, …).
+fn is_opening_hours_key(key: &str) -> bool {
+    key == "opening_hours" || key.starts_with("opening_hours:")
+}
+
 impl MapViewer {
+    /// Open the hours editor for `field_key` of `feature`, starting from what
+    /// the field's `input` shows (which may not be committed yet). Applying
+    /// writes the tag and the field's input.
+    fn open_opening_hours_dialog(
+        &mut self,
+        feature: osm_gpui::selection::FeatureRef,
+        field_key: String,
+        title: String,
+        input: gpui::Entity<InputState>,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        use osm_gpui::ui::opening_hours_dialog::{DialogEvent, OpeningHoursDialog};
+        if self.dialogs.opening_hours_dialog.is_some() {
+            return;
+        }
+        let current = input.read(cx).value().to_string();
+        let dialog = cx.new(|cx| OpeningHoursDialog::new(title, &current, window, cx));
+        cx.subscribe_in(
+            &dialog,
+            window,
+            move |this: &mut Self, _dialog, event: &DialogEvent, window, cx| {
+                if let DialogEvent::Submitted(value) = event {
+                    input.update(cx, |state, cx| state.set_value(value.clone(), window, cx));
+                    this.apply_field_values(
+                        &feature,
+                        std::collections::HashMap::from([(field_key.clone(), value.clone())]),
+                    );
+                }
+                this.dialogs.opening_hours_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.dialogs.opening_hours_dialog = Some(dialog);
+        cx.notify();
+    }
+
     /// Get or create the `InputState` entity for a text field, seeded from
     /// `current_value` only on creation (an existing entity keeps whatever
     /// the user has typed, even if `current_value` hasn't changed — it's
@@ -112,16 +156,98 @@ impl MapViewer {
                     window,
                     cx,
                 );
+                // Roads near the feature, offered as one-click street names.
+                let nearby: Vec<String> = if field.key == "addr:street" {
+                    self.layer_manager
+                        .find_layer(feature.layer_id)
+                        .and_then(|l| l.as_editable())
+                        .map(|e| {
+                            e.nearby_road_names(
+                                &feature,
+                                osm_gpui::tag_suggest::NEARBY_ROAD_RADIUS_M,
+                            )
+                        })
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|n| *n != current)
+                        .take(5)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let chips = (!nearby.is_empty()).then(|| {
+                    let field_key = field.key.clone();
+                    gpui::div().flex().flex_row().flex_wrap().gap_1().children(
+                        nearby.into_iter().enumerate().map(|(i, name)| {
+                            let (input, field_key, value) =
+                                (input.clone(), field_key.clone(), name.clone());
+                            Button::new(("street-suggestion", i))
+                                .label(name)
+                                .xsmall()
+                                .outline()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    input.update(cx, |state, cx| {
+                                        state.set_value(value.clone(), window, cx)
+                                    });
+                                    this.apply_field_values(
+                                        &feature,
+                                        std::collections::HashMap::from([(
+                                            field_key.clone(),
+                                            value.clone(),
+                                        )]),
+                                    );
+                                    cx.notify();
+                                }))
+                        }),
+                    )
+                });
+                let label = cat.field_label(field).to_string();
+                let text_input = Input::new(&input)
+                    .with_size(gpui_component::Size::Size(body / 0.875))
+                    .h(gpui::px(FIELD_CONTROL_HEIGHT));
+                // Hours fields get a button that opens the hours editor.
+                let control = if is_opening_hours_key(&field.key) {
+                    let (input, field_key, title) =
+                        (input.clone(), field.key.clone(), label.clone());
+                    gpui::div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .child(gpui::div().flex_1().min_w(gpui::px(0.)).child(text_input))
+                        .child(
+                            Button::new(gpui::SharedString::from(format!(
+                                "field-hours-edit-{}",
+                                field.id
+                            )))
+                            .icon(IconName::Calendar)
+                            .ghost()
+                            .small()
+                            .tooltip(tr!("dialog.opening_hours.open"))
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.open_opening_hours_dialog(
+                                        feature,
+                                        field_key.clone(),
+                                        title.clone(),
+                                        input.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            )),
+                        )
+                        .into_any_element()
+                } else {
+                    text_input.into_any_element()
+                };
                 gpui::div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(field_label(cat.field_label(field).to_string(), cx))
-                    .child(
-                        Input::new(&input)
-                            .with_size(gpui_component::Size::Size(body / 0.875))
-                            .h(gpui::px(FIELD_CONTROL_HEIGHT)),
-                    )
+                    .child(field_label(label, cx))
+                    .child(control)
+                    .children(chips)
                     .into_any_element()
             }
             Widget::Check => {
@@ -212,7 +338,37 @@ impl MapViewer {
                     })
                     .unwrap_or_else(|| tr!("panel.fields.none").to_string());
 
+                // Typing while open filters the options (substring match on
+                // label or value); Enter picks the first match.
+                let query = if is_open {
+                    self.fields_panel.fields_combo_query.to_lowercase()
+                } else {
+                    String::new()
+                };
+                let matches: Vec<(usize, String)> = field
+                    .options
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| {
+                        query.is_empty()
+                            || o.value.to_lowercase().contains(&query)
+                            || cat.option_label(field, o).to_lowercase().contains(&query)
+                    })
+                    .map(|(i, o)| (i, o.value.clone()))
+                    .collect();
+                let current_label = if is_open && !query.is_empty() {
+                    self.fields_panel.fields_combo_query.clone()
+                } else {
+                    current_label
+                };
+                let focus = self
+                    .fields_panel
+                    .fields_combo_focus
+                    .get_or_insert_with(|| cx.focus_handle())
+                    .clone();
+
                 let field_id_for_toggle = field.id.clone();
+                let focus_for_toggle = focus.clone();
                 let header = gpui::div()
                     .id(format!("field-combo-header-{}", field.id))
                     .flex()
@@ -253,15 +409,20 @@ impl MapViewer {
                     )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(move |this, _ev, _window, cx| {
+                        cx.listener(move |this, _ev, window, cx| {
+                            this.fields_panel.fields_combo_query.clear();
                             this.fields_panel.fields_open_combo =
                                 if this.fields_panel.fields_open_combo.as_deref()
                                     == Some(field_id_for_toggle.as_str())
                                 {
                                     None
                                 } else {
+                                    window.focus(&focus_for_toggle, cx);
                                     Some(field_id_for_toggle.clone())
                                 };
+                            if this.fields_panel.fields_open_combo.is_none() {
+                                window.focus(&this.focus_handle, cx);
+                            }
                             cx.notify();
                         }),
                     );
@@ -274,6 +435,47 @@ impl MapViewer {
                     .child(header);
 
                 if is_open {
+                    let key_field_key = field.key.clone();
+                    let first_match = matches.first().map(|(_, v)| v.clone());
+                    column = column.track_focus(&focus).on_key_down(cx.listener(
+                        move |this, ev: &gpui::KeyDownEvent, window, cx| {
+                            let ks = &ev.keystroke;
+                            match ks.key.as_str() {
+                                "escape" => {
+                                    this.fields_panel.fields_open_combo = None;
+                                    window.focus(&this.focus_handle, cx);
+                                }
+                                "enter" => {
+                                    if let Some(value) = first_match.clone() {
+                                        this.apply_field_values(
+                                            &feature,
+                                            std::collections::HashMap::from([(
+                                                key_field_key.clone(),
+                                                value,
+                                            )]),
+                                        );
+                                        this.fields_panel.fields_open_combo = None;
+                                        window.focus(&this.focus_handle, cx);
+                                    }
+                                }
+                                "backspace" => {
+                                    this.fields_panel.fields_combo_query.pop();
+                                }
+                                _ => match &ks.key_char {
+                                    Some(ch)
+                                        if !ch.is_empty()
+                                            && !ks.modifiers.control
+                                            && !ks.modifiers.platform =>
+                                    {
+                                        this.fields_panel.fields_combo_query.push_str(ch);
+                                    }
+                                    _ => return,
+                                },
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        },
+                    ));
                     let field_key = field.key.clone();
                     // The first row clears the field (removes the tag).
                     let clear_key = field.key.clone();
@@ -289,7 +491,7 @@ impl MapViewer {
                         )
                         .on_mouse_down(
                             gpui::MouseButton::Left,
-                            cx.listener(move |this, _ev, _window, cx| {
+                            cx.listener(move |this, _ev, window, cx| {
                                 this.apply_field_values(
                                     &feature,
                                     std::collections::HashMap::from([(
@@ -298,6 +500,7 @@ impl MapViewer {
                                     )]),
                                 );
                                 this.fields_panel.fields_open_combo = None;
+                                window.focus(&this.focus_handle, cx);
                                 cx.notify();
                             }),
                         );
@@ -310,8 +513,10 @@ impl MapViewer {
                             .overflow_y_scroll()
                             .border_1()
                             .border_color(cx.theme().border)
-                            .child(clear_row)
-                            .children(field.options.iter().enumerate().map(|(i, opt)| {
+                            .when(query.is_empty(), |d| d.child(clear_row))
+                            .children(matches.iter().map(|(i, _)| {
+                                let i = *i;
+                                let opt = &field.options[i];
                                 let value = opt.value.clone();
                                 let field_key = field_key.clone();
                                 gpui::div()
@@ -323,7 +528,7 @@ impl MapViewer {
                                     .child(Label::new(cat.option_label(field, opt).to_string()))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
-                                        cx.listener(move |this, _ev, _window, cx| {
+                                        cx.listener(move |this, _ev, window, cx| {
                                             this.apply_field_values(
                                                 &feature,
                                                 std::collections::HashMap::from([(
@@ -332,6 +537,7 @@ impl MapViewer {
                                                 )]),
                                             );
                                             this.fields_panel.fields_open_combo = None;
+                                            window.focus(&this.focus_handle, cx);
                                             cx.notify();
                                         }),
                                     )

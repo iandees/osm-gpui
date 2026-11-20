@@ -1,5 +1,7 @@
 //! Undo/redo model for committed data mutations.
 
+#[cfg(test)]
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_ops::{replay, EditOp, Recording};
 use osm_gpui::ids::RelationId;
 #[cfg(test)]
@@ -54,7 +56,7 @@ pub(crate) fn write_tag_entries(
         .collect()
 }
 
-/// A single node move: its id, (lat, lon) before, and (lat, lon) after.
+/// A single node move: its id, position before, and position after.
 pub(crate) type NodeMoveUndoEntry = osm_gpui::edit_ops::NodeMove;
 
 /// The node moves to record, grouped by layer.
@@ -238,14 +240,14 @@ impl UndoableAction {
     }
 
     #[cfg(test)]
-    /// A node created on `layer` at `(lat, lon)` under `id`.
-    pub(crate) fn create_node(layer: LayerId, id: NodeId, lat: f64, lon: f64) -> Self {
+    /// A node created on `layer` at `at` under `id`.
+    pub(crate) fn create_node(layer: LayerId, id: NodeId, at: LatLon) -> Self {
         let snapshot = DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
             id: id.get(),
             tags: Tags::new(),
             way_nodes: Vec::new(),
-            node_lat_lon: Some((lat, lon)),
+            node_lat_lon: Some(at),
             version: 0,
         };
         Self::edit(
@@ -563,12 +565,13 @@ impl UndoStack {
 #[cfg(test)]
 mod undo_stack_tests {
     use super::{EditLabel, LayerId, UndoStack, UndoableAction};
+    use osm_gpui::coordinates::LatLon;
     use osm_gpui::edit_ops::EditOp;
     use osm_gpui::ids::{NodeId, RelationId, WayId};
     use osm_gpui::selection::{FeatureKind, FeatureRef};
     use osm_gpui::tags::Tags;
 
-    fn move_one(id: i64, before: (f64, f64), after: (f64, f64)) -> UndoableAction {
+    fn move_one(id: i64, before: LatLon, after: LatLon) -> UndoableAction {
         UndoableAction::move_nodes(vec![(LayerId(1), vec![(NodeId(id), before, after)])], None)
     }
 
@@ -580,16 +583,16 @@ mod undo_stack_tests {
             id: 2,
         }];
         let mut stack = UndoStack::default();
-        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
-        stack.push(move_one(2, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(move_one(1, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)));
+        stack.push(move_one(2, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)));
         stack.push(UndoableAction::Batch {
             label: "batch".into(),
             actions: vec![
-                move_one(3, (0.0, 0.0), (1.0, 1.0)),
-                move_one(2, (1.0, 1.0), (2.0, 2.0)),
+                move_one(3, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)),
+                move_one(2, LatLon::new(1.0, 1.0), LatLon::new(2.0, 2.0)),
             ],
         });
-        stack.push(move_one(4, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(move_one(4, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)));
         // Undo the last step so it is redoable, then prune.
         stack.undo();
         assert_eq!((stack.actions.len(), stack.cursor), (4, 3));
@@ -612,20 +615,23 @@ mod undo_stack_tests {
             id: 1,
         }];
         let mut stack = UndoStack::default();
-        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(move_one(1, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)));
         assert_eq!(stack.remove_touching(&other_layer), 0);
         assert_eq!(stack.actions.len(), 1);
     }
 
     fn move_in(layer: u64, id: i64) -> UndoableAction {
         UndoableAction::move_nodes(
-            vec![(LayerId(layer), vec![(NodeId(id), (0.0, 0.0), (1.0, 1.0))])],
+            vec![(
+                LayerId(layer),
+                vec![(NodeId(id), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0))],
+            )],
             None,
         )
     }
 
     fn create_in(layer: u64, id: i64) -> UndoableAction {
-        UndoableAction::create_node(LayerId(layer), NodeId(id), 0.0, 0.0)
+        UndoableAction::create_node(LayerId(layer), NodeId(id), LatLon::new(0.0, 0.0))
     }
 
     #[test]
@@ -662,8 +668,14 @@ mod undo_stack_tests {
         let mut stack = UndoStack::default();
         stack.push(UndoableAction::move_nodes(
             vec![
-                (LayerId(1), vec![(NodeId(1), (0.0, 0.0), (1.0, 1.0))]),
-                (LayerId(2), vec![(NodeId(2), (0.0, 0.0), (1.0, 1.0))]),
+                (
+                    LayerId(1),
+                    vec![(NodeId(1), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0))],
+                ),
+                (
+                    LayerId(2),
+                    vec![(NodeId(2), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0))],
+                ),
             ],
             None,
         ));
@@ -678,7 +690,10 @@ mod undo_stack_tests {
         // A layer with an empty entry still counts as touched.
         stack.push(UndoableAction::move_nodes(
             vec![
-                (LayerId(1), vec![(NodeId(9), (0.0, 0.0), (1.0, 1.0))]),
+                (
+                    LayerId(1),
+                    vec![(NodeId(9), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0))],
+                ),
                 (LayerId(2), vec![]),
             ],
             None,
@@ -705,15 +720,15 @@ mod undo_stack_tests {
 
     #[test]
     fn description_singular_and_plural() {
-        let one = move_one(1, (0.0, 0.0), (1.0, 1.0));
+        let one = move_one(1, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0));
         assert_eq!(one.description(), "Moved 1 node");
 
         let two = UndoableAction::move_nodes(
             vec![(
                 LayerId(1),
                 vec![
-                    (NodeId(1), (0.0, 0.0), (1.0, 1.0)),
-                    (NodeId(2), (0.0, 0.0), (1.0, 1.0)),
+                    (NodeId(1), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)),
+                    (NodeId(2), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)),
                 ],
             )],
             None,
@@ -729,7 +744,10 @@ mod undo_stack_tests {
             id: 7,
         }];
         let one = UndoableAction::move_nodes(
-            vec![(LayerId(1), vec![(NodeId(1), (0.0, 0.0), (1.0, 1.0))])],
+            vec![(
+                LayerId(1),
+                vec![(NodeId(1), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0))],
+            )],
             Some(select.clone()),
         );
         let UndoableAction::Edit { layer, ops, .. } = &one else {
@@ -739,15 +757,21 @@ mod undo_stack_tests {
         assert_eq!(
             ops[..],
             [EditOp::MoveNodes {
-                moves: vec![(NodeId(1), (0.0, 0.0), (1.0, 1.0))]
+                moves: vec![(NodeId(1), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0))]
             }]
         );
         assert_eq!(one.affected_features(), select);
 
         let two = UndoableAction::move_nodes(
             vec![
-                (LayerId(1), vec![(NodeId(1), (0.0, 0.0), (1.0, 1.0))]),
-                (LayerId(2), vec![(NodeId(2), (0.0, 0.0), (1.0, 1.0))]),
+                (
+                    LayerId(1),
+                    vec![(NodeId(1), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0))],
+                ),
+                (
+                    LayerId(2),
+                    vec![(NodeId(2), LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0))],
+                ),
             ],
             Some(select.clone()),
         );
@@ -816,7 +840,7 @@ mod undo_stack_tests {
     #[test]
     fn push_then_undo_then_redo_round_trips() {
         let mut stack = UndoStack::default();
-        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(move_one(1, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)));
 
         assert!(stack.redo().is_none(), "nothing to redo right after a push");
 
@@ -835,11 +859,11 @@ mod undo_stack_tests {
     #[test]
     fn push_after_undo_discards_redo_branch() {
         let mut stack = UndoStack::default();
-        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
-        stack.push(move_one(2, (0.0, 0.0), (2.0, 2.0)));
+        stack.push(move_one(1, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)));
+        stack.push(move_one(2, LatLon::new(0.0, 0.0), LatLon::new(2.0, 2.0)));
 
         stack.undo();
-        stack.push(move_one(3, (0.0, 0.0), (3.0, 3.0))); // discards action 2
+        stack.push(move_one(3, LatLon::new(0.0, 0.0), LatLon::new(3.0, 3.0))); // discards action 2
 
         assert!(stack.redo().is_none());
         let undone_3 = stack.undo().unwrap();
@@ -890,7 +914,7 @@ mod undo_stack_tests {
 
     #[test]
     fn create_node_description() {
-        let action = UndoableAction::create_node(LayerId(1), NodeId(-1), 40.0, -74.0);
+        let action = UndoableAction::create_node(LayerId(1), NodeId(-1), LatLon::new(40.0, -74.0));
         assert_eq!(action.description(), "Created 1 node");
     }
 
@@ -900,8 +924,7 @@ mod undo_stack_tests {
         stack.push(UndoableAction::create_node(
             LayerId(1),
             NodeId(-1),
-            40.0,
-            -74.0,
+            LatLon::new(40.0, -74.0),
         ));
 
         let undone = stack.undo().expect("should have one action to undo");
@@ -919,7 +942,7 @@ mod undo_stack_tests {
             id,
             tags: Tags::from([("amenity", "cafe")]),
             way_nodes: Vec::new(),
-            node_lat_lon: Some((40.0, -74.0)),
+            node_lat_lon: Some(LatLon::new(40.0, -74.0)),
             version: 1,
         }
     }
@@ -971,7 +994,7 @@ mod undo_stack_tests {
                 id,
                 tags: Tags::new(),
                 way_nodes: Vec::new(),
-                node_lat_lon: Some((0.0, 0.0)),
+                node_lat_lon: Some(LatLon::new(0.0, 0.0)),
                 version: 0,
             },
         }
@@ -1025,7 +1048,7 @@ mod undo_stack_tests {
             id,
             tags: Tags::new(),
             way_nodes: Vec::new(),
-            node_lat_lon: Some((0.0, 0.0)),
+            node_lat_lon: Some(LatLon::new(0.0, 0.0)),
             version: 0,
         };
         let paste = UndoableAction::PasteFeatures {
@@ -1074,7 +1097,7 @@ mod undo_stack_tests {
         assert_eq!(stack.remove_touching(&[on(Node, -2)]), 2);
 
         let mut stack = UndoStack::default();
-        stack.push(move_one(1, (0.0, 0.0), (1.0, 1.0)));
+        stack.push(move_one(1, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)));
         stack.push(UndoableAction::PasteFeatures {
             pasted: osm_gpui::feature_clipboard::PastedFeatures {
                 layer,
@@ -1098,7 +1121,7 @@ mod undo_stack_tests {
         let layer = LayerId(1);
 
         assert_eq!(
-            move_one(3, (0.0, 0.0), (1.0, 1.0)).affected_features(),
+            move_one(3, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)).affected_features(),
             vec![fref(Node, 3)]
         );
 
@@ -1109,7 +1132,7 @@ mod undo_stack_tests {
         ]);
         assert_eq!(tags.affected_features(), vec![fref(Way, 5), fref(Node, 6)]);
 
-        let create_node = UndoableAction::create_node(layer, NodeId(-1), 0.0, 0.0);
+        let create_node = UndoableAction::create_node(layer, NodeId(-1), LatLon::new(0.0, 0.0));
         assert_eq!(create_node.affected_features(), vec![fref(Node, -1)]);
 
         let delete = UndoableAction::delete_feature(layer, way_snapshot(9));
@@ -1165,14 +1188,14 @@ mod undo_stack_tests {
         let batch = UndoableAction::Batch {
             label: "Extruded a segment".into(),
             actions: vec![
-                UndoableAction::create_node(layer, NodeId(-1), 0.0, 0.0),
+                UndoableAction::create_node(layer, NodeId(-1), LatLon::new(0.0, 0.0)),
                 UndoableAction::set_way_nodes(
                     layer,
                     WayId(4),
                     vec![NodeId(1), NodeId(2)],
                     vec![NodeId(1), NodeId(-1), NodeId(2)],
                 ),
-                move_one(2, (0.0, 0.0), (1.0, 1.0)),
+                move_one(2, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)),
             ],
         };
         assert_eq!(
@@ -1188,7 +1211,7 @@ mod undo_stack_tests {
             label: "x".into(),
             actions: vec![
                 UndoableAction::reverse_ways(LayerId(1), vec![WayId(1)]),
-                move_one(3, (0.0, 0.0), (1.0, 1.0)),
+                move_one(3, LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)),
                 UndoableAction::reverse_ways(LayerId(1), vec![WayId(1), WayId(2)]),
             ],
         };

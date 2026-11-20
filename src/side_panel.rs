@@ -121,6 +121,10 @@ impl MapViewer {
         let open_relations = self.side_panel_open[5];
         let members_section = self.render_members_section(window, cx);
         let open_members = self.side_panel_open[6];
+        let junction_section = self.render_junction_section(cx);
+        let open_junction = self.side_panel_open[crate::junction_view::SECTION];
+        let lanes_section = self.render_lanes_section(cx);
+        let open_lanes = self.side_panel_open[crate::lanes_view::SECTION];
 
         let open_layers = self.side_panel_open[0];
         let open_fields = self.side_panel_open[2];
@@ -286,6 +290,17 @@ impl MapViewer {
                                                     div().px_2().py_1().child(selection_section),
                                                 )
                                             })
+                                            // A road's Lanes come before its
+                                            // (long) Fields, so they show.
+                                            .children(lanes_section.map(|section| {
+                                                self.collapsible_section(
+                                                    tr!("panel.lanes.title"),
+                                                    crate::lanes_view::SECTION,
+                                                    open_lanes,
+                                                    section,
+                                                    cx,
+                                                )
+                                            }))
                                             .when(selected_count == 1, |group| {
                                                 group.child(self.collapsible_section(
                                                     tr!("panel.fields.title"),
@@ -295,6 +310,15 @@ impl MapViewer {
                                                     cx,
                                                 ))
                                             })
+                                            .children(junction_section.map(|section| {
+                                                self.collapsible_section(
+                                                    tr!("panel.junction.title"),
+                                                    crate::junction_view::SECTION,
+                                                    open_junction,
+                                                    section,
+                                                    cx,
+                                                )
+                                            }))
                                             .children(object_photos)
                                             .child(self.collapsible_section(
                                                 tr!("panel.tags.title"),
@@ -963,7 +987,14 @@ impl MapViewer {
                             this.flex().flex_col().flex_shrink(1.).min_h(px(0.))
                         })
                         .when(document_level, |this| this.px_2())
-                        .when(!document_level, |this| this.px_3())
+                        // The junction diagram runs edge to edge; its text
+                        // rows carry the usual inset themselves.
+                        .when(
+                            !document_level
+                                && index != crate::junction_view::SECTION
+                                && index != crate::lanes_view::SECTION,
+                            |this| this.px_3(),
+                        )
                         .pt_0p5()
                         .pb_2()
                         .child(content),

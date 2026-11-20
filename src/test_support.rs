@@ -129,7 +129,7 @@ pub(crate) fn rm(id: i64, role: &str) -> (MemberType, i64, &str) {
 /// Everything about a layer's data that an undo must restore exactly.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snap {
-    pub(crate) nodes: BTreeMap<i64, ((f64, f64), TagList)>,
+    pub(crate) nodes: BTreeMap<i64, (osm_gpui::coordinates::LatLon, TagList)>,
     pub(crate) ways: BTreeMap<i64, (Vec<i64>, TagList)>,
     pub(crate) relations: BTreeMap<i64, (TagList, Vec<MemberRow>)>,
 }
@@ -369,7 +369,11 @@ pub(crate) fn way_node_ids(view: &MapViewer, layer: LayerId, way: i64) -> Option
 }
 
 /// The position of node `id` in `layer`.
-pub(crate) fn node_lat_lon(view: &MapViewer, layer: LayerId, id: i64) -> Option<(f64, f64)> {
+pub(crate) fn node_lat_lon(
+    view: &MapViewer,
+    layer: LayerId,
+    id: i64,
+) -> Option<osm_gpui::coordinates::LatLon> {
     editable_layer(view, layer).node_lat_lon(NodeId(id))
 }
 

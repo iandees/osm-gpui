@@ -1104,12 +1104,11 @@ impl MapViewer {
                     })
                     .flatten()
                     .ok_or_else(|| "the selected feature is not a node".to_string())?;
-                let Mercator { x: ax, y: ay } =
-                    osm_gpui::coordinates::lat_lon_to_mercator(LatLon::new(pos.0, pos.1));
+                let Mercator { x: ax, y: ay } = osm_gpui::coordinates::lat_lon_to_mercator(pos);
                 let Mercator { x: bx, y: by } =
                     osm_gpui::coordinates::lat_lon_to_mercator(LatLon::new(*lat, *lon));
                 // Mercator metres stretch by 1/cos(lat); undo that.
-                let scale = pos.0.to_radians().cos();
+                let scale = pos.lat.to_radians().cos();
                 let metres = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt() * scale;
                 if metres <= *tolerance_m {
                     Ok(())
@@ -1117,7 +1116,7 @@ impl MapViewer {
                     Err(format!(
                         "the selected node is at {:.7}, {:.7}, {metres:.2} m from {lat}, {lon} \
                          (tolerance {tolerance_m} m)",
-                        pos.0, pos.1
+                        pos.lat, pos.lon
                     ))
                 }
             }

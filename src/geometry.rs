@@ -1,12 +1,11 @@
 //! Pure geometry for the one-shot selection actions (square, circularize,
-//! reverse). Everything here works on `(lat, lon)` degree pairs but does its
+//! reverse). Everything here works on `LatLon` degree positions but does its
 //! maths in a locally projected metric plane, so angles and radii mean what
 //! they look like on the ground rather than in raw degrees.
 
 const EARTH_RADIUS_M: f64 = 6_371_008.8;
 
-/// A (lat, lon) pair in degrees.
-pub type LatLon = (f64, f64);
+pub use crate::coordinates::LatLon;
 
 /// Corners within this many degrees of a right angle (or of straight) are
 /// pulled onto it; corners further away than that are left alone, so a
@@ -29,21 +28,21 @@ pub struct LocalProjection {
 impl LocalProjection {
     pub fn new(origin: LatLon) -> Self {
         Self {
-            lat0: origin.0,
-            lon0: origin.1,
-            cos_lat0: origin.0.to_radians().cos(),
+            lat0: origin.lat,
+            lon0: origin.lon,
+            cos_lat0: origin.lat.to_radians().cos(),
         }
     }
 
     pub fn project(&self, p: LatLon) -> (f64, f64) {
         (
-            wrap_delta_lon(p.1 - self.lon0).to_radians() * self.cos_lat0 * EARTH_RADIUS_M,
-            (p.0 - self.lat0).to_radians() * EARTH_RADIUS_M,
+            wrap_delta_lon(p.lon - self.lon0).to_radians() * self.cos_lat0 * EARTH_RADIUS_M,
+            (p.lat - self.lat0).to_radians() * EARTH_RADIUS_M,
         )
     }
 
     pub fn unproject(&self, xy: (f64, f64)) -> LatLon {
-        (
+        LatLon::new(
             self.lat0 + (xy.1 / EARTH_RADIUS_M).to_degrees(),
             wrap_lon(self.lon0 + (xy.0 / (EARTH_RADIUS_M * self.cos_lat0)).to_degrees()),
         )
@@ -72,15 +71,15 @@ fn wrap_lon(lon: f64) -> f64 {
 /// longitude 0). Ordinary data gives the plain arithmetic mean.
 pub fn mean_point(points: &[LatLon]) -> LatLon {
     let n = points.len() as f64;
-    let lat = points.iter().map(|p| p.0).sum::<f64>() / n;
+    let lat = points.iter().map(|p| p.lat).sum::<f64>() / n;
     let Some(first) = points.first() else {
-        return (lat, points.iter().map(|p| p.1).sum::<f64>() / n);
+        return LatLon::new(lat, points.iter().map(|p| p.lon).sum::<f64>() / n);
     };
-    let ref_lon = first.1;
+    let ref_lon = first.lon;
     let spread: f64 = points
         .iter()
         .map(|p| {
-            let d = p.1 - ref_lon;
+            let d = p.lon - ref_lon;
             if d.abs() > 180.0 {
                 wrap_delta_lon(d)
             } else {
@@ -88,12 +87,12 @@ pub fn mean_point(points: &[LatLon]) -> LatLon {
             }
         })
         .sum::<f64>();
-    let lon = if points.iter().any(|p| (p.1 - ref_lon).abs() > 180.0) {
+    let lon = if points.iter().any(|p| (p.lon - ref_lon).abs() > 180.0) {
         wrap_lon(ref_lon + spread / n)
     } else {
-        points.iter().map(|p| p.1).sum::<f64>() / n
+        points.iter().map(|p| p.lon).sum::<f64>() / n
     };
-    (lat, lon)
+    LatLon::new(lat, lon)
 }
 
 /// Drop the closing duplicate of a ring, if `points` ends where it starts.
@@ -426,10 +425,14 @@ pub fn reversed<T: Clone>(items: &[T]) -> Vec<T> {
 mod tests {
     #[test]
     fn projection_handles_longitudes_either_side_of_the_antimeridian() {
-        let pts = [(10.0, 179.9995), (10.0, -179.9995), (10.0, 180.0)];
+        let pts = [
+            LatLon::new(10.0, 179.9995),
+            LatLon::new(10.0, -179.9995),
+            LatLon::new(10.0, 180.0),
+        ];
         let centre = mean_point(&pts);
         assert!(
-            (centre.1.abs() - 180.0).abs() < 0.001,
+            (centre.lon.abs() - 180.0).abs() < 0.001,
             "centre {centre:?} should sit near 180"
         );
         let proj = LocalProjection::new(centre);
@@ -437,16 +440,19 @@ mod tests {
             let xy = proj.project(p);
             assert!(xy.0.abs() < 100.0, "{p:?} projected to {xy:?}");
             let back = proj.unproject(xy);
-            assert!((back.0 - p.0).abs() < 1e-9);
-            let dlon = (back.1 - p.1).rem_euclid(360.0);
+            assert!((back.lat - p.lat).abs() < 1e-9);
+            let dlon = (back.lon - p.lon).rem_euclid(360.0);
             assert!(
                 dlon < 1e-9 || 360.0 - dlon < 1e-9,
                 "{p:?} came back {back:?}"
             );
-            assert!((-180.0..=180.0).contains(&back.1));
+            assert!((-180.0..=180.0).contains(&back.lon));
         }
         // Ordinary data is the plain mean.
-        assert_eq!(mean_point(&[(1.0, 10.0), (3.0, 20.0)]), (2.0, 15.0));
+        assert_eq!(
+            mean_point(&[LatLon::new(1.0, 10.0), LatLon::new(3.0, 20.0)]),
+            LatLon::new(2.0, 15.0)
+        );
     }
 
     use super::*;
@@ -465,7 +471,7 @@ mod tests {
     /// A rectangle near Boston, roughly 40 m by 20 m, with its top edge
     /// sheared so the corners are about 81 and 99 degrees.
     fn skewed_rect() -> Vec<LatLon> {
-        let proj = LocalProjection::new((42.36, -71.06));
+        let proj = LocalProjection::new(LatLon::new(42.36, -71.06));
         let pts = [
             (0.0, 0.0),
             (40.0, 0.0),
@@ -507,7 +513,7 @@ mod tests {
 
     #[test]
     fn squaring_an_already_square_shape_changes_nothing() {
-        let proj = LocalProjection::new((10.0, 20.0));
+        let proj = LocalProjection::new(LatLon::new(10.0, 20.0));
         let sq: Vec<LatLon> = [
             (0.0, 0.0),
             (10.0, 0.0),
@@ -524,7 +530,7 @@ mod tests {
     #[test]
     fn squaring_leaves_deliberate_diagonals_alone() {
         // An equilateral-ish triangle has no corner near 90 or 180.
-        let proj = LocalProjection::new((10.0, 20.0));
+        let proj = LocalProjection::new(LatLon::new(10.0, 20.0));
         let tri: Vec<LatLon> = [(0.0, 0.0), (10.0, 0.0), (5.0, 8.66), (0.0, 0.0)]
             .iter()
             .map(|&p| proj.unproject(p))
@@ -534,7 +540,7 @@ mod tests {
 
     #[test]
     fn squaring_an_open_way_keeps_its_endpoints() {
-        let proj = LocalProjection::new((42.0, -71.0));
+        let proj = LocalProjection::new(LatLon::new(42.0, -71.0));
         // An L whose middle corner is 80 degrees.
         let line: Vec<LatLon> = [(0.0, 0.0), (30.0, 0.0), (35.0, 28.0)]
             .iter()
@@ -549,7 +555,7 @@ mod tests {
 
     #[test]
     fn squaring_straightens_a_near_straight_vertex() {
-        let proj = LocalProjection::new((42.0, -71.0));
+        let proj = LocalProjection::new(LatLon::new(42.0, -71.0));
         // A rectangle with an extra vertex on the bottom edge, nudged 0.3 m
         // off the line.
         let pts: Vec<LatLon> = [
@@ -570,12 +576,13 @@ mod tests {
 
     #[test]
     fn squaring_needs_three_points() {
-        assert!(orthogonalize(&[(0.0, 0.0), (1.0, 1.0)]).is_none());
-        assert!(!can_square(&[(0.0, 0.0), (1.0, 1.0)]));
+        let two = [LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)];
+        assert!(orthogonalize(&two).is_none());
+        assert!(!can_square(&two));
     }
 
     fn polygon(n: usize, jitter: f64) -> Vec<LatLon> {
-        let proj = LocalProjection::new((42.0, -71.0));
+        let proj = LocalProjection::new(LatLon::new(42.0, -71.0));
         let mut pts: Vec<LatLon> = (0..n)
             .map(|i| {
                 let t = std::f64::consts::TAU * i as f64 / n as f64;
@@ -634,7 +641,7 @@ mod tests {
     /// A line from the origin going east for `length` metres, with the
     /// interior nodes at `(along, across)` metres (across = north of the line).
     fn line_with(length: f64, interior: &[(f64, f64)]) -> Vec<LatLon> {
-        let proj = LocalProjection::new((42.36, -71.06));
+        let proj = LocalProjection::new(LatLon::new(42.36, -71.06));
         let mut xy = vec![(0.0, 0.0)];
         xy.extend_from_slice(interior);
         xy.push((length, 0.0));
@@ -664,7 +671,7 @@ mod tests {
 
     #[test]
     fn straightening_works_on_a_diagonal_line() {
-        let proj = LocalProjection::new((42.36, -71.06));
+        let proj = LocalProjection::new(LatLon::new(42.36, -71.06));
         let pts: Vec<LatLon> = [(0.0, 0.0), (30.0, 40.0), (100.0, 100.0), (120.0, 160.0)]
             .iter()
             .map(|&v| proj.unproject(v))
@@ -693,7 +700,7 @@ mod tests {
             })
             .collect();
         let quarter = {
-            let proj = LocalProjection::new((42.36, -71.06));
+            let proj = LocalProjection::new(LatLon::new(42.36, -71.06));
             let mut v = vec![proj.unproject((0.0, 0.0))];
             v.extend(arc.iter().map(|&p| proj.unproject(p)));
             v.push(proj.unproject((100.0, 100.0)));
@@ -729,11 +736,11 @@ mod tests {
         let two = line_with(50.0, &[]);
         assert_eq!(straighten(&two), Err(StraightenError::NotApplicable));
         // Same exact spot at both ends is a ring, in effect.
-        let p = (42.36, -71.06);
-        let q = (42.3601, -71.0601);
+        let p = LatLon::new(42.36, -71.06);
+        let q = LatLon::new(42.3601, -71.0601);
         assert_eq!(straighten(&[p, q, p]), Err(StraightenError::NotApplicable));
         // Different nodes a hair apart: no line to project onto.
-        let p2 = (42.36 + 1e-12, -71.06);
+        let p2 = LatLon::new(42.36 + 1e-12, -71.06);
         assert_eq!(straighten(&[p, q, p2]), Err(StraightenError::NoLine));
     }
 
@@ -754,9 +761,16 @@ mod tests {
     #[test]
     fn simplify_keeps_the_ends_of_anything_shorter_than_three_points() {
         assert!(simplify_keep(&[], &[], 3.0).is_empty());
-        assert_eq!(simplify_keep(&[(1.0, 1.0)], &[false], 3.0), vec![true]);
         assert_eq!(
-            simplify_keep(&[(1.0, 1.0), (1.0, 1.1)], &[false, false], 3.0),
+            simplify_keep(&[LatLon::new(1.0, 1.0)], &[false], 3.0),
+            vec![true]
+        );
+        assert_eq!(
+            simplify_keep(
+                &[LatLon::new(1.0, 1.0), LatLon::new(1.0, 1.1)],
+                &[false, false],
+                3.0
+            ),
             vec![true, true]
         );
     }
@@ -865,16 +879,24 @@ mod tests {
 
     #[test]
     fn simplify_measures_across_the_antimeridian() {
-        let near = [(10.0, 179.9990), (10.00001, 179.9995), (10.0, -179.9990)];
+        let near = [
+            LatLon::new(10.0, 179.9990),
+            LatLon::new(10.00001, 179.9995),
+            LatLon::new(10.0, -179.9990),
+        ];
         assert_eq!(kept(&near, &[false; 3], 3.0), vec![true, false, true]);
-        let off = [(10.0, 179.9990), (10.0003, 179.9995), (10.0, -179.9990)];
+        let off = [
+            LatLon::new(10.0, 179.9990),
+            LatLon::new(10.0003, 179.9995),
+            LatLon::new(10.0, -179.9990),
+        ];
         assert_eq!(kept(&off, &[false; 3], 3.0), vec![true, true, true]);
     }
 
     #[test]
     fn simplify_survives_repeated_points() {
-        let p = (42.0, -71.0);
-        let q = (42.001, -71.0);
+        let p = LatLon::new(42.0, -71.0);
+        let q = LatLon::new(42.001, -71.0);
         assert_eq!(kept(&[p, p, p], &[false; 3], 3.0), vec![true, false, true]);
         assert_eq!(
             kept(&[p, p, q, q], &[false; 4], 3.0),

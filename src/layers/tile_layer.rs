@@ -94,6 +94,13 @@ impl TileFade {
     }
 }
 
+/// Whether the parent tile is drawn behind a tile of opacity `alpha`. It stays
+/// until the tile has fully faded in, so it shows through the fade instead of
+/// the bare placeholder background.
+fn shows_parent_fallback(alpha: f32) -> bool {
+    alpha < 1.0
+}
+
 /// Standard XYZ raster tile width in pixels.
 pub const STANDARD_TILE_SIZE: u32 = 256;
 
@@ -170,7 +177,7 @@ impl TileLayer {
     }
 
     /// The offset as a Web Mercator shift, scaled for the view's latitude.
-    fn mercator_offset(&self, viewport: &Viewport) -> (f64, f64) {
+    fn mercator_offset(&self, viewport: &Viewport) -> Mercator {
         offset_to_mercator(self.offset, viewport.center().lat)
     }
 
@@ -322,11 +329,11 @@ fn edge_bleed_margin(tile_width_px: f32, tile_texels: u32) -> f32 {
 /// Screen rect (x, y, width, height) for one tile with no imagery offset.
 #[cfg(test)]
 fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, Pixels, Pixels) {
-    tile_screen_rect_shifted(viewport, tile, (0.0, 0.0))
+    tile_screen_rect_shifted(viewport, tile, Mercator::new(0.0, 0.0))
 }
 
 /// Screen rect (x, y, width, height) for one tile, for imagery painted
-/// `(off_x, off_y)` Web Mercator metres away from where the tile says it is
+/// `offset` (Web Mercator metres) away from where the tile says it is
 /// (the layer's imagery offset).
 ///
 /// Each tile is projected independently at its exact sub-pixel position,
@@ -338,7 +345,7 @@ fn tile_screen_rect(viewport: &Viewport, tile: &TileCoord) -> (Pixels, Pixels, P
 fn tile_screen_rect_shifted(
     viewport: &Viewport,
     tile: &TileCoord,
-    (off_x, off_y): (f64, f64),
+    offset: Mercator,
 ) -> (Pixels, Pixels, Pixels, Pixels) {
     let MercRect {
         min_x,
@@ -346,8 +353,9 @@ fn tile_screen_rect_shifted(
         min_y,
         max_y,
     } = tile.mercator_bounds();
-    let top_left = viewport.mercator_to_screen(Mercator::new(min_x + off_x, max_y + off_y));
-    let bottom_right = viewport.mercator_to_screen(Mercator::new(max_x + off_x, min_y + off_y));
+    let top_left = viewport.mercator_to_screen(Mercator::new(min_x + offset.x, max_y + offset.y));
+    let bottom_right =
+        viewport.mercator_to_screen(Mercator::new(max_x + offset.x, min_y + offset.y));
 
     let half_overlap = px(TILE_OVERLAP_PX / 2.0);
     let width = (bottom_right.x - top_left.x).abs() + px(TILE_OVERLAP_PX);
@@ -463,7 +471,7 @@ impl MapLayer for TileLayer {
             let (tile_x, tile_y, tile_width, tile_height) = tile_screen_rect_shifted(
                 viewport,
                 tile_coord,
-                (merc_offset.0 + placed.x_shift_m(), merc_offset.1),
+                Mercator::new(merc_offset.x + placed.x_shift_m(), merc_offset.y),
             );
 
             let tile_url = url_from_template(&self.url_template, tile_coord);
@@ -474,7 +482,9 @@ impl MapLayer for TileLayer {
             };
 
             // Probe the child tile first: the parent fallback is only built
-            // (and its asset only requested) while the child is not ready.
+            // (and its asset only requested) until the child has fully faded
+            // in, so the parent shows through the fade instead of the bare
+            // placeholder.
             let child_ready = window
                 .use_asset::<crate::tile_cache::TileAsset>(&asset_key, cx)
                 .is_some();
@@ -484,7 +494,7 @@ impl MapLayer for TileLayer {
             // Parent-tile fallback: while the child tile is loading, show the
             // already-cached parent (z-1) tile scaled 2x and clipped to this
             // child's quadrant. Prevents the dark "downloading" flash.
-            let parent_fallback = if child_ready {
+            let parent_fallback = if !shows_parent_fallback(alpha) {
                 None
             } else {
                 tile_coord.parent().map(|parent_coord| {
@@ -615,7 +625,8 @@ impl MapLayer for TileLayer {
 mod tests {
     use super::{
         compute_effective_tile_zoom, edge_bleed_margin, hidpi_tile_zoom, render_tile_zoom,
-        tile_screen_rect, wanted_urls, TileFade, OSM_CARTO_TEMPLATE, TILE_FADE, TILE_OVERLAP_PX,
+        shows_parent_fallback, tile_screen_rect, wanted_urls, TileFade, OSM_CARTO_TEMPLATE,
+        TILE_FADE, TILE_OVERLAP_PX,
     };
     use crate::coordinates::{LatLon, Mercator};
     use crate::tiles::TileCoord;
@@ -641,6 +652,36 @@ mod tests {
     fn tile_ready_on_first_sight_is_opaque() {
         let mut f = TileFade::default();
         assert_eq!(f.alpha("a", true, Instant::now()), 1.0);
+    }
+
+    #[test]
+    fn parent_shows_through_the_whole_fade_and_goes_when_opaque() {
+        let mut f = TileFade::default();
+        let t0 = Instant::now();
+        // Loading: alpha 0, parent shown.
+        assert!(shows_parent_fallback(f.alpha("a", false, t0)));
+        // Image just arrived: still alpha 0, parent must still be shown
+        // (the flash happened here when it was dropped).
+        let ready = t0 + std::time::Duration::from_millis(10);
+        assert!(shows_parent_fallback(f.alpha("a", true, ready)));
+        // Mid-fade.
+        assert!(shows_parent_fallback(f.alpha(
+            "a",
+            true,
+            ready + TILE_FADE / 2
+        )));
+        // Fully faded in: parent dropped.
+        assert!(!shows_parent_fallback(f.alpha(
+            "a",
+            true,
+            ready + TILE_FADE * 2
+        )));
+    }
+
+    #[test]
+    fn tile_ready_on_first_sight_needs_no_parent() {
+        let mut f = TileFade::default();
+        assert!(!shows_parent_fallback(f.alpha("a", true, Instant::now())));
     }
 
     #[test]
@@ -873,7 +914,7 @@ mod tests {
                 slot.min_y + eps,
                 slot.max_y - eps,
             ),
-            (0.0, 0.0),
+            Mercator::new(0.0, 0.0),
             5,
         );
         assert_eq!(tiles.len(), 4);

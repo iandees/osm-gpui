@@ -269,11 +269,18 @@ impl Render for PresetPickerDialog {
                                     .flex_col()
                                     .flex_1()
                                     .min_w(gpui::px(0.))
+                                    .overflow_hidden()
                                     .child(Label::new(name.clone()))
+                                    // One line, ellipsised: a wrapping preview
+                                    // makes the search input collapse.
                                     .child(
-                                        Label::new(format_tag_preview(tags))
+                                        div()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
                                             .text_size(muted_text_size())
-                                            .text_color(muted),
+                                            .text_color(muted)
+                                            .child(format_tag_preview(tags)),
                                     ),
                             )
                             .on_mouse_down(
@@ -293,7 +300,13 @@ impl Render for PresetPickerDialog {
                 .into_any_element()
         };
 
-        let body = v_flex().gap_3().child(Input::new(&self.query)).child(list);
+        // Explicit full widths: without them the input shrinks to its
+        // sibling's intrinsic width (e.g. the short "no matches" label).
+        let body = v_flex()
+            .w_full()
+            .gap_3()
+            .child(Input::new(&self.query).w_full())
+            .child(list);
 
         let frame = modal::card(cx, gpui::px(420.0), tr!("dialog.preset_picker.title"), body)
             .header_end(

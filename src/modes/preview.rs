@@ -33,9 +33,9 @@ pub(crate) struct PreviewFrame<'a> {
 }
 
 impl PreviewFrame<'_> {
-    /// The window position of a geo `(lat, lon)`.
-    pub(super) fn geo(&self, (lat, lon): (f64, f64)) -> Point<Pixels> {
-        let p = self.viewport.geo_to_screen(LatLon::new(lat, lon));
+    /// The window position of a geographic position.
+    pub(super) fn geo(&self, at: LatLon) -> Point<Pixels> {
+        let p = self.viewport.geo_to_screen(at);
         self.local(p)
     }
 
@@ -81,14 +81,14 @@ pub(super) fn paint_snap_target(
     frame: &PreviewFrame<'_>,
     window: &mut Window,
 ) {
-    let (lat, lon) = match target {
-        crate::SnapTarget::Node { lat, lon, .. } => (*lat, *lon),
-        crate::SnapTarget::Way { a, b, lat, lon, .. } => {
+    let at = match target {
+        crate::SnapTarget::Node { at, .. } => *at,
+        crate::SnapTarget::Way { a, b, at, .. } => {
             stroke_polyline(window, [frame.geo(*a), frame.geo(*b)], px(4.0), amber());
-            (*lat, *lon)
+            *at
         }
     };
-    let c = frame.geo((lat, lon));
+    let c = frame.geo(at);
     let half = px(7.0);
     let bounds = Bounds {
         origin: point(c.x - half, c.y - half),

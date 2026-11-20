@@ -1,0 +1,29 @@
+# A GPX file's trace style: its usual magenta look, then coloured by speed
+# and by direction from the track's times, set from its Layers-list menu.
+#
+# Captures go to out/ (not committed).
+
+window 1200 800
+action AddOsmCarto
+load_file docs/screenshots/fixtures/reference-track.gpx
+viewport 40.7122 -74.0052 17
+wait_idle 15s
+
+assert_layer_count 2
+assert_layer gpx reference-track
+capture out/gpx-style-1-default.png
+
+# Speed over the walking range: the GPX layer is index 1, above Carto.
+action layers::SetGpsTraceStyle {"index":1,"change":{"SpeedRange":"Walking"}}
+action layers::SetGpsTraceStyle {"index":1,"change":{"Width":"Thick"}}
+wait_idle 1s
+capture out/gpx-style-2-speed.png
+
+action layers::SetGpsTraceStyle {"index":1,"change":{"ColorBy":"Direction"}}
+wait_idle 1s
+capture out/gpx-style-3-direction.png
+
+# Reset returns to the file's magenta, not the traces' cyan.
+action layers::SetGpsTraceStyle {"index":1,"change":"Reset"}
+wait_idle 1s
+capture out/gpx-style-4-reset.png

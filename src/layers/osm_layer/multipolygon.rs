@@ -290,7 +290,7 @@ impl MpCache {
             node_cache
                 .index_by_id
                 .get(&id)
-                .map(|&i| (node_cache.flat[i].1, node_cache.flat[i].2))
+                .map(|&i| Mercator::new(node_cache.flat[i].1, node_cache.flat[i].2))
         };
         if let Some(r) = crate::relation_overlay::build_restriction(data, relation, &position) {
             self.restrictions.insert(relation.id, r);
@@ -436,14 +436,14 @@ impl OsmLayer {
         self.derived.mp.route_colour_of_way(way_id)
     }
 
-    /// The drawn restriction markers: `(relation id, mercator x, y, only)`.
+    /// The drawn restriction markers: `(relation id, position, only)`.
     #[cfg(test)]
-    pub(crate) fn restriction_markers(&self) -> Vec<(RelationId, f64, f64, bool)> {
+    pub(crate) fn restriction_markers(&self) -> Vec<(RelationId, Mercator, bool)> {
         self.derived
             .mp
             .restrictions
             .iter()
-            .map(|(&id, r)| (id, r.x, r.y, r.only))
+            .map(|(&id, r)| (id, r.at, r.only))
             .collect()
     }
 

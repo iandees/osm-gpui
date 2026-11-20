@@ -434,6 +434,16 @@ pub trait EditableLayer {
         false
     }
 
+    /// Names of the named roads within `radius_m` meters of `feature`,
+    /// nearest first (for `addr:street` suggestions). Default: none.
+    fn nearby_road_names(
+        &self,
+        _feature: &crate::selection::FeatureRef,
+        _radius_m: f64,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Return key/value tags for the given feature if this layer owns it.
     fn feature_tags(&self, feature: &crate::selection::FeatureRef) -> Option<Tags>;
 
@@ -475,8 +485,8 @@ pub trait EditableLayer {
     /// Clear any transient drag preview.
     fn clear_drag_preview(&mut self);
 
-    /// Current (lat, lon) of a node this layer owns, if any.
-    fn node_lat_lon(&self, node_id: NodeId) -> Option<(f64, f64)>;
+    /// Current position of a node this layer owns, if any.
+    fn node_lat_lon(&self, node_id: NodeId) -> Option<crate::coordinates::LatLon>;
 
     /// The member node ids of a way this layer owns, if any.
     fn way_node_ids(&self, way_id: WayId) -> Option<Vec<NodeId>>;
@@ -485,9 +495,12 @@ pub trait EditableLayer {
     // together and marks the layer modified. A refusal returns `Err` having
     // changed nothing. --
 
-    /// Move nodes: `(node_id, new_lat, new_lon)`. Moves none if any id is
+    /// Move nodes: `(node_id, new_position)`. Moves none if any id is
     /// unknown. Caches are patched for the moved nodes and their ways only.
-    fn commit_node_moves(&mut self, moves: &[(NodeId, f64, f64)]) -> Result<(), EditError>;
+    fn commit_node_moves(
+        &mut self,
+        moves: &[(NodeId, crate::coordinates::LatLon)],
+    ) -> Result<(), EditError>;
 
     /// Set (insert or overwrite) a tag on a node, way or relation.
     fn set_tag(
@@ -506,13 +519,17 @@ pub trait EditableLayer {
         key: &str,
     ) -> Result<(), EditError>;
 
-    /// Create a tag-less node at `(lat, lon)` and return its id: a fresh
+    /// Create a tag-less node at `at` and return its id: a fresh
     /// negative one when `id` is `None`, else exactly `id` (redo), which must
     /// be unused.
-    fn create_node(&mut self, lat: f64, lon: f64, id: Option<NodeId>) -> Result<NodeId, EditError>;
+    fn create_node(
+        &mut self,
+        at: crate::coordinates::LatLon,
+        id: Option<NodeId>,
+    ) -> Result<NodeId, EditError>;
 
     /// `create_node` with a fresh id, which cannot fail.
-    fn add_node(&mut self, lat: f64, lon: f64) -> NodeId;
+    fn add_node(&mut self, at: crate::coordinates::LatLon) -> NodeId;
 
     /// Delete a node or way, returning what `restore_feature` needs. A node
     /// still in a way, and a node or way still listed by a relation, is
@@ -543,8 +560,7 @@ pub trait EditableLayer {
         &mut self,
         way_id: WayId,
         index: usize,
-        lat: f64,
-        lon: f64,
+        at: crate::coordinates::LatLon,
     ) -> Result<NodeId, EditError>;
 
     /// Remove a node that no way or relation uses (undo of a create).
@@ -632,6 +648,12 @@ pub trait EditableLayer {
 
     /// Undo of `purge_features`: put the objects back in data and baseline.
     fn restore_purged(&mut self, purged: crate::selection::PurgedFeatures);
+
+    /// Bring back objects the server has deleted, as edits of the existing
+    /// objects: they join the data as given (ids and the deleted versions
+    /// kept) and the baseline as a marked stand-in, so the diff reports each
+    /// as modified rather than created. Undone by `purge_features`.
+    fn undelete_objects(&mut self, objects: crate::selection::PurgedFeatures);
 }
 
 /// Read the status-line numbers off `layers` through their typed accessors.
@@ -1353,7 +1375,8 @@ mod tests {
         use crate::reference::{Builder, FeatureKind, Format};
         let mut b = Builder::new(Format::Gpx);
         let f = b.feature(FeatureKind::Track, "", None, vec![]);
-        b.line(f, &[(-74.0, 40.0), (-73.999, 40.001)]).unwrap();
+        b.line(f, &[LatLon::new(40.0, -74.0), LatLon::new(40.001, -73.999)])
+            .unwrap();
         crate::layers::reference_layer::ReferenceLayer::new(id, "ref", b.finish().unwrap())
     }
 
@@ -1456,8 +1479,7 @@ mod tests {
         let notes = NoteStore::default();
         notes.replace(vec![Note {
             id: 9,
-            lat,
-            lon,
+            at: LatLon::new(lat, lon),
             status: NoteStatus::Open,
             created: None,
             closed: None,
@@ -1489,8 +1511,14 @@ mod tests {
             use crate::reference::{Builder, FeatureKind, Format};
             let mut b = Builder::new(Format::Gpx);
             let f = b.feature(FeatureKind::Track, "", None, vec![]);
-            b.line(f, &[(hit_lon, hit_lat), (hit_lon + 0.0001, hit_lat)])
-                .unwrap();
+            b.line(
+                f,
+                &[
+                    LatLon::new(hit_lat, hit_lon),
+                    LatLon::new(hit_lat, hit_lon + 0.0001),
+                ],
+            )
+            .unwrap();
             crate::layers::reference_layer::ReferenceLayer::new(
                 LayerId(3),
                 "ref",

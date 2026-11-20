@@ -1,6 +1,7 @@
 //! Upload conflicts, end to end against the fake HTTP client.
 
 use super::{data_with, empty_tags};
+use crate::coordinates::LatLon;
 use crate::http::fake::{ok, status_err, FakeClient};
 use crate::ids::{NodeId, WayId};
 use crate::layers::osm_layer::OsmLayer;
@@ -151,7 +152,10 @@ fn use_theirs_replaces_the_object_and_the_retry_leaves_it_out() {
         })
         .unwrap();
     assert_eq!(tags, Tags::from([("shop", "bakery")]));
-    assert_eq!(layer.node_lat_lon(NodeId(1)), Some((40.5, -74.0)));
+    assert_eq!(
+        layer.node_lat_lon(NodeId(1)),
+        Some(LatLon::new(40.5, -74.0))
+    );
 
     let retry = FakeClient::new(vec![
         ok(200, "43"),

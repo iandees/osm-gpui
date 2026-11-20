@@ -10,6 +10,7 @@
 
 use serde_json::Value;
 
+use crate::coordinates::LatLon;
 use crate::reference::{Builder, FeatureKind, Format, RefError, ReferenceData};
 
 /// Property keys tried, in order, for a feature's name.
@@ -163,15 +164,15 @@ fn read_geometry(
         .ok_or_else(|| malformed(format!("a {kind} without \"coordinates\"")))?;
     match kind {
         "Point" => {
-            let (lon, lat) = position(coords)?;
+            let at = position(coords)?;
             let f = id(builder);
-            builder.point(f, lon, lat)
+            builder.point(f, at)
         }
         "MultiPoint" => {
             for p in array(coords)? {
-                let (lon, lat) = position(p)?;
+                let at = position(p)?;
                 let f = id(builder);
-                builder.point(f, lon, lat)?;
+                builder.point(f, at)?;
             }
             Ok(())
         }
@@ -209,18 +210,18 @@ fn array(value: &Value) -> Result<&Vec<Value>, RefError> {
 }
 
 /// One `[lon, lat]` or `[lon, lat, elevation]` position.
-fn position(value: &Value) -> Result<(f64, f64), RefError> {
+fn position(value: &Value) -> Result<LatLon, RefError> {
     let a = array(value)?;
     match (
         a.first().and_then(Value::as_f64),
         a.get(1).and_then(Value::as_f64),
     ) {
-        (Some(lon), Some(lat)) => Ok((lon, lat)),
+        (Some(lon), Some(lat)) => Ok(LatLon::new(lat, lon)),
         _ => Err(malformed("a position needs two numbers")),
     }
 }
 
-fn positions(value: &Value) -> Result<Vec<(f64, f64)>, RefError> {
+fn positions(value: &Value) -> Result<Vec<LatLon>, RefError> {
     array(value)?.iter().map(position).collect()
 }
 
@@ -241,6 +242,12 @@ mod tests {
             d.extent(),
             Some(crate::coordinates::GeoBounds::new(50.25, 50.25, 10.5, 10.5))
         );
+    }
+
+    #[test]
+    fn position_reads_longitude_first() {
+        let v: Value = serde_json::from_str("[10.5, 50.25, 100]").unwrap();
+        assert_eq!(position(&v).unwrap(), LatLon::new(50.25, 10.5));
     }
 
     #[test]

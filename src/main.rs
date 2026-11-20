@@ -7,9 +7,9 @@
 
 use gpui::Action;
 use gpui::{
-    actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, KeyBinding,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent, SharedString, Window,
-    WindowOptions,
+    actions, canvas, div, point, prelude::*, px, rgb, size, App, Bounds, Context, Entity,
+    KeyBinding, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, ScrollWheelEvent,
+    SharedString, Window, WindowOptions,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -39,10 +39,14 @@ mod imagery_offset_ui;
 mod imagery_state_tests;
 #[cfg(test)]
 mod improve_click_tests;
+mod junction_edit;
+mod junction_view;
+mod lanes_view;
 mod menu;
 mod menu_sync;
 mod mode_panel;
 mod modes;
+mod road_paint;
 use modes::AddProgress;
 #[cfg(test)]
 use modes::{BuildingReference, ExtrudeDrag, ExtrudeStyle};
@@ -72,8 +76,8 @@ mod welcome;
 use crate::menu::{
     add_imagery_layer, add_osm_carto, add_saved_custom_imagery, download_from_osm,
     no_op_imagery_info, open_custom_imagery_dialog, open_esri_layer_dialog, open_osm_file,
-    open_pmtiles_dialog, open_settings, quit, rebuild_menus, toggle_debug_overlay, upload_to_osm,
-    validate, ShowAbout,
+    open_pmtiles_dialog, open_settings, quit, rebuild_menus, revert_changeset,
+    toggle_debug_overlay, upload_to_osm, validate, ShowAbout,
 };
 use crate::script_harness::{LiveApp, ScriptBus, KEYSTROKE_QUEUE, SCRIPT_ACTIVE, SCRIPT_BUS};
 use crate::undo::{
@@ -220,6 +224,17 @@ fn key_binding_for(id: &'static str, spec: &str) -> Option<KeyBinding> {
     }
 }
 
+/// File > Revert Changeset…. With `id` (a changeset number, or `last` for the
+/// one this session uploaded last) the dialog opens filled in and submitted,
+/// as a typed answer would be: for scripts.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = osm_gpui)]
+#[serde(deny_unknown_fields)]
+struct RevertChangeset {
+    #[serde(default)]
+    id: Option<String>,
+}
+
 /// Action for adding an imagery layer from the ELI by id.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = osm_gpui)]
@@ -279,6 +294,11 @@ struct RunSelectionAction {
     id: SharedString,
 }
 
+// Context-menu "Split Way Here": split the right-clicked way at the spot
+// remembered in `Dialogs::split_target`, after asking which part keeps the
+// way's history.
+actions!(osm_gpui, [SplitWayHere]);
+
 /// Action to switch the current `EditMode`.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = mode)]
@@ -293,16 +313,15 @@ struct SetMode {
 #[derive(Clone, Debug, PartialEq)]
 enum SnapTarget {
     /// An existing node, reused / merged into.
-    Node { id: NodeId, lat: f64, lon: f64 },
-    /// A way segment: the node becomes a new vertex at `index + 1`, at
-    /// `(lat, lon)`, the nearest point of the segment.
+    Node { id: NodeId, at: LatLon },
+    /// A way segment: the node becomes a new vertex at `index + 1`, at `at`,
+    /// the nearest point of the segment.
     Way {
         way_id: WayId,
-        a: (f64, f64),
-        b: (f64, f64),
+        a: LatLon,
+        b: LatLon,
         index: usize,
-        lat: f64,
-        lon: f64,
+        at: LatLon,
     },
 }
 
@@ -762,6 +781,9 @@ struct MapViewer {
     /// closes without uploading (Cancel, or Show on a conflict) and put back
     /// when it reopens. Cleared after a successful upload.
     upload_comment_draft: String,
+    /// The changeset id of the last upload this session finished (for the
+    /// script form of Revert Changeset).
+    last_uploaded_changeset: Option<u64>,
     /// The sources text kept when the upload dialog closed without
     /// uploading; `None` means prefill the last uploaded one.
     upload_source_draft: Option<String>,
@@ -773,9 +795,13 @@ struct MapViewer {
     /// and panel width at mouse-down.
     side_panel_resize: Option<(f32, f32)>,
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
-    /// Tags, History, Relations, Members, Validation, by the indices
-    /// `render_side_panel` gives them) is expanded.
-    side_panel_open: [bool; 8],
+    /// Tags, History, Relations, Members, Validation, Junction, Lanes, by the
+    /// indices `render_side_panel` gives them) is expanded.
+    side_panel_open: [bool; 10],
+    /// The Junction inspector's chosen approach: `(junction node, arm index)`.
+    junction_from: Option<(NodeId, usize)>,
+    /// The Lanes editor's chosen lane: `(way, forward, lane from the left)`.
+    lane_selected: Option<(WayId, bool, usize)>,
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
@@ -979,6 +1005,7 @@ impl MapViewer {
             find_mode: Default::default(),
             validation: None,
             upload_comment_draft: String::new(),
+            last_uploaded_changeset: None,
             upload_source_draft: None,
             fields_panel: Default::default(),
             tag_edit: Default::default(),
@@ -993,11 +1020,13 @@ impl MapViewer {
             // Everything open except History and Validation, which keep to
             // their headers until the user opens them.
             side_panel_open: {
-                let mut open = [true; 8];
+                let mut open = [true; 10];
                 open[side_panel::HISTORY_SECTION] = false;
                 open[validation_panel::SECTION] = false;
                 open
             },
+            junction_from: None,
+            lane_selected: None,
             focus_handle,
             undo_stack: UndoStack::default(),
             mode_state: modes::ModeState::fresh(EditMode::Select),
@@ -1452,18 +1481,18 @@ impl MapViewer {
         if hit.kind != osm_gpui::selection::FeatureKind::Node || self.selected.contains(&hit) {
             return None;
         }
-        let (lat, lon) = self
+        let at = self
             .layer_manager
             .find_layer(hit.layer_id)?
             .as_editable()?
             .node_lat_lon(NodeId(hit.id))?;
-        Some((hit, vec![(hit.layer_id, vec![(NodeId(hit.id), lat, lon)])]))
+        Some((hit, vec![(hit.layer_id, vec![(NodeId(hit.id), at)])]))
     }
 
     /// Resolve the current selection into, per owning layer, the set of node
     /// ids to translate: a selected node contributes its own id; a selected
     /// way contributes every one of its member node ids. Each id's current
-    /// (lat, lon) is snapshotted for use as the drag's translation anchor.
+    /// position is snapshotted for use as the drag's translation anchor.
     fn resolve_move_targets(&self) -> NodeMoveTargets {
         use osm_gpui::selection::FeatureKind;
         use std::collections::{HashMap, HashSet};
@@ -1496,9 +1525,9 @@ impl MapViewer {
             .filter_map(|(layer_id, ids)| {
                 let layer = self.layer_manager.find_layer(layer_id)?;
                 let editable = layer.as_editable()?;
-                let originals: Vec<(NodeId, f64, f64)> = ids
+                let originals: Vec<(NodeId, LatLon)> = ids
                     .into_iter()
-                    .filter_map(|id| editable.node_lat_lon(id).map(|(lat, lon)| (id, lat, lon)))
+                    .filter_map(|id| editable.node_lat_lon(id).map(|at| (id, at)))
                     .collect();
                 if originals.is_empty() {
                     None
@@ -2138,7 +2167,7 @@ impl MapViewer {
 
     /// The rotation centre in map pixels under the current viewport.
     fn rotate_center_px(&self, center: osm_gpui::geometry::LatLon) -> (f64, f64) {
-        pointer_px(self.viewport.geo_to_screen(LatLon::new(center.0, center.1)))
+        pointer_px(self.viewport.geo_to_screen(center))
     }
 
     /// Turn the nodes of the Rotate in progress to follow the pointer.
@@ -2170,11 +2199,11 @@ impl MapViewer {
         };
         let before: Vec<_> = session.originals.iter().map(|&(_, p)| p).collect();
         let after = osm_gpui::rotate::rotate_points(&before, session.center, session.angle);
-        let moves: Vec<(NodeId, f64, f64)> = session
+        let moves: Vec<(NodeId, LatLon)> = session
             .originals
             .iter()
             .zip(&after)
-            .map(|(&(id, _), &(lat, lon))| (id, lat, lon))
+            .map(|(&(id, _), &a)| (id, a))
             .collect();
         let layer = session.layer;
         if let Some(editable) = self
@@ -2611,8 +2640,8 @@ impl MapViewer {
         use osm_gpui::selection::FeatureKind;
 
         let mut bounds: Option<GeoBounds> = None;
-        let mut extend = |(lat, lon): (f64, f64)| {
-            GeoBounds::extend(&mut bounds, LatLon::new(lat, lon));
+        let mut extend = |at: LatLon| {
+            GeoBounds::extend(&mut bounds, at);
         };
         for feature in features {
             let Some(editable) = self
@@ -2640,11 +2669,7 @@ impl MapViewer {
                     let Some(relation) = editable.relation(RelationId(feature.id)) else {
                         continue;
                     };
-                    let node = |id: NodeId| {
-                        editable
-                            .node_lat_lon(id)
-                            .map(|(lat, lon)| LatLon::new(lat, lon))
-                    };
+                    let node = |id: NodeId| editable.node_lat_lon(id);
                     let way_nodes = |id: WayId| editable.way_node_ids(id);
                     let find = |id: RelationId| editable.relation(id);
                     let lookup = osm_gpui::relations::MemberLookup {
@@ -2653,8 +2678,8 @@ impl MapViewer {
                         relation: &find,
                     };
                     if let Some(b) = osm_gpui::relations::members_bounds(&relation, &lookup) {
-                        extend((b.min_lat, b.min_lon));
-                        extend((b.max_lat, b.max_lon));
+                        extend(LatLon::new(b.min_lat, b.min_lon));
+                        extend(LatLon::new(b.max_lat, b.max_lon));
                     }
                 }
             }
@@ -3164,11 +3189,14 @@ impl MapViewer {
             open_modal(&self.dialogs.about_dialog, cx),
             open_modal(&self.dialogs.nsi_dialog, cx),
             open_modal(&self.dialogs.preset_picker_dialog, cx),
+            open_modal(&self.dialogs.opening_hours_dialog, cx),
             open_modal(&self.dialogs.relation_picker_dialog, cx),
             open_modal(&self.dialogs.parallel_dialog, cx),
+            open_modal(&self.dialogs.revert_dialog, cx),
             open_modal(&self.dialogs.upload_dialog, cx),
             open_modal(&self.dialogs.sign_in_dialog, cx),
             open_modal(&self.dialogs.notice_dialog, cx),
+            open_modal(&self.dialogs.split_way_dialog, cx),
             open_modal(&self.new_note_dialog_element(), cx),
         ]
         .into_iter()
@@ -3215,11 +3243,11 @@ impl MapViewer {
                 |n| snap_node_ok(editable, layer_id, sources, node, n),
             );
             if let Some(id) = hit {
-                let (lat, lon) = editable.node_lat_lon(id)?;
-                return Some(SnapTarget::Node { id, lat, lon });
+                let at = editable.node_lat_lon(id)?;
+                return Some(SnapTarget::Node { id, at });
             }
         }
-        let (way_id, a, b, _loaded_index, lat, lon) = osm_layer.snap_to_way_where(
+        let (way_id, a, b, _loaded_index, at) = osm_layer.snap_to_way_where(
             &self.viewport,
             screen_pt,
             osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
@@ -3239,8 +3267,7 @@ impl MapViewer {
             a: editable.node_lat_lon(a)?,
             b: editable.node_lat_lon(b)?,
             index,
-            lat,
-            lon,
+            at,
         })
     }
 
@@ -3249,7 +3276,7 @@ impl MapViewer {
     fn single_dragged_node(targets: &NodeMoveTargets) -> Option<(LayerId, NodeId)> {
         match targets.as_slice() {
             [(layer, nodes)] => match nodes.as_slice() {
-                [(id, _, _)] => Some((*layer, *id)),
+                [(id, _)] => Some((*layer, *id)),
                 _ => None,
             },
             _ => None,
@@ -3423,7 +3450,7 @@ impl MapViewer {
                     if let Some(layer) = self.layer_manager.find_layer_mut(*layer_id) {
                         if let Some(editable) = layer.as_editable_mut() {
                             let ids: std::collections::HashSet<NodeId> =
-                                originals.iter().map(|&(id, _, _)| id).collect();
+                                originals.iter().map(|&(id, _)| id).collect();
                             editable.set_drag_preview(&ids, delta);
                         }
                     }
@@ -3512,11 +3539,7 @@ impl MapViewer {
                 if let Some((
                     (layer_id, node),
                     SnapTarget::Way {
-                        way_id,
-                        index,
-                        lat,
-                        lon,
-                        ..
+                        way_id, index, at, ..
                     },
                 )) = &snap
                 {
@@ -3531,7 +3554,7 @@ impl MapViewer {
                                 *node,
                                 *way_id,
                                 Some(*index),
-                                Some((*lat, *lon)),
+                                Some(*at),
                             )
                         });
                     match joined {
@@ -3554,22 +3577,19 @@ impl MapViewer {
 
                 let mut undo_per_layer: NodeMoveUndoEntries = Vec::new();
                 for (layer_id, originals) in &targets {
-                    let mut moves: Vec<(NodeId, f64, f64)> = Vec::with_capacity(originals.len());
+                    let mut moves: Vec<(NodeId, LatLon)> = Vec::with_capacity(originals.len());
                     let mut undo_entries: Vec<NodeMoveUndoEntry> =
                         Vec::with_capacity(originals.len());
-                    for &(id, lat, lon) in originals {
-                        let anchor = self.viewport.geo_to_screen(LatLon::new(lat, lon));
+                    for &(id, from) in originals {
+                        let anchor = self.viewport.geo_to_screen(from);
                         let new_screen = anchor + delta;
-                        let LatLon {
-                            lat: mut new_lat,
-                            lon: mut new_lon,
-                        } = self.viewport.screen_to_geo(new_screen);
+                        let mut to = self.viewport.screen_to_geo(new_screen);
                         // Onto an existing node: land exactly on it.
-                        if let Some((_, SnapTarget::Node { lat, lon, .. })) = &snap {
-                            (new_lat, new_lon) = (*lat, *lon);
+                        if let Some((_, SnapTarget::Node { at, .. })) = &snap {
+                            to = *at;
                         }
-                        moves.push((id, new_lat, new_lon));
-                        undo_entries.push((id, (lat, lon), (new_lat, new_lon)));
+                        moves.push((id, to));
+                        undo_entries.push((id, from, to));
                     }
                     let moved = self
                         .layer_manager
@@ -3861,12 +3881,16 @@ impl MapViewer {
         }
         let map_pos = self.window_to_map(position);
         let per_layer = self.layer_manager.hit_test_all(&self.viewport, map_pos);
-        if let Some(hit) = osm_gpui::selection::resolve_hits(per_layer) {
+        let hit = osm_gpui::selection::resolve_hits(per_layer);
+        if let Some(hit) = hit {
             if !self.selected.contains(&hit) {
                 self.set_selection(vec![hit]);
                 cx.notify();
             }
         }
+        // A click on an open way of the active layer can split it right there.
+        self.dialogs.split_target = hit.and_then(|hit| self.split_target_at(hit, map_pos));
+        let split_here = self.dialogs.split_target.is_some();
         if self.selected.is_empty() {
             return;
         }
@@ -3913,6 +3937,13 @@ impl MapViewer {
                         })),
                     );
             }
+            if split_here {
+                let label = tr!("action.split_here.label");
+                menu = menu.separator().item(
+                    PopupMenuItem::element(move |_, _| div().child(label.clone()))
+                        .action(Box::new(SplitWayHere)),
+                );
+            }
             if history_item {
                 let label = tr!("menu.edit.show_history");
                 menu = menu.separator().item(
@@ -3933,6 +3964,95 @@ impl MapViewer {
             _dismiss: dismiss,
         });
         cx.notify();
+    }
+
+    /// Where a right-click at `map_pos` (map coordinates) on `hit` would split
+    /// a way: `hit` must be an open way of the active, editable layer, with
+    /// the click near enough to one of its loaded segments.
+    fn split_target_at(
+        &self,
+        hit: osm_gpui::selection::FeatureRef,
+        map_pos: gpui::Point<gpui::Pixels>,
+    ) -> Option<dialogs::SplitTarget> {
+        if hit.kind != osm_gpui::selection::FeatureKind::Way
+            || self.active_layer != Some(hit.layer_id)
+        {
+            return None;
+        }
+        let layer = self.layer_manager.find_layer(hit.layer_id)?;
+        let editable = layer.as_editable()?;
+        let way = WayId(hit.id);
+        let nodes = editable.way_node_ids(way)?;
+        if nodes.len() < 3 || (nodes.len() >= 4 && nodes.first() == nodes.last()) {
+            return None;
+        }
+        let (_, a, b, _, at) = layer.as_osm()?.snap_to_way_where(
+            &self.viewport,
+            map_pos,
+            osm_gpui::snap::WAY_SNAP_TOLERANCE_PX * 2.0,
+            |w| w == way,
+        )?;
+        // `snap_to_way_where` counts only loaded nodes: find the segment by
+        // its end nodes instead.
+        let segment = nodes.windows(2).position(|w| w[0] == a && w[1] == b)?;
+        Some(dialogs::SplitTarget {
+            layer_id: hit.layer_id,
+            way,
+            segment,
+            at,
+        })
+    }
+
+    /// Context menu "Split Way Here": ask which part keeps the way's history.
+    fn on_split_way_here(&mut self, _: &SplitWayHere, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::split_way_dialog::{DialogEvent, KeepPart, SplitWayDialog};
+
+        if self.dialogs.split_way_dialog.is_some() || self.edits_blocked(cx) {
+            return;
+        }
+        let Some(target) = self.dialogs.split_target else {
+            return;
+        };
+        let dialog = cx.new(|cx| SplitWayDialog::new(window, cx));
+        cx.subscribe(&dialog, move |this, _entity, event: &DialogEvent, cx| {
+            this.dialogs.split_way_dialog = None;
+            if let DialogEvent::Chosen(part) = event {
+                // An upload may have started while the dialog was open.
+                if !this.edits_blocked(cx) {
+                    let keep = match part {
+                        KeepPart::First => selection_actions::KeepHistory::First,
+                        KeepPart::Second => selection_actions::KeepHistory::Second,
+                    };
+                    this.split_way_now(target, keep);
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        self.dialogs.split_way_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Carry out the split chosen in the dialog, as one undo step.
+    fn split_way_now(&mut self, t: dialogs::SplitTarget, keep: selection_actions::KeepHistory) {
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(t.layer_id)
+            .and_then(|l| l.as_editable_mut())
+        else {
+            return;
+        };
+        match selection_actions::split_way_at(editable, t.layer_id, t.way, t.segment, t.at, keep) {
+            Ok((ops, label)) => {
+                self.undo_stack.push(UndoableAction::edit(
+                    t.layer_id,
+                    EditLabel::Text(label.clone()),
+                    ops,
+                ));
+                self.set_status(label);
+            }
+            Err(message) => self.set_status(message),
+        }
     }
 
     /// A click outside the open context menu closes it.
@@ -5099,6 +5219,7 @@ impl MapViewer {
                     None => {
                         this.dialogs.upload_dialog = None;
                         this.upload_comment_draft.clear();
+                        this.last_uploaded_changeset = Some(last_changeset).filter(|&c| c > 0);
                         this.upload_source_draft = None;
                         // Remember the source and comment for next time. Never
                         // written to disk from a script run or a test.
@@ -5710,6 +5831,245 @@ impl MapViewer {
         .detach();
     }
 
+    /// File > "Revert Changeset…": ask which changeset (`render` opens the
+    /// dialog, which needs the window).
+    ///
+    /// `answer` is what to type into it and submit, for a script: a changeset
+    /// number, or `last` for the changeset this session uploaded last.
+    pub(crate) fn request_revert_dialog(&mut self, answer: Option<String>, cx: &mut Context<Self>) {
+        if self.refuse_edit_during_upload() {
+            cx.notify();
+            return;
+        }
+        let answer = match answer.as_deref() {
+            Some("last") => match self.last_uploaded_changeset {
+                Some(id) => Some(id.to_string()),
+                None => {
+                    self.set_status("No changeset has been uploaded in this session.");
+                    cx.notify();
+                    return;
+                }
+            },
+            _ => answer,
+        };
+        self.dialogs.pending_revert_text = answer;
+        self.dialogs.pending_revert_dialog = true;
+        cx.notify();
+    }
+
+    fn check_for_pending_revert_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use osm_gpui::ui::revert_changeset_dialog::{DialogEvent, RevertChangesetDialog};
+
+        if !std::mem::take(&mut self.dialogs.pending_revert_dialog)
+            || self.dialogs.revert_dialog.is_some()
+        {
+            return;
+        }
+        let dialog = cx.new(|cx| RevertChangesetDialog::new(window, cx));
+        let answer = self.dialogs.pending_revert_text.take();
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, entity, event: &DialogEvent, cx| match event {
+                DialogEvent::Cancelled => {
+                    this.dialogs.revert_dialog = None;
+                    cx.notify();
+                }
+                DialogEvent::Submit(id) => this.start_revert(*id, entity, cx),
+            },
+        )
+        .detach();
+        self.dialogs.revert_dialog = Some(dialog.clone());
+        if let Some(text) = answer {
+            dialog.update(cx, |d, cx| {
+                d.set_text(&text, window, cx);
+                d.press_revert(cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn check_for_pending_notice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dialogs.notice_dialog.is_some() {
+            return;
+        }
+        let Some((title, message)) = self.dialogs.pending_notice.take() else {
+            return;
+        };
+        let dialog =
+            cx.new(|cx| osm_gpui::ui::notice_dialog::NoticeDialog::new(title, message, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this: &mut Self, _entity, _event: &osm_gpui::ui::notice_dialog::DialogEvent, cx| {
+                this.dialogs.notice_dialog = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.dialogs.notice_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Fetch changeset `id` and what it needs (in the background), then make
+    /// the edits that undo it. The dialog stays open, busy, until then; a
+    /// failure is shown in it.
+    fn start_revert(
+        &mut self,
+        id: i64,
+        dialog: Entity<osm_gpui::ui::revert_changeset_dialog::RevertChangesetDialog>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.transfer.is_some() {
+            let busy = tr!("revert.busy").to_string();
+            dialog.update(cx, |d, cx| d.fail(busy.into(), cx));
+            return;
+        }
+        let base_url = settings_store::api_base_url();
+        osm_gpui::capabilities::ensure_fetched(self.http.clone(), &base_url);
+        if osm_gpui::capabilities::for_server(&base_url).is_offline() {
+            let offline = tr!("status.api_offline").to_string();
+            dialog.update(cx, |d, cx| d.fail(offline.into(), cx));
+            return;
+        }
+        dialog.update(cx, |d, cx| d.begin(cx));
+
+        let http = self.http.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    // Reading a changeset is public: like a download, it never
+                    // waits on the keychain and goes out anonymously without a
+                    // token already in memory.
+                    let token = auth::fresh_token_if_loaded(
+                        http.as_ref(),
+                        &auth::oauth_base_for(&base_url),
+                    )
+                    .map(|t| t.access_token);
+                    osm_gpui::changeset_revert::prepare(
+                        http.as_ref(),
+                        &base_url,
+                        token.as_deref(),
+                        id,
+                    )
+                })
+                .await;
+
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(prepared) => {
+                    this.dialogs.revert_dialog = None;
+                    this.apply_revert(prepared, cx);
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    dialog.update(cx, |d, cx| d.fail(message.into(), cx));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Make the edits that undo a prepared changeset revert, in the active
+    /// layer (or a new one) as one undo step, and say what was left alone.
+    fn apply_revert(
+        &mut self,
+        prepared: osm_gpui::changeset_revert::Prepared,
+        cx: &mut Context<Self>,
+    ) {
+        use osm_gpui::changeset_revert::apply;
+
+        if self.refuse_edit_during_upload() {
+            cx.notify();
+            return;
+        }
+        let id = prepared.changeset;
+        if prepared.plan.steps.is_empty() {
+            let skipped = osm_gpui::changeset_revert::Report {
+                skipped: prepared
+                    .plan
+                    .skipped
+                    .iter()
+                    .map(|(k, i, c)| {
+                        (
+                            *k,
+                            *i,
+                            osm_gpui::changeset_revert::SkipReason::Conflict(c.clone()),
+                        )
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            self.set_status(tr!("revert.nothing", id = id));
+            self.queue_skipped_notice(&skipped);
+            cx.notify();
+            return;
+        }
+
+        let active = self.active_layer;
+        let layer_id = match active.filter(|&l| {
+            self.layer_manager
+                .find_layer_mut(l)
+                .is_some_and(|layer| layer.as_editable_mut().is_some())
+        }) {
+            Some(layer_id) => layer_id,
+            None => {
+                let name = self.layer_manager.unique_name(DOWNLOAD_LAYER_NAME);
+                let layer_id = self.layer_manager.alloc_id();
+                let layer = OsmLayer::new_with_data_styled(
+                    layer_id,
+                    name,
+                    Arc::new(OsmData::default()),
+                    osm_gpui::style::custom::active_stylesheet(),
+                );
+                self.layer_manager.add_layer(Box::new(layer));
+                self.note_download_origin(layer_id);
+                self.active_layer = Some(layer_id);
+                layer_id
+            }
+        };
+        let Some(editable) = self
+            .layer_manager
+            .find_layer_mut(layer_id)
+            .and_then(|l| l.as_editable_mut())
+        else {
+            return;
+        };
+        let (ops, report) = apply(layer_id, editable, &prepared);
+        self.data_generation += 1;
+        if !ops.is_empty() {
+            self.undo_stack.push(UndoableAction::edit(
+                layer_id,
+                EditLabel::Text(tr!("revert.label", id = id).to_string()),
+                ops,
+            ));
+        }
+        let status = if report.skipped.is_empty() {
+            tr!("revert.done_all", id = id, reverted = report.reverted)
+        } else {
+            tr!(
+                "revert.done",
+                id = id,
+                reverted = report.reverted,
+                skipped = report.skipped.len()
+            )
+        };
+        self.set_status(status);
+        self.queue_skipped_notice(&report);
+        cx.notify();
+    }
+
+    /// Have `render` list the objects a revert left alone, if there were any.
+    fn queue_skipped_notice(&mut self, report: &osm_gpui::changeset_revert::Report) {
+        if report.skipped.is_empty() {
+            return;
+        }
+        let message = format!(
+            "{}\n\n{}",
+            tr!("revert.notice_intro"),
+            report.skipped_text(15)
+        );
+        self.dialogs.pending_notice = Some((tr!("revert.notice_title").to_string(), message));
+    }
+
     /// Put downloaded OSM data on the map. It is merged, by object id, into
     /// the active layer when there is one, keeping any local edits (see
     /// `osm_gpui::layers::merge`), so a second download extends the same
@@ -5765,6 +6125,8 @@ impl Render for MapViewer {
         self.check_for_pending_role_edit(window, cx);
         self.check_for_pending_relation_picker(window, cx);
         self.check_for_pending_parallel_dialog(window, cx);
+        self.check_for_pending_revert_dialog(window, cx);
+        self.check_for_pending_notice(window, cx);
         self.check_for_pending_restore(window, cx);
         self.notes_frame(window, cx);
         self.imagery_frame(cx);
@@ -6098,6 +6460,7 @@ impl Render for MapViewer {
                     .children(self.object_history.view.clone())
                     .children(self.render_imagery_offset_panel(window, cx))
                     .children(self.render_gps_traces_legend(cx))
+                    .children(self.render_lane_end_markers())
                     .child({
                         // Legally-required tile/imagery attribution for
                         // every currently-visible layer that has one,
@@ -6198,6 +6561,14 @@ impl Render for MapViewer {
             }))
             .child(main_row)
             .child(status_bar)
+            // Files dragged in from Finder open as if picked with File >
+            // Open: `.gpx` and `.geojson` as reference layers, the rest as
+            // OSM data.
+            .on_drop(cx.listener(|_, paths: &gpui::ExternalPaths, _, cx| {
+                for path in paths.paths().iter().filter(|p| !p.is_dir()) {
+                    menu::open_osm_path(path.clone(), cx);
+                }
+            }))
             // A side panel resize drag is tracked here, on the window-sized
             // root, so it keeps following the pointer over the map and the
             // panel alike.
@@ -6253,6 +6624,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_set_imagery_offset))
             .on_action(cx.listener(Self::on_set_mode))
             .on_action(cx.listener(Self::on_run_selection_action))
+            .on_action(cx.listener(Self::on_split_way_here))
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_apply_nsi_preset))
@@ -6429,6 +6801,7 @@ fn main() {
         cx.on_action(open_osm_file);
         cx.on_action(add_osm_carto);
         cx.on_action(download_from_osm);
+        cx.on_action(revert_changeset);
         cx.on_action(toggle_debug_overlay);
         cx.on_action(add_imagery_layer);
         cx.on_action(add_saved_custom_imagery);

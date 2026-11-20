@@ -23,6 +23,9 @@ use crate::viewport::Viewport;
 /// Colours, as `0xRRGGBBAA`. A pale casing under a saturated core reads on the
 /// pale Carto tiles and on dark aerial imagery alike.
 const GPX_LINE: u32 = 0xe6007eff;
+/// Added to a GPX layer's `LineWidth::half_width`, so its default (thin)
+/// width is the file line's `LINE_HW`.
+const GPX_EXTRA_HW: f32 = LINE_HW - 0.75;
 const GEOJSON_LINE: u32 = 0x7c3aedff;
 const CASING: u32 = 0xffffffd9;
 const MARKER_HALO: u32 = 0xffffffe6;
@@ -82,7 +85,20 @@ impl Style {
             max_markers: MAX_MARKERS,
         };
         match format {
-            Format::Gpx => file(GPX_LINE),
+            // A GPX file is usually one or a few tracks, so unlike downloaded
+            // traces it keeps the opaque, cased file look; the colours and
+            // width come from its trace style.
+            Format::Gpx => {
+                let opaque = |c: u32| c | 0xff;
+                let line_hw = traces.width.half_width() + GPX_EXTRA_HW;
+                Style {
+                    line: traces.palette().into_iter().map(opaque).collect(),
+                    marker: opaque(traces.color.rgb() << 8),
+                    line_hw,
+                    casing_hw: Some(line_hw + CASING_HW - LINE_HW),
+                    ..file(GPX_LINE)
+                }
+            }
             Format::GeoJson => file(GEOJSON_LINE),
             Format::OsmTraces => Style {
                 line: traces.palette(),
@@ -113,19 +129,38 @@ pub struct ReferenceLayer {
     name: String,
     visible: bool,
     data: ReferenceData,
-    /// How downloaded GPS traces draw; unused for files.
+    /// How downloaded GPS traces and GPX files draw; unused for GeoJSON.
     trace_style: TraceStyle,
 }
 
 impl ReferenceLayer {
     pub fn new(id: LayerId, name: impl Into<String>, data: ReferenceData) -> Self {
+        let trace_style = Self::default_trace_style(data.format);
         Self {
             id,
             name: name.into(),
             visible: true,
             data,
-            trace_style: TraceStyle::default(),
+            trace_style,
         }
+    }
+
+    /// The style a new layer of `format` starts with, and Reset returns to.
+    /// A GPX file starts in its usual magenta.
+    pub fn default_trace_style(format: Format) -> TraceStyle {
+        match format {
+            Format::Gpx => TraceStyle {
+                color: crate::trace_style::LineColor::Magenta,
+                ..TraceStyle::default()
+            },
+            Format::GeoJson | Format::OsmTraces => TraceStyle::default(),
+        }
+    }
+
+    /// Whether the layer's trace style can be changed (its Layers-list menu
+    /// offers it).
+    pub fn has_trace_style(&self) -> bool {
+        matches!(self.data.format, Format::Gpx | Format::OsmTraces)
     }
 
     pub fn trace_style(&self) -> &TraceStyle {
@@ -189,7 +224,8 @@ impl ReferenceLayer {
         let traces = &self.trace_style;
         let style = Style::of(self.data.format, traces);
         let cutoff = traces.cutoff(now);
-        // Only GPS traces have more than one class.
+        // Only GPS traces and GPX files coloured by something have more
+        // than one class.
         let classed = style.line.len() > 1;
 
         let mut casing = PathBatch::new();
@@ -418,9 +454,16 @@ mod tests {
     fn line_layer(id: u64, format: Format) -> ReferenceLayer {
         let mut b = Builder::new(format);
         let f = b.feature(FeatureKind::Track, "", Some("t".into()), vec![]);
-        b.line(f, &[(-74.001, 40.0), (-74.0, 40.0), (-73.999, 40.001)])
-            .unwrap();
-        b.point(f, -74.0, 40.0005).unwrap();
+        b.line(
+            f,
+            &[
+                LatLon::new(40.0, -74.001),
+                LatLon::new(40.0, -74.0),
+                LatLon::new(40.001, -73.999),
+            ],
+        )
+        .unwrap();
+        b.point(f, LatLon::new(40.0005, -74.0)).unwrap();
         ReferenceLayer::new(LayerId(id), "ref", b.finish().unwrap())
     }
 
@@ -484,14 +527,18 @@ mod tests {
     /// A trace walked, then driven through town, then along a fast road
     /// (10 s between points), recorded at `start`.
     fn timed_layer(start: i64) -> ReferenceLayer {
-        let mut b = Builder::new(Format::OsmTraces);
+        timed_layer_of(Format::OsmTraces, start)
+    }
+
+    fn timed_layer_of(format: Format, start: i64) -> ReferenceLayer {
+        let mut b = Builder::new(format);
         let f = b.feature(FeatureKind::Track, "", None, vec![]);
         let pts = [
-            (-74.001, 40.0),
-            (-74.0009, 40.0),
-            (-74.0008, 40.0),
-            (-73.9997, 40.0),
-            (-73.9977, 40.0),
+            LatLon::new(40.0, -74.001),
+            LatLon::new(40.0, -74.0009),
+            LatLon::new(40.0, -74.0008),
+            LatLon::new(40.0, -73.9997),
+            LatLon::new(40.0, -73.9977),
         ];
         let times = [0, 10, 20, 30, 40].map(|t| Some(start + t));
         b.line_timed(f, &pts, &times, Some(start)).unwrap();
@@ -517,6 +564,31 @@ mod tests {
         });
         // All due east.
         assert_eq!(layer.build_scene_at(&vp, bounds, NOW).path_count(), 1);
+    }
+
+    #[test]
+    fn a_gpx_file_keeps_its_look_until_restyled() {
+        let mut layer = timed_layer_of(Format::Gpx, NOW - 86_400);
+        let (vp, bounds) = view(40.0, -73.999, 17.0);
+        let colors = |l: &ReferenceLayer| -> Vec<u32> {
+            l.build_scene_at(&vp, bounds, NOW)
+                .paths
+                .iter()
+                .map(|(c, _)| *c)
+                .collect()
+        };
+        // Casing under an opaque magenta line, as before styles.
+        assert_eq!(colors(&layer), vec![CASING, GPX_LINE]);
+        assert_eq!(Style::of(Format::Gpx, layer.trace_style()).line_hw, LINE_HW);
+        layer.set_trace_style(TraceStyle {
+            color_by: ColorBy::Speed,
+            ..ReferenceLayer::default_trace_style(Format::Gpx)
+        });
+        // Still cased, and one opaque line per speed class in view.
+        let by_speed = colors(&layer);
+        assert_eq!(by_speed.len(), 4, "{by_speed:x?}");
+        assert_eq!(by_speed[0], CASING);
+        assert!(by_speed[1..].iter().all(|c| c & 0xff == 0xff));
     }
 
     #[test]
@@ -568,7 +640,9 @@ mod tests {
         // and under one at zoom 8, yet the line still draws.
         let mut b = Builder::new(Format::Gpx);
         let f = b.feature(FeatureKind::Track, "", None, vec![]);
-        let pts: Vec<(f64, f64)> = (0..3000).map(|i| (-74.0 + i as f64 * 2e-5, 40.0)).collect();
+        let pts: Vec<LatLon> = (0..3000)
+            .map(|i| LatLon::new(40.0, -74.0 + i as f64 * 2e-5))
+            .collect();
         b.line(f, &pts).unwrap();
         let layer = ReferenceLayer::new(LayerId(1), "t", b.finish().unwrap());
         for z in [8.0, 12.0] {

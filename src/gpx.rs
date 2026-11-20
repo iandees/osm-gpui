@@ -1,6 +1,7 @@
 //! GPX reader: tracks (`trk`/`trkseg`/`trkpt`), routes (`rte`/`rtept`) and
 //! waypoints (`wpt`) become reference features. Names, descriptions, comments,
-//! types and symbols are kept; elevation, time and everything else is skipped.
+//! types and symbols are kept, and track points' times (for colouring by
+//! speed, direction and age); elevation and everything else is skipped.
 //!
 //! The document is read as a stream, so a 50 MB track never exists as a tree.
 //!
@@ -13,6 +14,7 @@
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 
+use crate::coordinates::LatLon;
 use crate::reference::{Builder, FeatureKind, Format, RefError, ReferenceData};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -59,17 +61,16 @@ fn classify(local: &[u8]) -> Tag {
 struct Item {
     name: Option<String>,
     props: Vec<(String, String)>,
-    /// `(lon, lat)` runs: one per `trkseg`, or the single run of a route.
-    segments: Vec<Vec<(f64, f64)>>,
+    /// Runs of positions: one per `trkseg`, or the single run of a route.
+    segments: Vec<Vec<LatLon>>,
     /// Per segment: whether any of its points had a `<time>`.
     timed: Vec<bool>,
-    /// Per segment, per point: its `<time>` (Unix seconds), kept only for
-    /// trackpoints answers.
+    /// Per segment, per point: its `<time>` (Unix seconds).
     times: Vec<Vec<Option<i64>>>,
     /// The `trkpt` being read was kept (it had a usable position).
     in_point: bool,
     /// A waypoint's position.
-    point: Option<(f64, f64)>,
+    point: Option<LatLon>,
 }
 
 impl Item {
@@ -96,7 +97,7 @@ impl Item {
 
 /// `lat` and `lon` of a point element, `None` if either is missing or not a
 /// number (such a point is skipped rather than failing the file).
-fn position(e: &BytesStart) -> Option<(f64, f64)> {
+fn position(e: &BytesStart) -> Option<LatLon> {
     let (mut lat, mut lon) = (None, None);
     for attr in e.attributes().flatten() {
         let value = attr.unescape_value().ok()?;
@@ -106,7 +107,7 @@ fn position(e: &BytesStart) -> Option<(f64, f64)> {
             _ => {}
         }
     }
-    Some((lon?, lat?))
+    Some(LatLon::new(lat?, lon?))
 }
 
 /// Parse a GPX document.
@@ -223,7 +224,7 @@ fn read_into(builder: &mut Builder, bytes: &[u8], traces: bool) -> Result<(), Re
                         if let Some(t) = it.timed.last_mut() {
                             *t = true;
                         }
-                        if traces && it.in_point {
+                        if it.in_point {
                             text_for = Some(Tag::Time);
                             text.clear();
                         }
@@ -333,8 +334,8 @@ fn add_trace(builder: &mut Builder, item: Item) -> Result<(), RefError> {
     }
     if loose.iter().any(|s| !s.is_empty()) {
         let id = builder.feature(FeatureKind::TracePoints, "", None, Vec::new());
-        for &(lon, lat) in loose.into_iter().flatten() {
-            builder.point(id, lon, lat)?;
+        for &at in loose.into_iter().flatten() {
+            builder.point(id, at)?;
         }
     }
     Ok(())
@@ -347,11 +348,18 @@ fn add_item(builder: &mut Builder, kind: Tag, item: Item) -> Result<(), RefError
         _ => FeatureKind::Route,
     };
     let id = builder.feature(feature_kind, "", item.name, item.props);
-    if let Some((lon, lat)) = item.point {
-        builder.point(id, lon, lat)?;
+    if let Some(at) = item.point {
+        builder.point(id, at)?;
     }
-    for seg in &item.segments {
-        builder.line(id, seg)?;
+    // A track's first time dates all of it (for the age colours and filter).
+    let start = item.times.iter().flatten().flatten().min().copied();
+    for (i, seg) in item.segments.iter().enumerate() {
+        match item.times.get(i) {
+            Some(times) if item.timed.get(i) == Some(&true) && times.len() == seg.len() => {
+                builder.line_timed(id, seg, times, start)?
+            }
+            _ => builder.line(id, seg)?,
+        }
     }
     Ok(())
 }
@@ -435,6 +443,29 @@ mod tests {
         let trk = &data.features[3];
         assert_eq!(trk.name.as_deref(), Some("Morning run"));
         assert_eq!(trk.props, vec![("cmt".to_string(), "sunny".to_string())]);
+    }
+
+    #[test]
+    fn a_file_track_with_times_gets_speeds_and_a_start() {
+        let doc = r#"<gpx><trk><trkseg>
+            <trkpt lat="40.0" lon="-74.0"><time>2024-01-01T00:00:10Z</time></trkpt>
+            <trkpt lat="40.001" lon="-74.0"><time>2024-01-01T00:00:20Z</time></trkpt>
+            <trkpt lat="40.002" lon="-74.0"><time>2024-01-01T00:00:30Z</time></trkpt>
+            </trkseg><trkseg>
+            <trkpt lat="41.0" lon="-74.0"/><trkpt lat="41.001" lon="-74.0"/>
+            </trkseg></trk>
+            <rte><rtept lat="40.0" lon="-74.0"/><rtept lat="40.01" lon="-74.0"/></rte></gpx>"#;
+        let data = parse(doc.as_bytes()).unwrap();
+        assert_eq!(data.parts.len(), 3);
+        let track = data.parts[0].track.as_deref().expect("timed segment");
+        // 2024-01-01T00:00:10Z
+        assert_eq!(track.start, Some(1_704_067_210));
+        // About 111 m in 10 s, northwards.
+        assert!((track.speed[0] - 11.1).abs() < 0.5, "{:?}", track.speed);
+        assert!(track.bearing[0].abs() < 1.0, "{:?}", track.bearing);
+        // The untimed segment and the route draw as plain lines.
+        assert!(data.parts[1].track.is_none());
+        assert!(data.parts[2].track.is_none());
     }
 
     #[test]
@@ -587,6 +618,15 @@ mod tests {
             parse_trackpoints(&[TRACKPOINTS.as_bytes(), empty, TRACKPOINTS.as_bytes()]).unwrap();
         assert_eq!(data.features.len(), 6);
         assert_eq!(data.markers.len(), 8);
+    }
+
+    #[test]
+    fn position_reads_lat_and_lon_attributes() {
+        let mut reader = Reader::from_str(r#"<trkpt lon="-74.5" lat="40.25"/>"#);
+        let Event::Empty(e) = reader.read_event().unwrap() else {
+            panic!("expected an empty element");
+        };
+        assert_eq!(position(&e), Some(LatLon::new(40.25, -74.5)));
     }
 
     #[test]

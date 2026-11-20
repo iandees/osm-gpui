@@ -5,6 +5,7 @@
 //! of its own: every op carries what both directions need (ids, versions and
 //! list positions included) and `invert` is a mechanical swap.
 
+use crate::coordinates::LatLon;
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::{EditError, EditableLayer, LayerId};
 use crate::osm::OsmMember;
@@ -13,8 +14,8 @@ use crate::selection::{
 };
 use crate::tags::Tags;
 
-/// One node's move: id, (lat, lon) before and (lat, lon) after.
-pub type NodeMove = (NodeId, (f64, f64), (f64, f64));
+/// One node's move: id, position before and position after.
+pub type NodeMove = (NodeId, LatLon, LatLon);
 
 /// One reversible primitive on a layer's data.
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +74,17 @@ pub enum EditOp {
     Unpurge {
         purged: PurgedFeatures,
     },
+    /// Objects the server has deleted come back: they join the layer's data
+    /// as edits of the existing objects (same ids, the deleted version), not
+    /// as new ones, so an upload modifies them.
+    Undelete {
+        objects: PurgedFeatures,
+    },
+    /// The inverse of `Undelete`: the objects go away again, leaving no trace
+    /// in the data or the baseline.
+    Redelete {
+        objects: PurgedFeatures,
+    },
 }
 
 impl EditOp {
@@ -127,6 +139,12 @@ impl EditOp {
             EditOp::Unpurge { purged } => EditOp::Purge {
                 purged: purged.clone(),
             },
+            EditOp::Undelete { objects } => EditOp::Redelete {
+                objects: objects.clone(),
+            },
+            EditOp::Redelete { objects } => EditOp::Undelete {
+                objects: objects.clone(),
+            },
         }
     }
 
@@ -142,10 +160,8 @@ impl EditOp {
                 layer.delete_relation(snapshot.relation.id).map(drop)
             }
             EditOp::MoveNodes { moves } => {
-                let moves: Vec<(NodeId, f64, f64)> = moves
-                    .iter()
-                    .map(|&(id, _, (lat, lon))| (id, lat, lon))
-                    .collect();
+                let moves: Vec<(NodeId, LatLon)> =
+                    moves.iter().map(|&(id, _, after)| (id, after)).collect();
                 layer.commit_node_moves(&moves)
             }
             EditOp::SetTag {
@@ -175,6 +191,19 @@ impl EditOp {
                 layer.restore_purged(purged.clone());
                 Ok(())
             }
+            EditOp::Undelete { objects } => {
+                layer.undelete_objects(objects.clone());
+                Ok(())
+            }
+            EditOp::Redelete { objects } => {
+                // Removing from data and baseline alike is what a purge does.
+                let nodes: Vec<NodeId> = objects.nodes.iter().map(|n| n.id).collect();
+                let ways: Vec<WayId> = objects.ways.iter().map(|w| w.id).collect();
+                let relations: Vec<RelationId> =
+                    objects.relations.iter().map(|(r, ..)| r.id).collect();
+                layer.purge_features(&nodes, &ways, &relations);
+                Ok(())
+            }
         }
     }
 
@@ -198,6 +227,9 @@ impl EditOp {
             }
             EditOp::SetRelationMembers { id, .. } => vec![at(FeatureKind::Relation, id.get())],
             EditOp::Purge { purged } | EditOp::Unpurge { purged } => purged.features(layer_id),
+            EditOp::Undelete { objects } | EditOp::Redelete { objects } => {
+                objects.features(layer_id)
+            }
         }
     }
 }
@@ -308,21 +340,21 @@ impl<'a> Recording<'a> {
             .ok_or(EditError::UnknownWay(way_id))
     }
 
-    fn new_node_snapshot(id: NodeId, lat: f64, lon: f64) -> DeletedFeatureSnapshot {
+    fn new_node_snapshot(id: NodeId, at: LatLon) -> DeletedFeatureSnapshot {
         DeletedFeatureSnapshot {
             kind: FeatureKind::Node,
             id: id.get(),
             tags: Tags::new(),
             way_nodes: Vec::new(),
-            node_lat_lon: Some((lat, lon)),
+            node_lat_lon: Some(at),
             version: 0,
         }
     }
 
-    pub fn commit_node_moves(&mut self, moves: &[(NodeId, f64, f64)]) -> Result<(), EditError> {
+    pub fn commit_node_moves(&mut self, moves: &[(NodeId, LatLon)]) -> Result<(), EditError> {
         let recorded: Vec<NodeMove> = moves
             .iter()
-            .filter_map(|&(id, lat, lon)| Some((id, self.layer.node_lat_lon(id)?, (lat, lon))))
+            .filter_map(|&(id, at)| Some((id, self.layer.node_lat_lon(id)?, at)))
             .collect();
         self.layer.commit_node_moves(moves)?;
         if !recorded.is_empty() {
@@ -363,23 +395,18 @@ impl<'a> Recording<'a> {
         Ok(())
     }
 
-    pub fn create_node(
-        &mut self,
-        lat: f64,
-        lon: f64,
-        id: Option<NodeId>,
-    ) -> Result<NodeId, EditError> {
-        let id = self.layer.create_node(lat, lon, id)?;
+    pub fn create_node(&mut self, at: LatLon, id: Option<NodeId>) -> Result<NodeId, EditError> {
+        let id = self.layer.create_node(at, id)?;
         self.ops.push(EditOp::PutFeature {
-            snapshot: Self::new_node_snapshot(id, lat, lon),
+            snapshot: Self::new_node_snapshot(id, at),
         });
         Ok(id)
     }
 
-    pub fn add_node(&mut self, lat: f64, lon: f64) -> NodeId {
-        let id = self.layer.add_node(lat, lon);
+    pub fn add_node(&mut self, at: LatLon) -> NodeId {
+        let id = self.layer.add_node(at);
         self.ops.push(EditOp::PutFeature {
-            snapshot: Self::new_node_snapshot(id, lat, lon),
+            snapshot: Self::new_node_snapshot(id, at),
         });
         id
     }
@@ -434,15 +461,14 @@ impl<'a> Recording<'a> {
         &mut self,
         way_id: WayId,
         index: usize,
-        lat: f64,
-        lon: f64,
+        at: LatLon,
     ) -> Result<NodeId, EditError> {
         let before = self.way_nodes(way_id)?;
-        let id = self.layer.insert_node_into_way(way_id, index, lat, lon)?;
+        let id = self.layer.insert_node_into_way(way_id, index, at)?;
         let mut after = before.clone();
         after.insert(index, id);
         self.ops.push(EditOp::PutFeature {
-            snapshot: Self::new_node_snapshot(id, lat, lon),
+            snapshot: Self::new_node_snapshot(id, at),
         });
         self.ops.push(EditOp::SetWayNodes {
             id: way_id,
@@ -490,6 +516,16 @@ impl<'a> Recording<'a> {
             });
         }
         purged
+    }
+
+    /// Bring objects the server has deleted back as edits of themselves (see
+    /// `EditOp::Undelete`). Nothing is recorded for an empty set.
+    pub fn undelete_objects(&mut self, objects: PurgedFeatures) {
+        if objects.is_empty() {
+            return;
+        }
+        self.layer.undelete_objects(objects.clone());
+        self.ops.push(EditOp::Undelete { objects });
     }
 
     pub fn reverse_way(&mut self, way_id: WayId) -> Result<(), EditError> {

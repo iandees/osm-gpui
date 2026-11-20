@@ -22,6 +22,7 @@ menu:
     open: "Öffnen …"
     export: "Exportieren …"
     download: "Von OSM herunterladen"
+    revert_changeset: "Änderungssatz zurücknehmen …"
     upload: "Auf OSM hochladen …"
   edit:
     title: "Bearbeiten"
@@ -175,7 +176,7 @@ status:
     select_relation: "Relation gewählt: ihre Mitglieder sind hervorgehoben · Esc zum Abwählen"
     select_member_way: "Ziehen zum Verschieben · Entf zum Löschen · Esc zum Abwählen · Relation im Seitenpanel"
     add_idle: "Klicken, um Knoten zu setzen oder Weg zu beginnen · Alt gedrückt halten für Setzen ohne Einrasten · Esc zum Beenden"
-    add_started: "Klicken, um den Weg fortzusetzen (rastet an Wegen und Knoten ein; Alt gedrückt halten, um das zu verhindern) · Enter oder Esc zum Abschließen"
+    add_started: "Klicken, um den Weg fortzusetzen (rastet an Wegen und Knoten ein; Alt gedrückt halten, um das zu verhindern) · Doppelklick, Enter oder Esc zum Abschließen"
     building_idle: "Klicken, um die erste Gebäudeecke zu setzen · Esc zum Beenden"
     building_started: "Klicken, um die zweite Ecke zu setzen · Esc zum Abbrechen"
     building_edge_placed: "Tiefe festlegen, dann klicken zum Abschließen · Esc zum Abbrechen"
@@ -328,6 +329,25 @@ panel:
       other: "%{count} Objekte ausgewählt: zu viele, um gemeinsame Tags anzuzeigen (Grenze %{limit})"
     key_placeholder: "Schlüssel"
     value_placeholder: "Wert"
+  lanes:
+    title: "Fahrstreifen"
+    towards: "Richtung %{place}"
+    way_end: "Wegende"
+    count:
+      one: "%{count} Fahrstreifen"
+      other: "%{count} Fahrstreifen"
+    both_ways: "Gemeinsame mittlere Abbiegestreifen: %{count}"
+    hint: "Einen Fahrstreifen anklicken, um seine Abbiegepfeile festzulegen."
+    arrows_forward: "Pfeile für Fahrstreifen %{lane} von links, Fahrtrichtung A → B"
+    arrows_backward: "Pfeile für Fahrstreifen %{lane} von links, Fahrtrichtung B → A"
+  junction:
+    title: "Kreuzung"
+    from: "Von %{arm}"
+    hint: "Eine Straße anklicken, um ihre Abbiegungen zu sehen; eine Abbiegung anklicken, um sie zu beschränken."
+    allowed: "erlaubt"
+    via_way: "Abbiegebeschränkungen über einen Weg"
+    issues: "Probleme"
+    no_issues: "Keine Probleme gefunden"
   relations:
     title: "Relationen"
     no_role: "(keine Rolle)"
@@ -701,7 +721,7 @@ action:
   extend:
     label: "Weg verlängern"
     hint: "Einen offenen Weg oder dessen Endknoten wählen, um weiterzuzeichnen"
-    started: "Klicken, um Knoten hinzuzufügen; Enter oder Esc zum Abschließen"
+    started: "Klicken, um Knoten hinzuzufügen; Doppelklick, Enter oder Esc zum Abschließen"
   # Pluralbausteine der Statusmeldungen von „Tags kopieren/einsetzen“.
   tag_count:
     one: "%{count} Tag"
@@ -750,6 +770,9 @@ action:
       other: "%{count} Wege geteilt"
     error:
       restriction_via: "Teilen nicht möglich: Es lässt sich nicht bestimmen, welcher Teil von Weg %{way} zur Abbiegebeschränkung %{relation} gehört"
+  split_here:
+    label: "Weg hier teilen"
+    hint: "Einen offenen Weg mit der rechten Maustaste anklicken, um ihn dort zu teilen"
   merge:
     label: "Knoten vereinigen"
     hint: "Zwei oder mehr Knoten wählen, um sie zu einem zu vereinigen"
@@ -814,6 +837,13 @@ action:
     # `%{features}` ist die Zahl aus `action.feature_count`.
     done: "%{features} zur Relation %{relation} hinzugefügt"
     already: "Die gewählten Objekte sind bereits Mitglieder von %{relation}"
+  lanes:
+    changed: "Fahrstreifen geändert"
+  junction:
+    created: "Abbiegebeschränkung %{value} hinzugefügt"
+    created_split: "Straße an der Kreuzung geteilt und Abbiegebeschränkung %{value} hinzugefügt"
+    changed: "Abbiegebeschränkung in %{value} geändert"
+    removed: "Abbiegebeschränkung r%{id} entfernt"
   new_relation:
     label: "Neue Relation"
     hint: "Knoten, Wege oder Relationen wählen, die in eine neue Relation kommen sollen"
@@ -940,6 +970,11 @@ dialog:
       one: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderung. Beim Löschen der Ebene geht sie verloren. Das kann nicht rückgängig gemacht werden."
       other: "Die Ebene \"%{layer}\" hat %{count} ungesicherte Änderungen. Beim Löschen der Ebene gehen sie verloren. Das kann nicht rückgängig gemacht werden."
     confirm: "Ebene löschen"
+  split_way:
+    title: "Weg teilen"
+    body: "Welcher Teil des Wegs behält die ID und den Verlauf des bestehenden Wegs? Der andere Teil wird ein neuer Weg mit einer Kopie der Tags."
+    first: "Im ersten Teil behalten (Wegbeginn)"
+    second: "Im zweiten Teil behalten (Wegende)"
   restore:
     title: "Ungesicherte Änderungen wiederherstellen?"
     intro: "Die App wurde beim letzten Mal nicht ordnungsgemäß beendet. Diese Ebenen hatten Änderungen, die nicht hochgeladen wurden:"
@@ -1119,6 +1154,27 @@ dialog:
     confirm: "Erstellen"
     error:
       offset: "Einen Abstand in Metern eingeben, nicht null und höchstens %{max} in beide Richtungen."
+  opening_hours:
+    paste_label: "Öffnungszeiten von einer Website einfügen"
+    paste_placeholder: "z. B. Monday – Friday: 9 AM – 5 PM, Saturday 10–2"
+    convert: "Umwandeln"
+    converted: "Umgewandelt — bitte Tage und Zeiten unten prüfen."
+    not_understood: "In diesem Text wurden keine Tage oder Zeiten gefunden. Nichts wurde geändert."
+    partly_understood: "Dieser Text konnte nicht vollständig gelesen werden, daher wurde nichts geändert. Die Zeiten bitte unten eingeben."
+    unsupported: "Dieser Wert nutzt eine Syntax, die der Editor nicht darstellen kann. Übernehmen ersetzt ihn."
+    groups_label: "Tage und Zeiten"
+    closed: "Geschlossen"
+    add_time: "Zeit hinzufügen"
+    remove_time: "Zeit entfernen"
+    add_group: "Tage hinzufügen"
+    remove_group: "Diese Tage entfernen"
+    result: "Ergebnis"
+    empty: "(keine Zeiten: das Tag wird entfernt)"
+    apply: "Übernehmen"
+    error:
+      time: "„%{time}“ ist keine Uhrzeit — z. B. 09:00 oder 17:00 verwenden."
+      range: "%{start}–%{end} ist kein Zeitraum."
+    open: "Öffnungszeiten bearbeiten…"
   nsi:
     title: "NSI-Vorlage anwenden"
     search_placeholder: "Marken suchen …"
@@ -1219,6 +1275,7 @@ gps_traces:
     reset: "Track-Darstellung zurücksetzen"
   legend:
     title: "GPS-Tracks nach %{by}"
+    title_named: "%{name} nach %{by}"
     unknown: "Unbekannt"
     kmh_max: "%{n}+ km/h"
     years:
@@ -1316,6 +1373,28 @@ validator:
     tag_whitespace: "Das Tag „%{key}“ hat führende oder abschließende Leerzeichen"
     fixme: "Enthält einen Korrekturhinweis: %{key}=%{value}"
     deprecated_tag: "Veraltetes Tag %{old}; stattdessen %{new} verwenden"
+    redundant_area_tag: "area=yes ist überflüssig; die übrigen Tags machen dies bereits zu einer Fläche"
+    duplicate_relation_member:
+      one: "Relation führt dasselbe Mitglied zweimal hintereinander auf (%{count} Wiederholung)"
+      other: "Relation führt dasselbe Mitglied zweimal hintereinander auf (%{count} Wiederholungen)"
+    repeated_way_node: "Weg führt mehr als einmal durch Knoten %{node}"
+  # Names of the automatic fixes, shown on the Fix button and in History.
+  fix:
+    button: "Beheben"
+    fix_all: "Alle beheben"
+    fixed:
+      one: "%{count} Problem behoben"
+      other: "%{count} Probleme behoben"
+    not_fixed: "Die Korrektur konnte nicht angewendet werden: %{detail}"
+    delete_node: "Unbenutzten Knoten löschen"
+    delete_relation: "Leere Relation löschen"
+    remove_duplicate_way_node: "Wiederholten Knoten entfernen"
+    remove_duplicate_members: "Wiederholte Mitglieder entfernen"
+    remove_area_tag: "area=yes entfernen"
+    close_way: "Weg schließen"
+    remove_tags: "Leere Tags entfernen"
+    trim_tags: "Leerzeichen in Tags entfernen"
+    replace_tag: "Veraltetes Tag ersetzen"
 pmtiles:
   state:
     opening: "%{name} wird geöffnet …"
@@ -1431,3 +1510,29 @@ relation_sort:
     one: "Mitglieder zu einer zusammenhängenden Kette sortiert"
     other: "Mitglieder sortiert; die Wege bilden %{count} getrennte Ketten"
   already: "Die Mitglieder sind bereits in Reihenfolge"
+
+revert:
+  title: "Änderungssatz zurücknehmen"
+  hint: "Nimm einen Änderungssatz anhand seiner Nummer oder Seitenadresse zurück. Die Änderungen entstehen hier zur Prüfung; lade sie dann wie gewohnt hoch."
+  placeholder: "Nummer oder Adresse des Änderungssatzes"
+  field: "Änderungssatz"
+  action: "Zurücknehmen"
+  working: "Wird zurückgenommen …"
+  bad_id: "Gib eine Nummer oder die Adresse der Seite auf openstreetmap.org ein."
+  label: "Änderungssatz %{id} zurückgenommen"
+  nothing: "Änderungssatz %{id} enthält nichts zum Zurücknehmen."
+  done: "Änderungssatz %{id} zurückgenommen: %{reverted} geändert, %{skipped} unberührt."
+  done_all: "Änderungssatz %{id} zurückgenommen: %{reverted} geändert. Prüfe sie und lade sie hoch."
+  busy: "Eine andere Übertragung läuft. Versuche es nach deren Ende erneut."
+  notice_title: "Einige Objekte blieben unberührt"
+  notice_intro: "Diese Objekte wurden nicht zurückgenommen:"
+  more: "… und %{count} weitere"
+  kind:
+    node: "Knoten"
+    way: "Weg"
+    relation: "Relation"
+  skipped:
+    changed_since: "%{kind} %{id}: seitdem geändert, jetzt Version %{version}"
+    unavailable: "%{kind} %{id}: beim Server nicht verfügbar"
+    edited_locally: "%{kind} %{id}: hat noch nicht hochgeladene Änderungen"
+    refused: "%{kind} %{id}: %{detail}"

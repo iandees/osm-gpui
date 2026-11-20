@@ -147,7 +147,7 @@ fn restriction_markers_sit_at_the_via_and_skip_missing_vias() {
         markers.iter().map(|m| m.0).collect::<Vec<_>>(),
         [RelationId(20), RelationId(22)]
     );
-    let (_, x, y, only) = markers[0];
+    let (_, Mercator { x, y }, only) = markers[0];
     assert!(!only);
     let Mercator { x: ex, y: ey } = lat_lon_to_mercator(LatLon::new(40.0, -73.999));
     assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
@@ -157,9 +157,9 @@ fn restriction_markers_sit_at_the_via_and_skip_missing_vias() {
 fn moving_or_deleting_the_via_node_updates_the_marker() {
     let mut layer = layer();
     layer
-        .commit_node_moves(&[(NodeId(2), 40.0005, -73.998)])
+        .commit_node_moves(&[(NodeId(2), LatLon::new(40.0005, -73.998))])
         .unwrap();
-    let (_, x, y, _) = layer.restriction_markers()[0];
+    let (_, Mercator { x, y }, _) = layer.restriction_markers()[0];
     let Mercator { x: ex, y: ey } = lat_lon_to_mercator(LatLon::new(40.0005, -73.998));
     assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6);
 

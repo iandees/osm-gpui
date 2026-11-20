@@ -22,6 +22,7 @@ menu:
     open: "Open…"
     export: "Export…"
     download: "Download from OSM"
+    revert_changeset: "Revert Changeset…"
     upload: "Upload to OSM…"
   edit:
     title: "Edit"
@@ -180,7 +181,7 @@ status:
     select_relation: "Relation selected: its members are highlighted · Esc to deselect"
     select_member_way: "Drag to move · Delete to remove · Esc to deselect · pick its relation in the side panel"
     add_idle: "Click to place a node or start a way · hold Alt to place without snapping · Esc to exit"
-    add_started: "Click to continue the way (snaps onto ways and nodes; hold Alt to not snap) · Enter or Esc to finish"
+    add_started: "Click to continue the way (snaps onto ways and nodes; hold Alt to not snap) · double-click, Enter or Esc to finish"
     building_idle: "Click to place the building's first corner · Esc to exit"
     building_started: "Click to place the second corner · Esc to cancel"
     building_edge_placed: "Move to set the depth, then click to finish · Esc to cancel"
@@ -340,6 +341,30 @@ panel:
       other: "%{count} features selected: too many to show combined tags (limit %{limit})"
     key_placeholder: "key"
     value_placeholder: "value"
+  lanes:
+    title: "Lanes"
+    # After the A → B (or B → A) badges. `%{place}` is the road(s) the
+    # direction drives towards, or `way_end`.
+    towards: "towards %{place}"
+    way_end: "way end"
+    count:
+      one: "%{count} lane"
+      other: "%{count} lanes"
+    both_ways: "Shared centre turn lanes: %{count}"
+    hint: "Click a lane to set its turn arrows."
+    # `%{lane}` counts from the left as the driver sees it; A and B are the
+    # way's ends as the badges mark them.
+    arrows_forward: "Arrows for lane %{lane} from the left, driving A → B"
+    arrows_backward: "Arrows for lane %{lane} from the left, driving B → A"
+  junction:
+    title: "Junction"
+    # Above the movement list; %{arm} is the road the movements start on.
+    from: "From %{arm}"
+    hint: "Click a road to see its turns; click a turn to restrict it."
+    allowed: "allowed"
+    via_way: "Via-way restrictions"
+    issues: "Issues"
+    no_issues: "No problems found"
   relations:
     title: "Relations"
     no_role: "(no role)"
@@ -713,7 +738,7 @@ action:
   extend:
     label: "Extend Way"
     hint: "Select an open way, or the end node of one, to continue drawing it"
-    started: "Click to add nodes to the way; Enter or Esc to finish"
+    started: "Click to add nodes to the way; double-click, Enter or Esc to finish"
   # Plural pieces of the Copy/Paste Tags status messages.
   tag_count:
     one: "%{count} tag"
@@ -763,6 +788,9 @@ action:
       other: "Split %{count} ways"
     error:
       restriction_via: "Can't split: can't tell which part of way %{way} belongs in turn restriction %{relation}"
+  split_here:
+    label: "Split Way Here"
+    hint: "Right-click an open way to split it there"
   merge:
     label: "Merge Nodes"
     hint: "Select two or more nodes to merge them into one"
@@ -827,6 +855,15 @@ action:
     # `%{features}` is the count from `action.feature_count`.
     done: "Added %{features} to relation %{relation}"
     already: "The selected features are already members of %{relation}"
+  lanes:
+    changed: "Changed lanes"
+  # Clicking a movement in the Junction section. `%{value}` is a restriction
+  # value such as `no_left_turn`; `%{id}` a relation id.
+  junction:
+    created: "Added turn restriction %{value}"
+    created_split: "Split the road at the junction and added turn restriction %{value}"
+    changed: "Changed turn restriction to %{value}"
+    removed: "Removed turn restriction r%{id}"
   new_relation:
     label: "New Relation"
     hint: "Select nodes, ways or relations to put into a new relation"
@@ -966,6 +1003,11 @@ dialog:
       other: "Layer \"%{layer}\" has %{count} unsaved edits. Deleting the layer discards them. This cannot be undone."
     confirm: "Delete Layer"
   # Offered at startup when the app did not exit normally last time.
+  split_way:
+    title: "Split Way"
+    body: "Which part of the way keeps the existing way's ID and history? The other part becomes a new way with a copy of the tags."
+    first: "Keep in first part (start of way)"
+    second: "Keep in second part (end of way)"
   restore:
     title: "Restore Unsaved Edits?"
     intro: "The app did not close normally last time. These layers had edits that were not uploaded:"
@@ -1162,6 +1204,30 @@ dialog:
     confirm: "Create"
     error:
       offset: "Enter a distance in metres, not zero and at most %{max} either way."
+  # The opening-hours editor, opened from the button beside an hours field.
+  opening_hours:
+    paste_label: "Paste hours from a website"
+    paste_placeholder: "e.g. Monday – Friday: 9 AM – 5 PM, Saturday 10–2"
+    convert: "Convert"
+    converted: "Converted — check the days and times below."
+    not_understood: "Couldn't find any days or times in that text. Nothing was changed."
+    partly_understood: "Couldn't read all of that text, so nothing was changed. Enter the hours below instead."
+    unsupported: "This value uses syntax the editor can't show. Applying will replace it."
+    groups_label: "Days and times"
+    closed: "Closed"
+    add_time: "Add time"
+    remove_time: "Remove time"
+    add_group: "Add days"
+    remove_group: "Remove these days"
+    result: "Result"
+    # Shown as the result when no day has hours (applying removes the tag).
+    empty: "(no hours: the tag will be removed)"
+    apply: "Apply"
+    error:
+      time: "\"%{time}\" isn't a time — use e.g. 09:00 or 5pm."
+      range: "%{start}–%{end} isn't a time range."
+    # Tooltip of the button beside an hours field.
+    open: "Edit hours…"
   nsi:
     title: "Apply NSI Preset"
     search_placeholder: "Search brands…"
@@ -1263,6 +1329,7 @@ gps_traces:
     reset: "Reset Trace Style"
   legend:
     title: "GPS traces by %{by}"
+    title_named: "%{name} by %{by}"
     unknown: "Unknown"
     kmh_max: "%{n}+ km/h"
     years:
@@ -1366,6 +1433,28 @@ validator:
     tag_whitespace: "Tag \"%{key}\" has leading or trailing whitespace"
     fixme: "Has a note to fix: %{key}=%{value}"
     deprecated_tag: "Deprecated tag %{old}; use %{new}"
+    redundant_area_tag: "area=yes is not needed; the other tags already make this an area"
+    duplicate_relation_member:
+      one: "Relation lists the same member twice in a row (%{count} repeat)"
+      other: "Relation lists the same member twice in a row (%{count} repeats)"
+    repeated_way_node: "Way passes through node %{node} more than once"
+  # Names of the automatic fixes, shown on the Fix button and in History.
+  fix:
+    button: "Fix"
+    fix_all: "Fix all"
+    fixed:
+      one: "Fixed %{count} problem"
+      other: "Fixed %{count} problems"
+    not_fixed: "Could not apply the fix: %{detail}"
+    delete_node: "Delete the unused node"
+    delete_relation: "Delete the empty relation"
+    remove_duplicate_way_node: "Remove the repeated node"
+    remove_duplicate_members: "Remove the repeated members"
+    remove_area_tag: "Remove area=yes"
+    close_way: "Close the way"
+    remove_tags: "Remove the empty tags"
+    trim_tags: "Trim whitespace from tags"
+    replace_tag: "Replace the deprecated tag"
 # Status-bar messages of PMTiles vector layers.
 pmtiles:
   state:
@@ -1483,3 +1572,29 @@ relation_sort:
     one: "Sorted the members into one connected chain"
     other: "Sorted the members; the ways form %{count} separate chains"
   already: "The members are already in order"
+
+revert:
+  title: "Revert Changeset"
+  hint: "Undo a changeset by its number or page address. The changes are made here for you to review, then upload them as usual."
+  placeholder: "Changeset number or address"
+  field: "Changeset"
+  action: "Revert"
+  working: "Reverting…"
+  bad_id: "Enter a changeset number, or the address of its page on openstreetmap.org."
+  label: "Revert changeset %{id}"
+  nothing: "Changeset %{id} has nothing to revert."
+  done: "Reverted changeset %{id}: %{reverted} changed, %{skipped} left alone."
+  done_all: "Reverted changeset %{id}: %{reverted} changed. Review and upload them when ready."
+  busy: "Another transfer is running. Try again when it has finished."
+  notice_title: "Some objects were left alone"
+  notice_intro: "These objects were not reverted:"
+  more: "…and %{count} more"
+  kind:
+    node: "Node"
+    way: "Way"
+    relation: "Relation"
+  skipped:
+    changed_since: "%{kind} %{id}: changed since, now at version %{version}"
+    unavailable: "%{kind} %{id}: not available from the server"
+    edited_locally: "%{kind} %{id}: has edits that are not uploaded yet"
+    refused: "%{kind} %{id}: %{detail}"

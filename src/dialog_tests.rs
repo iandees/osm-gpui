@@ -3,6 +3,7 @@
 
 use super::*;
 use gpui::TestAppContext;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ui;
 
 type Opener = fn(&mut MapViewer, &mut Window, &mut Context<MapViewer>);
@@ -73,6 +74,12 @@ fn openers() -> Vec<(&'static str, Opener)> {
                     ui::preset_picker_dialog::PresetPickerDialog::new(Vec::new(), w, cx)
                 }));
         }),
+        ("opening hours", |v, w, cx| {
+            v.dialogs.opening_hours_dialog =
+                Some(cx.new(|cx| {
+                    ui::opening_hours_dialog::OpeningHoursDialog::new("Hours", "", w, cx)
+                }));
+        }),
         ("relation picker", |v, w, cx| {
             v.dialogs.relation_picker_dialog = Some(cx.new(|cx| {
                 ui::relation_picker_dialog::RelationPickerDialog::new(Vec::new(), w, cx)
@@ -82,6 +89,10 @@ fn openers() -> Vec<(&'static str, Opener)> {
             v.dialogs.parallel_dialog = Some(
                 cx.new(|cx| ui::parallel_dialog::ParallelDialog::new(Default::default(), w, cx)),
             );
+        }),
+        ("revert changeset", |v, w, cx| {
+            v.dialogs.revert_dialog =
+                Some(cx.new(|cx| ui::revert_changeset_dialog::RevertChangesetDialog::new(w, cx)));
         }),
         ("upload", |v, w, cx| {
             v.dialogs.upload_dialog =
@@ -101,7 +112,7 @@ fn openers() -> Vec<(&'static str, Opener)> {
                 Some(cx.new(|cx| ui::notice_dialog::NoticeDialog::new("t", "m", w, cx)));
         }),
         ("new note", |v, w, cx| {
-            v.open_new_note_dialog(1.0, 2.0, w, cx)
+            v.open_new_note_dialog(LatLon::new(1.0, 2.0), w, cx)
         }),
     ]
 }
@@ -300,6 +311,12 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
     );
     closes_on_escape!(
         cx,
+        |w, cx| opening_hours_dialog::OpeningHoursDialog::new("Hours", "", w, cx),
+        opening_hours_dialog::DialogEvent,
+        opening_hours_dialog::DialogEvent::Cancelled
+    );
+    closes_on_escape!(
+        cx,
         |w, cx| relation_picker_dialog::RelationPickerDialog::new(Vec::new(), w, cx),
         relation_picker_dialog::DialogEvent,
         relation_picker_dialog::DialogEvent::Cancelled
@@ -309,6 +326,12 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
         |w, cx| parallel_dialog::ParallelDialog::new(Default::default(), w, cx),
         parallel_dialog::DialogEvent,
         parallel_dialog::DialogEvent::Cancelled
+    );
+    closes_on_escape!(
+        cx,
+        revert_changeset_dialog::RevertChangesetDialog::new,
+        revert_changeset_dialog::DialogEvent,
+        revert_changeset_dialog::DialogEvent::Cancelled
     );
     closes_on_escape!(
         cx,
@@ -330,7 +353,7 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
     );
     closes_on_escape!(
         cx,
-        |w, cx| note_dialog::NewNoteDialog::new(1.0, 2.0, w, cx),
+        |w, cx| note_dialog::NewNoteDialog::new(LatLon::new(1.0, 2.0), w, cx),
         note_dialog::DialogEvent,
         note_dialog::DialogEvent::Cancelled
     );
@@ -444,8 +467,9 @@ fn find_up_arrow_twice_shows_the_second_newest_query(cx: &mut TestAppContext) {
 #[gpui::test]
 fn new_note_ignores_escape_while_sending_and_enter_never_submits(cx: &mut TestAppContext) {
     use ui::note_dialog::{DialogEvent, NewNoteDialog};
-    let build =
-        |w: &mut Window, cx: &mut Context<NewNoteDialog>| NewNoteDialog::new(1.0, 2.0, w, cx);
+    let build = |w: &mut Window, cx: &mut Context<NewNoteDialog>| {
+        NewNoteDialog::new(LatLon::new(1.0, 2.0), w, cx)
+    };
     let name = |e: &DialogEvent| match e {
         DialogEvent::Submit(_) => "submit".to_string(),
         DialogEvent::Cancelled => "cancelled".to_string(),

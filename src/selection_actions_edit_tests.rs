@@ -90,9 +90,9 @@ fn a_successful_edit_hands_back_what_it_recorded() {
         .as_editable_mut()
         .unwrap();
     let (new_id, ops) = record_edit(id, editable, |rec| {
-        rec.commit_node_moves(&[(NodeId(1), 5.0, 6.0)])
+        rec.commit_node_moves(&[(NodeId(1), LatLon::new(5.0, 6.0))])
             .map_err(refused)?;
-        Ok(rec.add_node(1.0, 2.0))
+        Ok(rec.add_node(LatLon::new(1.0, 2.0)))
     })
     .unwrap();
     assert!(new_id < NodeId(0));
@@ -114,8 +114,11 @@ fn a_failed_edit_leaves_tags_and_positions_as_they_were() {
     let result = record_edit(id, editable, |rec| {
         rec.set_tag(FeatureKind::Way, 10, "highway", "path")
             .map_err(refused)?;
-        rec.commit_node_moves(&[(NodeId(1), 5.0, 6.0), (NodeId(2), 7.0, 8.0)])
-            .map_err(refused)?;
+        rec.commit_node_moves(&[
+            (NodeId(1), LatLon::new(5.0, 6.0)),
+            (NodeId(2), LatLon::new(7.0, 8.0)),
+        ])
+        .map_err(refused)?;
         rec.reverse_way(WayId(10)).map_err(refused)?;
         // No such way.
         rec.set_way_nodes(WayId(99), vec![NodeId(1), NodeId(2)])

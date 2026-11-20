@@ -15,14 +15,16 @@ use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _,
 };
 
+use osm_gpui::edit_ops::Recording;
 use osm_gpui::layers::LayerId;
-use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
 use osm_gpui::ui::validation_list::{
     feature_refs, finding_key, findings_rows, note_row, position_of, summary_text, FindingKey,
 };
-use osm_gpui::validator::Report;
+use osm_gpui::validator::{apply_fix, Fix, Report};
+use osm_gpui::{tr, tr_count};
 
+use crate::undo::{EditLabel, UndoableAction};
 use crate::MapViewer;
 
 /// How long after the last change the list is refreshed.
@@ -181,6 +183,108 @@ impl MapViewer {
         cx.notify();
     }
 
+    /// The Fix button of row `index`.
+    pub(crate) fn fix_finding(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(key) = self
+            .validation
+            .as_ref()
+            .and_then(|p| p.report.entries.get(index))
+            .map(finding_key)
+        else {
+            return;
+        };
+        self.apply_fixes(Some(key), cx);
+    }
+
+    /// "Fix all": every finding that has a fix.
+    pub(crate) fn fix_all_findings(&mut self, cx: &mut Context<Self>) {
+        self.apply_fixes(None, cx);
+    }
+
+    /// Apply the fix of the finding `only` (or of every finding with one),
+    /// each as its own all-or-nothing edit, as one undo step per layer. The
+    /// report is re-run first so no fix is built from stale data; a fix the
+    /// layer refuses (an earlier fix already changed what it needed) is
+    /// rolled back and skipped.
+    fn apply_fixes(&mut self, only: Option<FindingKey>, cx: &mut Context<Self>) {
+        if self.refuse_edit_during_upload() {
+            return;
+        }
+        self.rerun_validation();
+        let Some(panel) = self.validation.as_ref() else {
+            return;
+        };
+        let mut per_layer: Vec<(LayerId, Vec<Fix>)> = Vec::new();
+        for entry in &panel.report.entries {
+            let Some(fix) = entry.finding.fix.clone() else {
+                continue;
+            };
+            if only.as_ref().is_some_and(|k| *k != finding_key(entry)) {
+                continue;
+            }
+            match per_layer.iter_mut().find(|(l, _)| *l == entry.layer) {
+                Some((_, fixes)) => fixes.push(fix),
+                None => per_layer.push((entry.layer, vec![fix])),
+            }
+        }
+        let mut applied = 0usize;
+        let mut first_label = None;
+        let mut failure = None;
+        let mut steps = Vec::new();
+        for (layer_id, fixes) in per_layer {
+            let Some(editable) = self
+                .layer_manager
+                .find_layer_mut(layer_id)
+                .and_then(|l| l.as_editable_mut())
+            else {
+                continue;
+            };
+            let mut rec = Recording::new(layer_id, editable);
+            for fix in &fixes {
+                let mark = rec.mark();
+                match apply_fix(&mut rec, fix) {
+                    Ok(()) => {
+                        applied += 1;
+                        first_label.get_or_insert_with(|| fix.label.clone());
+                    }
+                    Err(e) => {
+                        rec.roll_back_to(mark);
+                        failure = Some(e.to_string());
+                    }
+                }
+            }
+            let ops = rec.into_ops();
+            if !ops.is_empty() {
+                steps.push((layer_id, ops));
+            }
+        }
+        let label = match (applied, first_label) {
+            (1, Some(label)) => label,
+            (n, _) if n > 1 => tr_count!("validator.fix.fixed", n).to_string(),
+            _ => {
+                if let Some(detail) = failure {
+                    self.set_status(tr!("validator.fix.not_fixed", detail = detail));
+                }
+                return;
+            }
+        };
+        let mut actions: Vec<UndoableAction> = steps
+            .into_iter()
+            .map(|(layer, ops)| UndoableAction::edit(layer, EditLabel::Text(label.clone()), ops))
+            .collect();
+        if actions.len() == 1 {
+            self.undo_stack.push(actions.remove(0));
+        } else {
+            self.undo_stack.push(UndoableAction::Batch {
+                label: label.clone(),
+                actions,
+            });
+        }
+        self.set_status(label);
+        self.rerun_validation();
+        cx.notify();
+    }
+
     /// A click on row `index`: select the finding's objects and zoom to
     /// them. The list stays where it is.
     pub(crate) fn select_finding(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
@@ -243,6 +347,22 @@ impl MapViewer {
             .justify_between()
             .gap_1()
             .child(div().min_w_0().truncate().children(counts))
+            .children(
+                report
+                    .entries
+                    .iter()
+                    .any(|e| e.finding.fix.is_some())
+                    .then(|| {
+                        Button::new("validation-fix-all")
+                            .label(tr!("validator.fix.fix_all"))
+                            .outline()
+                            .xsmall()
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                cx.stop_propagation();
+                                this.fix_all_findings(cx);
+                            }))
+                    }),
+            )
             .child(
                 Button::new("validation-close")
                     .icon(IconName::Close)
@@ -272,6 +392,7 @@ impl MapViewer {
                 |this: &mut MapViewer, index, cx| {
                     this.select_finding(index, cx);
                 },
+                |this: &mut MapViewer, index, cx| this.fix_finding(index, cx),
             );
             div()
                 .id("validation-list")

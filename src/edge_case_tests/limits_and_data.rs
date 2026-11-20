@@ -292,21 +292,21 @@ fn merging_two_members_of_a_full_relation_does_not_grow_it(cx: &mut TestAppConte
 // 3. Antimeridian and polar latitudes
 // ---------------------------------------------------------------------------
 
-type Placed = Vec<(i64, (f64, f64))>;
+type Placed = Vec<(i64, LatLon)>;
 
 const M_PER_DEG: f64 = 111_320.0;
 
 /// Distance in metres, going the short way round the globe in longitude.
-fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
-    let mut dlon = (b.1 - a.1) % 360.0;
+fn metres(a: LatLon, b: LatLon) -> f64 {
+    let mut dlon = (b.lon - a.lon) % 360.0;
     if dlon > 180.0 {
         dlon -= 360.0;
     } else if dlon < -180.0 {
         dlon += 360.0;
     }
-    let mid_lat = ((a.0 + b.0) / 2.0).to_radians();
+    let mid_lat = ((a.lat + b.lat) / 2.0).to_radians();
     let dx = dlon * mid_lat.cos() * M_PER_DEG;
-    let dy = (b.0 - a.0) * M_PER_DEG;
+    let dy = (b.lat - a.lat) * M_PER_DEG;
     dx.hypot(dy)
 }
 
@@ -321,20 +321,20 @@ fn wrap_lon(lon: f64) -> f64 {
 }
 
 /// `(east, north)` offsets in metres from `(lat, lon)` as positions.
-fn offset(lat: f64, lon: f64, east: f64, north: f64) -> (f64, f64) {
-    (
+fn offset(lat: f64, lon: f64, east: f64, north: f64) -> LatLon {
+    LatLon::new(
         lat + north / M_PER_DEG,
         wrap_lon(lon + east / (M_PER_DEG * lat.to_radians().cos())),
     )
 }
 
-fn put(mut b: Build, id: i64, pos: (f64, f64)) -> Build {
+fn put(mut b: Build, id: i64, pos: LatLon) -> Build {
     b.data.as_mut().unwrap().nodes.insert(
         NodeId(id),
         OsmNode {
             id: NodeId(id),
-            lat: pos.0,
-            lon: pos.1,
+            lat: pos.lat,
+            lon: pos.lon,
             version: 3,
             tags: Tags::new(),
         },
@@ -365,7 +365,7 @@ fn ring(lat: f64, lon: f64) -> (OsmData, Placed) {
 /// starting 30 m west of `(lat, lon)`. Way 10 holds them so they exist.
 fn line(lat: f64, lon: f64, east: [f64; 4]) -> (OsmData, Placed) {
     let north = [0.0, 1.0, -1.0, 0.0];
-    let pts: Vec<(i64, (f64, f64))> = (0..4)
+    let pts: Vec<(i64, LatLon)> = (0..4)
         .map(|i| (i as i64 + 1, offset(lat, lon, east[i], north[i])))
         .collect();
     let mut b = Build::new();
@@ -375,15 +375,15 @@ fn line(lat: f64, lon: f64, east: [f64; 4]) -> (OsmData, Placed) {
     (b.way(10, &[1, 2, 3, 4], &road()).done(), pts)
 }
 
-fn assert_sane(s: &Session, pts: &[(i64, (f64, f64))], max_move_m: f64, what: &str) {
+fn assert_sane(s: &Session, pts: &[(i64, LatLon)], max_move_m: f64, what: &str) {
     for &(id, before) in pts {
         let after = s.editable().node_lat_lon(NodeId(id)).unwrap();
         assert!(
-            after.0.is_finite() && after.1.is_finite(),
+            after.lat.is_finite() && after.lon.is_finite(),
             "{what}: node {id} became {after:?}"
         );
         assert!(
-            (-90.0..=90.0).contains(&after.0) && (-180.0..=180.0).contains(&after.1),
+            (-90.0..=90.0).contains(&after.lat) && (-180.0..=180.0).contains(&after.lon),
             "{what}: node {id} left the valid coordinate range: {after:?}"
         );
         let moved = metres(before, after);
@@ -498,7 +498,7 @@ fn extrude_at(cx: &mut TestAppContext, style: ExtrudeStyle, lat: f64, lon: f64) 
         // Zoom 20 so the 40 m square is a few hundred pixels wide.
         s.view.viewport = Viewport::new(LatLon::new(lat, lon), 20.0, size(px(800.0), px(600.0)));
         let screen = |s: &Session, id: i64| {
-            let (la, lo) = s.editable().node_lat_lon(NodeId(id)).unwrap();
+            let LatLon { lat: la, lon: lo } = s.editable().node_lat_lon(NodeId(id)).unwrap();
             s.view.viewport.geo_to_screen(LatLon::new(la, lo))
         };
         let (a, b) = (screen(s, 1), screen(s, 2));
@@ -537,12 +537,15 @@ fn extrude_at(cx: &mut TestAppContext, style: ExtrudeStyle, lat: f64, lon: f64) 
         // at zoom 20 is a few metres); new nodes must end up near the ring.
         for &(id, p) in &all {
             let now = s.editable().node_lat_lon(NodeId(id)).unwrap();
-            assert!(now.0.is_finite() && now.1.is_finite(), "node {id}: {now:?}");
             assert!(
-                (-90.0..=90.0).contains(&now.0) && (-180.0..=180.0).contains(&now.1),
+                now.lat.is_finite() && now.lon.is_finite(),
+                "node {id}: {now:?}"
+            );
+            assert!(
+                (-90.0..=90.0).contains(&now.lat) && (-180.0..=180.0).contains(&now.lon),
                 "extrude at {lat},{lon} put node {id} outside the valid range: {now:?}"
             );
-            let origin = (lat, lon);
+            let origin = LatLon::new(lat, lon);
             assert!(
                 metres(origin, now) < 100.0,
                 "extrude at {lat},{lon} put node {id} {:.0} m away ({p:?} to {now:?})",

@@ -3,6 +3,7 @@
 //! collide with ids in the data.
 
 use super::*;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::{EditError, EditableLayer};
 use osm_gpui::tags::Tags;
@@ -14,7 +15,7 @@ fn layer_with(data: OsmData) -> OsmLayer {
 type Observed = (
     OsmData,
     Vec<(NodeId, Vec<WayId>)>,
-    Vec<(NodeId, Option<(f64, f64)>)>,
+    Vec<(NodeId, Option<LatLon>)>,
 );
 
 /// Everything about the layer a caller can observe. After an edit this must
@@ -27,7 +28,7 @@ fn observable(layer: &OsmLayer) -> Observed {
         .map(|&id| (id, layer.ways_using_node(id)))
         .collect();
     users.sort();
-    let mut positions: Vec<(NodeId, Option<(f64, f64)>)> = data
+    let mut positions: Vec<(NodeId, Option<LatLon>)> = data
         .nodes
         .keys()
         .map(|&id| (id, layer.node_lat_lon(id)))
@@ -54,8 +55,8 @@ fn network() -> OsmData {
 fn add_node_and_create_node_without_an_id_are_the_same_operation() {
     let mut a = layer_with(network());
     let mut b = layer_with(network());
-    let from_add = a.add_node(40.5, -74.5);
-    let from_create = b.create_node(40.5, -74.5, None).unwrap();
+    let from_add = a.add_node(LatLon::new(40.5, -74.5));
+    let from_create = b.create_node(LatLon::new(40.5, -74.5), None).unwrap();
     assert_eq!(from_add, from_create);
     assert!(from_add < NodeId(0));
     assert_eq!(observable(&a), observable(&b));
@@ -66,15 +67,15 @@ fn add_node_and_create_node_without_an_id_are_the_same_operation() {
 #[test]
 fn create_node_on_a_layer_without_data_creates_it() {
     let mut layer = OsmLayer::new(LayerId(1));
-    let id = layer.create_node(40.0, -74.0, None).unwrap();
-    assert_eq!(layer.node_lat_lon(id), Some((40.0, -74.0)));
+    let id = layer.create_node(LatLon::new(40.0, -74.0), None).unwrap();
+    assert_eq!(layer.node_lat_lon(id), Some(LatLon::new(40.0, -74.0)));
     let mut redo = OsmLayer::new(LayerId(2));
     assert_eq!(
-        redo.create_node(40.0, -74.0, Some(NodeId(-50))),
+        redo.create_node(LatLon::new(40.0, -74.0), Some(NodeId(-50))),
         Ok(NodeId(-50))
     );
     assert_eq!(
-        redo.create_node(41.0, -74.0, Some(NodeId(-50))),
+        redo.create_node(LatLon::new(41.0, -74.0), Some(NodeId(-50))),
         Err(EditError::IdInUse(FeatureKind::Node, -50))
     );
 }
@@ -115,8 +116,8 @@ fn a_node_still_in_a_way_is_refused_by_both_removals_and_nothing_changes() {
 #[test]
 fn undoing_a_creation_removes_the_way_before_its_nodes() {
     let mut layer = layer_with(network());
-    let a = layer.add_node(40.1, -74.1);
-    let b = layer.add_node(40.2, -74.2);
+    let a = layer.add_node(LatLon::new(40.1, -74.1));
+    let b = layer.add_node(LatLon::new(40.2, -74.2));
     let way = layer.add_way(vec![a, b], Tags::new());
     assert_eq!(layer.remove_node(a), Err(EditError::NodeInWay(a)));
     layer.remove_way(way).unwrap();
@@ -200,11 +201,11 @@ fn insert_node_into_way_with_a_bad_way_or_index_creates_nothing() {
     let before = observable(&layer);
     let revision = layer.edit_revision();
     assert_eq!(
-        layer.insert_node_into_way(WayId(99), 0, 40.0, -74.0),
+        layer.insert_node_into_way(WayId(99), 0, LatLon::new(40.0, -74.0)),
         Err(EditError::UnknownWay(WayId(99)))
     );
     assert_eq!(
-        layer.insert_node_into_way(WayId(10), 4, 40.0, -74.0),
+        layer.insert_node_into_way(WayId(10), 4, LatLon::new(40.0, -74.0)),
         Err(EditError::IndexOutOfRange {
             way_id: WayId(10),
             index: 4,
@@ -217,7 +218,7 @@ fn insert_node_into_way_with_a_bad_way_or_index_creates_nothing() {
 
     // The end of the list is a valid position.
     let id = layer
-        .insert_node_into_way(WayId(10), 3, 40.0, -74.0)
+        .insert_node_into_way(WayId(10), 3, LatLon::new(40.0, -74.0))
         .unwrap();
     assert_eq!(
         layer.way_node_ids(WayId(10)),
@@ -260,12 +261,15 @@ fn commit_node_moves_that_matches_nothing_changes_nothing() {
     let before = observable(&layer);
     let revision = layer.edit_revision();
     assert_eq!(
-        layer.commit_node_moves(&[(NodeId(99), 41.0, -75.0)]),
+        layer.commit_node_moves(&[(NodeId(99), LatLon::new(41.0, -75.0))]),
         Err(EditError::UnknownNode(NodeId(99)))
     );
     // A move with one bad id moves none of them.
     assert_eq!(
-        layer.commit_node_moves(&[(NodeId(1), 41.0, -75.0), (NodeId(99), 41.0, -75.0)]),
+        layer.commit_node_moves(&[
+            (NodeId(1), LatLon::new(41.0, -75.0)),
+            (NodeId(99), LatLon::new(41.0, -75.0))
+        ]),
         Err(EditError::UnknownNode(NodeId(99)))
     );
     assert_eq!(observable(&layer), before);
@@ -275,10 +279,13 @@ fn commit_node_moves_that_matches_nothing_changes_nothing() {
     assert_eq!(layer.commit_node_moves(&[]), Ok(()));
     assert!(!layer.is_modified());
     layer
-        .commit_node_moves(&[(NodeId(1), 41.0, -75.0)])
+        .commit_node_moves(&[(NodeId(1), LatLon::new(41.0, -75.0))])
         .unwrap();
     assert!(layer.is_modified());
-    assert_eq!(layer.node_lat_lon(NodeId(1)), Some((41.0, -75.0)));
+    assert_eq!(
+        layer.node_lat_lon(NodeId(1)),
+        Some(LatLon::new(41.0, -75.0))
+    );
     assert_same_as_fresh(&layer);
 }
 
@@ -325,8 +332,8 @@ fn relation_edits_report_why_they_were_refused() {
 /// out an id that data already uses, whichever way the data arrived.
 fn assert_fresh_ids_are_unused(layer: &mut OsmLayer) {
     let ways_before = layer.get_osm_data().unwrap().ways.len();
-    let used_node = layer.add_node(40.0, -74.0);
-    let used_node_2 = layer.add_node(40.0, -74.1);
+    let used_node = layer.add_node(LatLon::new(40.0, -74.0));
+    let used_node_2 = layer.add_node(LatLon::new(40.0, -74.1));
     let way = layer.add_way(vec![used_node, used_node_2], Tags::new());
     let relation = layer.create_relation(Tags::new(), vec![]).unwrap();
     let data = layer.get_osm_data().unwrap();
@@ -364,7 +371,7 @@ fn ids_are_derived_again_when_data_is_loaded_into_an_existing_layer() {
     // The layer has handed out ids already; loading replaces its data, and the
     // counters follow the new data, not the old.
     let mut layer = layer_with(network());
-    layer.add_node(40.0, -74.0);
+    layer.add_node(LatLon::new(40.0, -74.0));
     layer.add_way(vec![NodeId(1), NodeId(2)], Tags::new());
     layer.set_osm_data(Arc::new(local_ids()));
     assert_fresh_ids_are_unused(&mut layer);

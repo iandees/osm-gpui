@@ -5,7 +5,8 @@
 
 use gpui::{div, prelude::*, px, Context, SharedString};
 use gpui_component::{
-    h_flex, label::Label, tooltip::Tooltip, v_flex, ActiveTheme as _, Icon, IconName, Sizable as _,
+    button::Button, h_flex, label::Label, tooltip::Tooltip, v_flex, ActiveTheme as _, Icon,
+    IconName, Sizable as _,
 };
 
 use crate::selection::FeatureRef;
@@ -69,13 +70,15 @@ pub fn rows_shown(total: usize) -> (usize, usize) {
 
 /// The rows of the findings in `report`, as a column. `highlighted` is the
 /// index of the row to mark as the current one. `on_select(view, index, cx)`
-/// is called when row `index` (into `report.entries`) is clicked.
+/// is called when row `index` (into `report.entries`) is clicked, and
+/// `on_fix` when the Fix button of a row that has a fix is.
 pub fn findings_rows<V: 'static>(
     report: &Report,
     id: &'static str,
     highlighted: Option<usize>,
     cx: &mut Context<V>,
     on_select: fn(&mut V, usize, &mut Context<V>),
+    on_fix: fn(&mut V, usize, &mut Context<V>),
 ) -> gpui::Div {
     let theme = cx.theme().clone();
     let (shown, hidden) = rows_shown(report.entries.len());
@@ -97,6 +100,17 @@ pub fn findings_rows<V: 'static>(
         };
         let full: SharedString =
             format!("{severity}: {}\n{}", entry.finding.message, entry.label).into();
+        let fix_button = entry.finding.fix.as_ref().map(|fix| {
+            Button::new((id, index + 1_000_000))
+                .label(tr!("validator.fix.button"))
+                .outline()
+                .xsmall()
+                .tooltip(fix.label.clone())
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    cx.stop_propagation();
+                    on_fix(this, index, cx);
+                }))
+        });
         let row = interactive_row((id, index), highlighted == Some(index), cx)
             .h_auto()
             .min_h(px(PANEL_ROW_HEIGHT))
@@ -130,6 +144,7 @@ pub fn findings_rows<V: 'static>(
                             .child(entry.label.clone()),
                     ),
             )
+            .children(fix_button.map(|b| div().flex_shrink_0().child(b)))
             .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _, _window, cx| on_select(this, index, cx)));
         list = list.child(row);
@@ -172,6 +187,7 @@ mod tests {
                     check,
                     message: "m".into(),
                     features: vec![(FeatureKind::Way, id), (FeatureKind::Node, 6)],
+                    fix: None,
                 },
                 label: "l".into(),
             })

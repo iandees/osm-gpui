@@ -1,11 +1,13 @@
 //! Pure geometry for orienting new buildings to an existing "squared" way.
 //!
-//! All points are `(lat, lon)` in degrees. Angles are measured in a local
+//! All points are geographic positions in degrees. Angles are measured in a local
 //! metric (equirectangular) projection centred near the points involved, so
 //! that "perpendicular" really is perpendicular on the ground (a degree of
 //! longitude is shorter than a degree of latitude away from the equator).
 //! Orientations are bearings of a line, in radians, counter-clockwise from
 //! the +x (east) axis, normalised to `[0, pi)` since a line has no direction.
+
+use crate::coordinates::LatLon;
 
 const METERS_PER_DEGREE: f64 = 111_320.0;
 
@@ -15,18 +17,18 @@ pub const SQUARED_TOLERANCE_DEG: f64 = 10.0;
 /// Edges shorter than this (metres) make a ring degenerate.
 const MIN_EDGE_M: f64 = 1e-3;
 
-fn project(p: (f64, f64), lat0: f64) -> (f64, f64) {
+fn project(p: LatLon, lat0: f64) -> (f64, f64) {
     let k = lat0.to_radians().cos();
-    (p.1 * METERS_PER_DEGREE * k, p.0 * METERS_PER_DEGREE)
+    (p.lon * METERS_PER_DEGREE * k, p.lat * METERS_PER_DEGREE)
 }
 
-fn unproject(p: (f64, f64), lat0: f64) -> (f64, f64) {
+fn unproject(p: (f64, f64), lat0: f64) -> LatLon {
     let k = lat0.to_radians().cos();
-    (p.1 / METERS_PER_DEGREE, p.0 / (METERS_PER_DEGREE * k))
+    LatLon::new(p.1 / METERS_PER_DEGREE, p.0 / (METERS_PER_DEGREE * k))
 }
 
 /// Projected vertices of a ring with any duplicated closing vertex dropped.
-fn open_ring(ring: &[(f64, f64)]) -> Vec<(f64, f64)> {
+fn open_ring(ring: &[LatLon]) -> Vec<(f64, f64)> {
     let mut pts = ring.to_vec();
     if pts.len() > 1 && pts.first() == pts.last() {
         pts.pop();
@@ -34,14 +36,14 @@ fn open_ring(ring: &[(f64, f64)]) -> Vec<(f64, f64)> {
     if pts.is_empty() {
         return Vec::new();
     }
-    let lat0 = pts.iter().map(|p| p.0).sum::<f64>() / pts.len() as f64;
+    let lat0 = pts.iter().map(|p| p.lat).sum::<f64>() / pts.len() as f64;
     pts.iter().map(|&p| project(p, lat0)).collect()
 }
 
 /// True if `ring` (a closed way's vertices, closing vertex optional) has at
 /// least four corners and every vertex turns by about 0 degrees (a straight
 /// continuation) or about 90 degrees, within `tolerance_deg`.
-pub fn is_squared(ring: &[(f64, f64)], tolerance_deg: f64) -> bool {
+pub fn is_squared(ring: &[LatLon], tolerance_deg: f64) -> bool {
     let pts = open_ring(ring);
     let n = pts.len();
     if n < 4 {
@@ -70,7 +72,7 @@ pub fn is_squared(ring: &[(f64, f64)], tolerance_deg: f64) -> bool {
 }
 
 /// Orientation of the ring's longest edge, in radians in `[0, pi)`.
-pub fn dominant_orientation(ring: &[(f64, f64)]) -> Option<f64> {
+pub fn dominant_orientation(ring: &[LatLon]) -> Option<f64> {
     let pts = open_ring(ring);
     let n = pts.len();
     if n < 2 {
@@ -93,11 +95,11 @@ pub fn dominant_orientation(ring: &[(f64, f64)]) -> Option<f64> {
 /// opposite corners. `None` if the rectangle would be degenerate (a side
 /// shorter than a millimetre).
 pub fn rectangle_from_opposite_corners(
-    a: (f64, f64),
-    b: (f64, f64),
+    a: LatLon,
+    b: LatLon,
     orientation: f64,
-) -> Option<[(f64, f64); 4]> {
-    let lat0 = (a.0 + b.0) / 2.0;
+) -> Option<[LatLon; 4]> {
+    let lat0 = (a.lat + b.lat) / 2.0;
     let (pa, pb) = (project(a, lat0), project(b, lat0));
     let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
     let (c, s) = (orientation.cos(), orientation.sin());
@@ -118,13 +120,13 @@ mod tests {
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
     /// A rectangle `w` x `h` metres at latitude 45, rotated by `rot`
-    /// radians, as a closed (lat, lon) ring.
-    fn rotated_rect(w: f64, h: f64, rot: f64) -> Vec<(f64, f64)> {
+    /// radians, as a closed ring of positions.
+    fn rotated_rect(w: f64, h: f64, rot: f64) -> Vec<LatLon> {
         let (c, s) = (rot.cos(), rot.sin());
-        let mut ring: Vec<(f64, f64)> = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]
+        let mut ring: Vec<LatLon> = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]
             .iter()
             .map(|&(x, y)| unproject((x * c - y * s, x * s + y * c), 45.0))
-            .map(|(lat, lon)| (45.0 + lat, -80.0 + lon))
+            .map(|d| LatLon::new(45.0 + d.lat, -80.0 + d.lon))
             .collect();
         ring.push(ring[0]);
         ring
@@ -143,13 +145,13 @@ mod tests {
     #[test]
     fn l_shape_is_squared() {
         let l = [
-            (0.0, 0.0),
-            (0.0, 0.0002),
-            (0.0001, 0.0002),
-            (0.0001, 0.0001),
-            (0.0002, 0.0001),
-            (0.0002, 0.0),
-            (0.0, 0.0),
+            LatLon::new(0.0, 0.0),
+            LatLon::new(0.0, 0.0002),
+            LatLon::new(0.0001, 0.0002),
+            LatLon::new(0.0001, 0.0001),
+            LatLon::new(0.0002, 0.0001),
+            LatLon::new(0.0002, 0.0),
+            LatLon::new(0.0, 0.0),
         ];
         assert!(is_squared(&l, 10.0));
     }
@@ -157,24 +159,28 @@ mod tests {
     #[test]
     fn collinear_vertex_is_allowed() {
         let ring = [
-            (0.0, 0.0),
-            (0.0, 0.0001),
-            (0.0, 0.0002),
-            (0.0001, 0.0002),
-            (0.0001, 0.0),
+            LatLon::new(0.0, 0.0),
+            LatLon::new(0.0, 0.0001),
+            LatLon::new(0.0, 0.0002),
+            LatLon::new(0.0001, 0.0002),
+            LatLon::new(0.0001, 0.0),
         ];
         assert!(is_squared(&ring, 10.0));
     }
 
     #[test]
     fn triangle_and_skewed_quad_are_not_squared() {
-        let tri = [(0.0, 0.0), (0.0, 0.0002), (0.0002, 0.0001)];
+        let tri = [
+            LatLon::new(0.0, 0.0),
+            LatLon::new(0.0, 0.0002),
+            LatLon::new(0.0002, 0.0001),
+        ];
         assert!(!is_squared(&tri, 10.0));
         let parallelogram = [
-            (0.0, 0.0),
-            (0.0, 0.0002),
-            (0.0001, 0.0003),
-            (0.0001, 0.0001),
+            LatLon::new(0.0, 0.0),
+            LatLon::new(0.0, 0.0002),
+            LatLon::new(0.0001, 0.0003),
+            LatLon::new(0.0001, 0.0001),
         ];
         assert!(!is_squared(&parallelogram, 10.0));
     }
@@ -184,10 +190,10 @@ mod tests {
         // Corner turn of about 95 degrees at (0,0.0002) in metric space.
         let near = |dy: f64| {
             vec![
-                (0.0, 0.0),
-                (0.0, 0.0002),
-                (0.0001, 0.0002 + dy),
-                (0.0001, 0.0),
+                LatLon::new(0.0, 0.0),
+                LatLon::new(0.0, 0.0002),
+                LatLon::new(0.0001, 0.0002 + dy),
+                LatLon::new(0.0001, 0.0),
             ]
         };
         assert!(is_squared(&near(0.00001), 10.0));
@@ -198,7 +204,12 @@ mod tests {
     fn degenerate_rings_are_not_squared() {
         assert!(!is_squared(&[], 10.0));
         assert!(!is_squared(
-            &[(0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
+            &[
+                LatLon::new(0.0, 0.0),
+                LatLon::new(0.0, 0.0),
+                LatLon::new(0.0, 0.0),
+                LatLon::new(0.0, 0.0)
+            ],
             10.0
         ));
     }
@@ -218,8 +229,8 @@ mod tests {
 
     #[test]
     fn rectangle_corners_are_right_angled_and_aligned() {
-        let a = (45.0, -80.0);
-        let b = (45.0003, -79.9995);
+        let a = LatLon::new(45.0, -80.0);
+        let b = LatLon::new(45.0003, -79.9995);
         let rot = 0.5;
         let r = rectangle_from_opposite_corners(a, b, rot).unwrap();
         assert_eq!(r[0], a);
@@ -231,19 +242,24 @@ mod tests {
 
     #[test]
     fn rectangle_axis_aligned_has_expected_corners() {
-        let r = rectangle_from_opposite_corners((10.0, 20.0), (10.001, 20.002), 0.0).unwrap();
-        assert!((r[1].0 - 10.0).abs() < 1e-9 && (r[1].1 - 20.002).abs() < 1e-9);
-        assert!((r[3].0 - 10.001).abs() < 1e-9 && (r[3].1 - 20.0).abs() < 1e-9);
+        let r = rectangle_from_opposite_corners(
+            LatLon::new(10.0, 20.0),
+            LatLon::new(10.001, 20.002),
+            0.0,
+        )
+        .unwrap();
+        assert!((r[1].lat - 10.0).abs() < 1e-9 && (r[1].lon - 20.002).abs() < 1e-9);
+        assert!((r[3].lat - 10.001).abs() < 1e-9 && (r[3].lon - 20.0).abs() < 1e-9);
     }
 
     #[test]
     fn rectangle_works_for_any_drag_direction() {
-        let a = (45.0, -80.0);
+        let a = LatLon::new(45.0, -80.0);
         for b in [
-            (45.0002, -79.9998),
-            (44.9998, -79.9998),
-            (45.0002, -80.0002),
-            (44.9998, -80.0002),
+            LatLon::new(45.0002, -79.9998),
+            LatLon::new(44.9998, -79.9998),
+            LatLon::new(45.0002, -80.0002),
+            LatLon::new(44.9998, -80.0002),
         ] {
             let r = rectangle_from_opposite_corners(a, b, 0.7).unwrap();
             assert!(is_squared(&r, 0.01));
@@ -252,11 +268,11 @@ mod tests {
 
     #[test]
     fn degenerate_rectangle_is_none() {
-        let a = (45.0, -80.0);
+        let a = LatLon::new(45.0, -80.0);
         assert!(rectangle_from_opposite_corners(a, a, 0.3).is_none());
         // b lies exactly along the orientation axis: zero width.
         let along = unproject((10.0 * 0.3f64.cos(), 10.0 * 0.3f64.sin()), 45.0);
-        let b = (45.0 + along.0, -80.0 + along.1);
+        let b = LatLon::new(45.0 + along.lat, -80.0 + along.lon);
         assert!(rectangle_from_opposite_corners(a, b, 0.3).is_none());
     }
 }

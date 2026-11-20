@@ -19,6 +19,17 @@ script deletes what it created. Run from the repository root.
    OSM_GPUI_DEBUG_CHUNK_LIMIT=25 cargo run -- --api-server dev --script-delay-ms 150 --script docs/live-test/03-chunked.osmscript
    ```
 
+   `07-revert-changeset.osmscript` exercises File > Revert Changeset: it
+   uploads a create and a modify, reverts the modify, deletes everything,
+   reverts the delete (the objects return as modifies of the same objects,
+   not new ones) and reverts that, leaving the server clean. It answers the
+   dialog with `action RevertChangeset {"id":"last"}`, the changeset the run
+   uploaded last; a changeset number works too.
+
+   ```
+   cargo run -- --api-server dev --script-delay-ms 400 --script docs/live-test/07-revert-changeset.osmscript
+   ```
+
 3. If a run stops part way, `99-cleanup.osmscript` deletes what is left in the
    three areas.
 

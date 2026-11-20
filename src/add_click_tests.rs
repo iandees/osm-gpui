@@ -10,12 +10,12 @@ use osm_gpui::coordinates::LatLon;
 use osm_gpui::reference::{Builder, FeatureKind as RefKind, Format};
 
 /// A standalone OSM node that a reference vertex also sits on.
-const NODE_3: (f64, f64) = (LAT + 0.0006, LON - 0.0005);
+const NODE_3: LatLon = LatLon::new(LAT + 0.0006, LON - 0.0005);
 /// Reference line A: two vertices, well away from all OSM data.
-const A_V1: (f64, f64) = (LAT - 0.0006, LON - 0.0007);
-const A_V2: (f64, f64) = (LAT - 0.0006, LON + 0.0003);
+const A_V1: LatLon = LatLon::new(LAT - 0.0006, LON - 0.0007);
+const A_V2: LatLon = LatLon::new(LAT - 0.0006, LON + 0.0003);
 /// A reference marker (waypoint).
-const MARKER: (f64, f64) = (LAT - 0.0006, LON + 0.0007);
+const MARKER: LatLon = LatLon::new(LAT - 0.0006, LON + 0.0007);
 
 /// Way 10 from node 1 to node 2 through the viewport centre, plus the
 /// standalone node 3.
@@ -23,21 +23,20 @@ fn osm_data() -> OsmData {
     Build::new()
         .node_at(1, LAT, LON - 0.001)
         .node_at(2, LAT, LON + 0.001)
-        .node_at(3, NODE_3.0, NODE_3.1)
+        .node_at(3, NODE_3.lat, NODE_3.lon)
         .way(10, &[1, 2], &[])
         .done()
 }
 
-fn gpx(lines: &[&[(f64, f64)]], markers: &[(f64, f64)]) -> osm_gpui::reference::ReferenceData {
+fn gpx(lines: &[&[LatLon]], markers: &[LatLon]) -> osm_gpui::reference::ReferenceData {
     let mut b = Builder::new(Format::Gpx);
     for line in lines {
         let f = b.feature(RefKind::Track, "", Some("Track".into()), vec![]);
-        let pts: Vec<(f64, f64)> = line.iter().map(|&(lat, lon)| (lon, lat)).collect();
-        b.line(f, &pts).unwrap();
+        b.line(f, line).unwrap();
     }
-    for &(lat, lon) in markers {
+    for &at in markers {
         let f = b.feature(RefKind::Waypoint, "", Some("Marker".into()), vec![]);
-        b.point(f, lon, lat).unwrap();
+        b.point(f, at).unwrap();
     }
     b.finish().unwrap()
 }
@@ -101,8 +100,8 @@ fn far(view: &MapViewer) -> gpui::Point<gpui::Pixels> {
     center(view) + point(px(300.0), px(200.0))
 }
 
-fn screen(view: &MapViewer, p: (f64, f64)) -> gpui::Point<gpui::Pixels> {
-    view.viewport.geo_to_screen(LatLon::new(p.0, p.1))
+fn screen(view: &MapViewer, p: LatLon) -> gpui::Point<gpui::Pixels> {
+    view.viewport.geo_to_screen(p)
 }
 
 /// Perform exactly one Add click and return the change it made relative to
@@ -152,7 +151,10 @@ macro_rules! click_case {
 
 fn all_refs(_: &Viewport) -> Vec<osm_gpui::reference::ReferenceData> {
     vec![gpx(
-        &[&[A_V1, A_V2], &[NODE_3, (LAT + 0.0010, LON - 0.0003)]],
+        &[
+            &[A_V1, A_V2],
+            &[NODE_3, LatLon::new(LAT + 0.0010, LON - 0.0003)],
+        ],
         &[MARKER],
     )]
 }
@@ -248,8 +250,8 @@ click_case!(
 fn osm_way_snap_wins_over_a_nearby_reference_line(cx: &mut TestAppContext) {
     let refs = |vp: &Viewport| {
         let c = vp.geo_to_screen(LatLon::new(LAT, LON));
-        let a = vp.screen_to_geo(c + point(px(-150.0), px(3.0))).to_pair();
-        let b = vp.screen_to_geo(c + point(px(150.0), px(3.0))).to_pair();
+        let a = vp.screen_to_geo(c + point(px(-150.0), px(3.0)));
+        let b = vp.screen_to_geo(c + point(px(150.0), px(3.0)));
         vec![gpx(&[&[a, b]], &[])]
     };
     with_refs(cx, refs, |view, w, cx, layer| {
@@ -263,7 +265,7 @@ fn osm_way_snap_wins_over_a_nearby_reference_line(cx: &mut TestAppContext) {
         // The new node is on the OSM way (lat == LAT), not on the
         // reference line 3 px below it.
         let created = view.selected[0].id;
-        assert!((node_lat_lon(view, layer, created).unwrap().0 - LAT).abs() < 1e-7);
+        assert!((node_lat_lon(view, layer, created).unwrap().lat - LAT).abs() < 1e-7);
         assert_eq!(
             state(view, layer),
             Outcome {
@@ -290,8 +292,8 @@ fn the_new_node_lands_on_the_snap_target(cx: &mut TestAppContext) {
             view.set_add_progress(None);
             view.handle_add_click(pt, false);
             let id = view.selected[0].id;
-            let (lat, lon) = node_lat_lon(view, layer, id).unwrap();
-            assert!((lat - target.0).abs() < 1e-9 && (lon - target.1).abs() < 1e-9);
+            let LatLon { lat, lon } = node_lat_lon(view, layer, id).unwrap();
+            assert!((lat - target.lat).abs() < 1e-9 && (lon - target.lon).abs() < 1e-9);
         }
     });
 }
@@ -307,8 +309,8 @@ fn a_hidden_reference_layer_does_not_snap_the_click(cx: &mut TestAppContext) {
         assert_eq!(got, NODE_ONLY);
         view.set_add_progress(None);
         view.handle_add_click(pt, false);
-        let (lat, lon) = node_lat_lon(view, layer, view.selected[0].id).unwrap();
-        assert!((lat - A_V1.0).abs() > 1e-7 || (lon - A_V1.1).abs() > 1e-7);
+        let LatLon { lat, lon } = node_lat_lon(view, layer, view.selected[0].id).unwrap();
+        assert!((lat - A_V1.lat).abs() > 1e-7 || (lon - A_V1.lon).abs() > 1e-7);
     });
 }
 
@@ -338,6 +340,26 @@ fn two_clicks_and_enter_make_a_two_node_way_in_two_steps(cx: &mut TestAppContext
         view.on_undo(&Undo, w, cx);
         assert_eq!(state(view, layer), base);
         assert!(!is_modified(view, layer));
+    });
+}
+
+// A double-click finishes the way: the first click places the last node, the
+// second one only stops drawing (no duplicate node), and the next click starts
+// a fresh way rather than extending the finished one.
+#[gpui::test]
+fn double_click_finishes_the_way_without_a_duplicate_node(cx: &mut TestAppContext) {
+    with_refs(cx, all_refs, |view, _w, cx, layer| {
+        view.handle_add_click(screen(view, A_V1), false);
+        view.handle_add_click(far(view), false);
+        let before = state(view, layer);
+        assert!(view.add_progress().is_some());
+        view.mode_click(far(view), false, 2, false, cx);
+        assert!(view.add_progress().is_none());
+        assert_eq!(state(view, layer), before);
+        // The next click starts a new lone node, not a continuation.
+        view.mode_click(screen(view, A_V1), false, 1, false, cx);
+        assert_eq!(state(view, layer).ways, before.ways);
+        assert!(view.add_progress().is_some_and(|p| p.way_id.is_none()));
     });
 }
 

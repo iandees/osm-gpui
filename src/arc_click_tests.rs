@@ -47,7 +47,7 @@ fn three_clicks_make_one_arc_and_one_undo_removes_it(cx: &mut TestAppContext) {
         let screen: Vec<(f64, f64)> = ids
             .iter()
             .map(|&id| {
-                let (lat, lon) = editable.node_lat_lon(id).unwrap();
+                let LatLon { lat, lon } = editable.node_lat_lon(id).unwrap();
                 let p = view.viewport.geo_to_screen(LatLon::new(lat, lon));
                 (p.x.to_f64(), p.y.to_f64())
             })
@@ -116,7 +116,7 @@ fn endpoints_snap_onto_a_way_and_are_spliced_into_it(cx: &mut TestAppContext) {
         assert!(host.contains(arc.last().unwrap()));
         // The spliced nodes lie exactly on the way.
         for id in [arc[0], arc[arc.len() - 1]] {
-            assert!((editable.node_lat_lon(id).unwrap().0 - LAT).abs() < 1e-9);
+            assert!((editable.node_lat_lon(id).unwrap().lat - LAT).abs() < 1e-9);
         }
 
         // Ctrl/Alt turns snapping off: nothing is spliced.

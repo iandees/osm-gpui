@@ -177,11 +177,32 @@ pub fn may_snap(sources: &[&Tags], target: &Tags) -> bool {
         return true;
     }
     let crossing = sources.iter().any(|t| is_crossing_node(t));
-    match classify(target) {
-        Some(tc) => classes
-            .iter()
-            .all(|&sc| classes_compatible(sc, tc, crossing)),
-        None => false,
+    let Some(tc) = classify(target) else {
+        return false;
+    };
+    sources.iter().all(|t| match classify(t) {
+        None => true,
+        Some(sc) => {
+            classes_compatible(sc, tc, crossing) || footway_meets_building(t, sc, target, tc)
+        }
+    })
+}
+
+/// A footway (sidewalk, crossing, ...) may meet a building, in either
+/// direction, since footways commonly end at a building's wall. Other
+/// highways stay separate from buildings.
+fn footway_meets_building(a: &Tags, ac: SnapClass, b: &Tags, bc: SnapClass) -> bool {
+    let is_footway = |t: &Tags| t.iter().any(|(k, v)| k == "highway" && v == "footway");
+    match (ac, bc) {
+        (SnapClass::Highway, SnapClass::Building) => is_footway(a),
+        // An entrance stays on building walls; only a building outline
+        // may be glued onto a footway.
+        (SnapClass::Building, SnapClass::Highway) => {
+            is_footway(b)
+                && a.iter()
+                    .any(|(k, _)| k == "building" || k == "building:part")
+        }
+        _ => false,
     }
 }
 
@@ -385,6 +406,14 @@ mod tests {
     }
 
     #[test]
+    fn footway_snaps_to_building_but_other_highways_do_not() {
+        assert!(ok(&[&[("highway", "footway")]], &[("building", "yes")]));
+        assert!(ok(&[&[("building", "yes")]], &[("highway", "footway")]));
+        assert!(!ok(&[&[("highway", "path")]], &[("building", "yes")]));
+        assert!(!ok(&[&[("building", "yes")]], &[("highway", "service")]));
+    }
+
+    #[test]
     fn a_node_on_several_ways_must_suit_all_of_them() {
         let road = [("highway", "residential")];
         let fence = [("barrier", "fence")];
@@ -416,37 +445,47 @@ mod tests {
     fn line() -> (Vec<i64>, Vec<LatLon>) {
         (
             vec![1, 2, 3, 4],
-            vec![(0.0, 0.0), (0.0, 0.002), (0.002, 0.002), (0.002, 0.0)],
+            vec![
+                LatLon::new(0.0, 0.0),
+                LatLon::new(0.0, 0.002),
+                LatLon::new(0.002, 0.002),
+                LatLon::new(0.002, 0.0),
+            ],
         )
     }
 
     #[test]
     fn insertion_index_is_after_the_segments_start() {
         let (nodes, pts) = line();
-        let plan = plan_join_nearest(9, (0.0011, 0.0021), &nodes, &pts).unwrap();
+        let plan = plan_join_nearest(9, LatLon::new(0.0011, 0.0021), &nodes, &pts).unwrap();
         assert_eq!(plan.index, 2);
-        assert!((plan.point.1 - 0.002).abs() < 1e-9);
-        assert!((plan.point.0 - 0.0011).abs() < 1e-6);
-        let first = plan_join_nearest(9, (-0.0001, 0.001), &nodes, &pts).unwrap();
+        assert!((plan.point.lon - 0.002).abs() < 1e-9);
+        assert!((plan.point.lat - 0.0011).abs() < 1e-6);
+        let first = plan_join_nearest(9, LatLon::new(-0.0001, 0.001), &nodes, &pts).unwrap();
         assert_eq!(first.index, 1);
-        let last = plan_join_nearest(9, (0.003, 0.001), &nodes, &pts).unwrap();
+        let last = plan_join_nearest(9, LatLon::new(0.003, 0.001), &nodes, &pts).unwrap();
         assert_eq!(last.index, 3);
     }
 
     #[test]
     fn beyond_the_end_clamps_to_the_end_point() {
         let (nodes, pts) = line();
-        let plan = plan_join_nearest(9, (0.003, 0.0), &nodes, &pts).unwrap();
+        let plan = plan_join_nearest(9, LatLon::new(0.003, 0.0), &nodes, &pts).unwrap();
         assert_eq!(plan.index, 3);
-        assert!((plan.point.0 - 0.002).abs() < 1e-9 && plan.point.1.abs() < 1e-9);
+        assert!((plan.point.lat - 0.002).abs() < 1e-9 && plan.point.lon.abs() < 1e-9);
     }
 
     #[test]
     fn a_way_passing_the_position_twice_resolves_to_the_first_segment() {
         // 1 -> 2 runs east, 3 -> 4 runs back west over the same line.
         let nodes = vec![1, 2, 3, 4];
-        let pts = vec![(0.0, 0.0), (0.0, 0.002), (0.0, 0.002), (0.0, 0.0)];
-        let plan = plan_join_nearest(9, (0.0001, 0.001), &nodes, &pts).unwrap();
+        let pts = vec![
+            LatLon::new(0.0, 0.0),
+            LatLon::new(0.0, 0.002),
+            LatLon::new(0.0, 0.002),
+            LatLon::new(0.0, 0.0),
+        ];
+        let plan = plan_join_nearest(9, LatLon::new(0.0001, 0.001), &nodes, &pts).unwrap();
         assert_eq!(plan.index, 1);
     }
 
@@ -454,13 +493,13 @@ mod tests {
     fn closed_way_includes_the_closing_segment() {
         let nodes = vec![1, 2, 3, 4, 1];
         let pts = vec![
-            (0.0, 0.0),
-            (0.0, 0.002),
-            (0.002, 0.002),
-            (0.002, 0.0),
-            (0.0, 0.0),
+            LatLon::new(0.0, 0.0),
+            LatLon::new(0.0, 0.002),
+            LatLon::new(0.002, 0.002),
+            LatLon::new(0.002, 0.0),
+            LatLon::new(0.0, 0.0),
         ];
-        let plan = plan_join_nearest(9, (0.001, -0.0001), &nodes, &pts).unwrap();
+        let plan = plan_join_nearest(9, LatLon::new(0.001, -0.0001), &nodes, &pts).unwrap();
         assert_eq!(plan.index, 4);
     }
 
@@ -468,11 +507,11 @@ mod tests {
     fn a_node_already_in_the_way_is_refused() {
         let (nodes, pts) = line();
         assert_eq!(
-            plan_join_nearest(2, (0.0, 0.0), &nodes, &pts),
+            plan_join_nearest(2, LatLon::new(0.0, 0.0), &nodes, &pts),
             Err(JoinError::AlreadyInWay)
         );
         assert_eq!(
-            plan_join_at_segment(3, (0.0, 0.0), &nodes, &pts, 0),
+            plan_join_at_segment(3, LatLon::new(0.0, 0.0), &nodes, &pts, 0),
             Err(JoinError::AlreadyInWay)
         );
     }
@@ -480,12 +519,12 @@ mod tests {
     #[test]
     fn degenerate_ways_are_refused() {
         assert_eq!(
-            plan_join_nearest(9, (0.0, 0.0), &[1], &[(0.0, 0.0)]),
+            plan_join_nearest(9, LatLon::new(0.0, 0.0), &[1], &[LatLon::new(0.0, 0.0)]),
             Err(JoinError::NoSegment)
         );
         let (nodes, pts) = line();
         assert_eq!(
-            plan_join_at_segment(9, (0.0, 0.0), &nodes, &pts, 3),
+            plan_join_at_segment(9, LatLon::new(0.0, 0.0), &nodes, &pts, 3),
             Err(JoinError::BadSegment)
         );
     }

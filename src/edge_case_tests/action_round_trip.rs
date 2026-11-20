@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::selection_actions::ACTIONS;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, RelationId};
 use std::collections::BTreeSet;
 
@@ -252,11 +253,18 @@ fn moves_and_tag_edits_spanning_two_layers_undo_and_redo_exactly(cx: &mut TestAp
                 .unwrap()
                 .as_editable_mut()
                 .unwrap();
-            let (lat, lon) = editable.node_lat_lon(NodeId(40)).unwrap();
+            let LatLon { lat, lon } = editable.node_lat_lon(NodeId(40)).unwrap();
             editable
-                .commit_node_moves(&[(NodeId(40), lat + 0.001, lon)])
+                .commit_node_moves(&[(NodeId(40), LatLon::new(lat + 0.001, lon))])
                 .unwrap();
-            per_layer.push((layer, vec![(NodeId(40), (lat, lon), (lat + 0.001, lon))]));
+            per_layer.push((
+                layer,
+                vec![(
+                    NodeId(40),
+                    LatLon::new(lat, lon),
+                    LatLon::new(lat + 0.001, lon),
+                )],
+            ));
         }
         s.view
             .undo_stack

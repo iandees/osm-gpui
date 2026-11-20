@@ -10,7 +10,7 @@
 //! The offset is applied to where imagery pixels are painted only: OSM data,
 //! the grid, hit-testing and every coordinate stay where they are.
 
-use crate::coordinates::{LatLon, WORLD_WIDTH_M};
+use crate::coordinates::{LatLon, Mercator, WORLD_WIDTH_M};
 use crate::persist::{self, JsonStore, WriteOpts};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -75,13 +75,13 @@ pub fn pixels_to_metres(dx: f64, dy: f64, zoom: f64, lat: f64) -> ImageryOffset 
     ImageryOffset::new(dx * mpp, -dy * mpp)
 }
 
-/// The offset in Web Mercator metres `(dx, dy)` at `lat`. Mercator stretches
+/// The offset as a Web Mercator shift in metres at `lat`. Mercator stretches
 /// ground distances by `1 / cos(lat)`, so the same ground shift is a bigger
 /// Mercator shift away from the equator. Both the tile selection and the tile
 /// painting go through this one function.
-pub fn offset_to_mercator(offset: ImageryOffset, lat: f64) -> (f64, f64) {
+pub fn offset_to_mercator(offset: ImageryOffset, lat: f64) -> Mercator {
     let scale = 1.0 / lat.to_radians().cos().max(1e-6);
-    (offset.east_m * scale, offset.north_m * scale)
+    Mercator::new(offset.east_m * scale, offset.north_m * scale)
 }
 
 /// An arrow key.
@@ -378,9 +378,9 @@ mod tests {
 
     #[test]
     fn mercator_offset_stretches_with_latitude() {
-        let (x, y) = offset_to_mercator(ImageryOffset::new(10.0, -4.0), 0.0);
+        let Mercator { x, y } = offset_to_mercator(ImageryOffset::new(10.0, -4.0), 0.0);
         assert!((x - 10.0).abs() < 1e-9 && (y + 4.0).abs() < 1e-9);
-        let (x, y) = offset_to_mercator(ImageryOffset::new(10.0, -4.0), 60.0);
+        let Mercator { x, y } = offset_to_mercator(ImageryOffset::new(10.0, -4.0), 60.0);
         assert!((x - 20.0).abs() < 1e-9 && (y + 8.0).abs() < 1e-9);
     }
 

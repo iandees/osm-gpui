@@ -51,10 +51,13 @@ pub fn arrow_key_pan(key: &str, view_size: Pt) -> Option<Pt> {
     }
 }
 
-/// Per-layer node ids being dragged, each with its pre-drag `(lat, lon)` —
+/// Per-layer node ids being dragged, each with its pre-drag position —
 /// the shape `resolve_move_targets` produces and a move-drag commit
 /// consumes.
-pub type NodeMoveTargets = Vec<(LayerId, Vec<(crate::ids::NodeId, f64, f64)>)>;
+pub type NodeMoveTargets = Vec<(
+    LayerId,
+    Vec<(crate::ids::NodeId, crate::coordinates::LatLon)>,
+)>;
 
 /// The map view's current mouse interaction.
 #[derive(Debug, Clone, PartialEq)]
@@ -260,7 +263,12 @@ mod tests {
         vec![(
             LayerId(layer),
             ids.iter()
-                .map(|&id| (crate::ids::NodeId(id), 0.0, 0.0))
+                .map(|&id| {
+                    (
+                        crate::ids::NodeId(id),
+                        crate::coordinates::LatLon::new(0.0, 0.0),
+                    )
+                })
                 .collect(),
         )]
     }

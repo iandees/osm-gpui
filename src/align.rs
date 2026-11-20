@@ -31,7 +31,11 @@ const MIN_LINE_M: f64 = 1e-6;
 const SNAP_M: f64 = 1e-4;
 
 fn axis(points: &[LatLon]) -> Option<Axis> {
-    if points.len() < 3 || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+    if points.len() < 3
+        || points
+            .iter()
+            .any(|p| !p.lat.is_finite() || !p.lon.is_finite())
+    {
         return None;
     }
     let projection = LocalProjection::new(mean_point(points));
@@ -152,7 +156,7 @@ pub fn distribute(points: &[LatLon]) -> Option<Vec<LatLon>> {
 mod tests {
     use super::*;
 
-    const ORIGIN: LatLon = (47.0, 8.0);
+    const ORIGIN: LatLon = LatLon::new(47.0, 8.0);
 
     fn ll(points: &[P]) -> Vec<LatLon> {
         let p = LocalProjection::new(ORIGIN);
@@ -265,9 +269,11 @@ mod tests {
         // All nodes at one point, two nodes, none, and non-finite coordinates.
         assert!(align_in_line(&[a, a, a, a]).is_none());
         assert!(distribute(&[a, a, a]).is_none());
-        assert!(align_in_line(&[a, (47.001, 8.0)]).is_none());
+        assert!(align_in_line(&[a, LatLon::new(47.001, 8.0)]).is_none());
         assert!(distribute(&[]).is_none());
-        assert!(align_in_line(&[a, (f64::NAN, 8.0), (47.002, 8.0)]).is_none());
+        assert!(
+            align_in_line(&[a, LatLon::new(f64::NAN, 8.0), LatLon::new(47.002, 8.0)]).is_none()
+        );
         assert!(!can_align(&[a, a]));
         assert!(can_align(&[a, a, a]));
     }
@@ -276,7 +282,7 @@ mod tests {
     fn duplicate_interior_nodes_and_collinear_input_are_finite() {
         let input = ll(&[(0.0, 0.0), (50.0, 5.0), (50.0, 5.0), (100.0, 0.0)]);
         for out in [align_in_line(&input).unwrap(), distribute(&input).unwrap()] {
-            assert!(out.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+            assert!(out.iter().all(|p| p.lat.is_finite() && p.lon.is_finite()));
         }
         let pts = xy(&distribute(&input).unwrap());
         assert!((pts[1].0 - 100.0 / 3.0).abs() < 1e-6);

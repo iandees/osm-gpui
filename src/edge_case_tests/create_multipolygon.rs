@@ -2,6 +2,7 @@
 //! one `type=multipolygon` relation out, with roles from nesting depth.
 
 use super::*;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::NodeId;
 use osm_gpui::osm::OsmNode;
 use osm_gpui::tags::Tags;
@@ -459,8 +460,10 @@ fn new_ways_go_up_before_the_relation_that_names_them(cx: &mut TestAppContext) {
             let mut nodes: Vec<NodeId> = corners
                 .iter()
                 .map(|&(x, y)| {
-                    s.editable_mut()
-                        .add_node(40.0 + y as f64 * 0.001, -74.0 + x as f64 * 0.001)
+                    s.editable_mut().add_node(LatLon::new(
+                        40.0 + y as f64 * 0.001,
+                        -74.0 + x as f64 * 0.001,
+                    ))
                 })
                 .collect();
             nodes.push(nodes[0]);

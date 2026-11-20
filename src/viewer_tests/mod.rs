@@ -8,7 +8,10 @@ mod clipboard;
 mod context_menu;
 mod delete_layer;
 mod download_merge;
+mod file_drop;
 mod find;
+mod junction_edits;
+mod lane_edits;
 mod preset_fields;
 mod relation_edits;
 mod relation_members;
@@ -34,6 +37,7 @@ use crate::undo::UndoableAction;
 use crate::{selection_actions, EditMode, MapViewer};
 use gpui::prelude::*;
 use gpui::TestAppContext;
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::ids::{NodeId, RelationId, WayId};
 use osm_gpui::layers::LayerId;
 use osm_gpui::osm::{OsmData, OsmNode, OsmWay};
@@ -120,7 +124,7 @@ fn tags_of(
     sorted_tags(view, active(view), kind, id).unwrap()
 }
 
-fn node_position(view: &MapViewer, id: i64) -> (f64, f64) {
+fn node_position(view: &MapViewer, id: i64) -> LatLon {
     node_lat_lon(view, active(view), id).unwrap()
 }
 
@@ -197,7 +201,7 @@ fn long_way_nodes(len: usize) -> Vec<i64> {
 /// Give the test view's layer a pending change (one new node).
 fn make_pending_change(view: &mut MapViewer) {
     editable(view)
-        .create_node(CENTER_LAT, CENTER_LON, None)
+        .create_node(LatLon::new(CENTER_LAT, CENTER_LON), None)
         .unwrap();
 }
 

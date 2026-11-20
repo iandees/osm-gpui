@@ -1,4 +1,4 @@
-use crate::coordinates::LatLon;
+use crate::coordinates::{GeoBounds, LatLon};
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::tags::Tags;
 use quick_xml::events::{BytesStart, Event};
@@ -103,13 +103,8 @@ pub struct OsmMember {
     pub role: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct OsmBounds {
-    pub min_lat: f64,
-    pub max_lat: f64,
-    pub min_lon: f64,
-    pub max_lon: f64,
-}
+/// A `<bounds>` box of an OSM file: the area that was downloaded.
+pub type OsmBounds = GeoBounds;
 
 /// Local edits recorded in a JOSM-style `.osm` file through per-element
 /// `action` attributes: what was changed relative to the server, but not

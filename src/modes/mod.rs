@@ -351,7 +351,7 @@ impl crate::MapViewer {
     ) {
         match self.mode_state {
             ModeState::Select(_) => select::click(self, at, shift_held, click_count),
-            ModeState::Add(_) => add::click(self, at, snapping_off),
+            ModeState::Add(_) => add::click(self, at, click_count, snapping_off),
             ModeState::Building(_) => building::click(self, at),
             ModeState::Arc(_) => arc::click(self, at, snapping_off),
             ModeState::Improve(_) => improve::click(self, at, cx),
@@ -424,32 +424,26 @@ impl crate::MapViewer {
     /// there and converting back yields a true rectangle on screen.
     pub(crate) fn rectangle_from_geo_edge(
         &self,
-        a: (f64, f64),
-        b: (f64, f64),
-        cursor: (f64, f64),
-    ) -> ((f64, f64), (f64, f64)) {
-        let a_screen = self.viewport.geo_to_screen(LatLon::new(a.0, a.1));
-        let b_screen = self.viewport.geo_to_screen(LatLon::new(b.0, b.1));
-        let cursor_screen = self.viewport.geo_to_screen(LatLon::new(cursor.0, cursor.1));
+        a: LatLon,
+        b: LatLon,
+        cursor: LatLon,
+    ) -> (LatLon, LatLon) {
+        let a_screen = self.viewport.geo_to_screen(a);
+        let b_screen = self.viewport.geo_to_screen(b);
+        let cursor_screen = self.viewport.geo_to_screen(cursor);
         let (far_a_screen, far_b_screen) = osm_gpui::selection::rectangle_from_edge(
             (a_screen.x.to_f64(), a_screen.y.to_f64()),
             (b_screen.x.to_f64(), b_screen.y.to_f64()),
             (cursor_screen.x.to_f64(), cursor_screen.y.to_f64()),
         );
-        let far_a = self
-            .viewport
-            .screen_to_geo(gpui::point(
-                px(far_a_screen.0 as f32),
-                px(far_a_screen.1 as f32),
-            ))
-            .to_pair();
-        let far_b = self
-            .viewport
-            .screen_to_geo(gpui::point(
-                px(far_b_screen.0 as f32),
-                px(far_b_screen.1 as f32),
-            ))
-            .to_pair();
+        let far_a = self.viewport.screen_to_geo(gpui::point(
+            px(far_a_screen.0 as f32),
+            px(far_a_screen.1 as f32),
+        ));
+        let far_b = self.viewport.screen_to_geo(gpui::point(
+            px(far_b_screen.0 as f32),
+            px(far_b_screen.1 as f32),
+        ));
         (far_a, far_b)
     }
 }

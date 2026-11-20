@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::coordinates::{lat_lon_to_mercator, mercator_to_lat_lon_wrapped, LatLon, Mercator};
+use crate::download_bounds::MercRect;
 use crate::edit_ops::{replay, EditOp};
 use crate::ids::{NodeId, RelationId, WayId};
 use crate::layers::{EditError, EditableLayer, LayerId};
@@ -193,7 +194,7 @@ impl FeatureClipboard {
         &self.relations
     }
 
-    /// The centre of the copied nodes' bounding box, as `(lat, lon)`; `None`
+    /// The centre of the copied nodes' bounding box; `None`
     /// when no node was copied (a lone relation has no position of its own).
     /// The box is taken in Web Mercator, so "centre" means the middle of what
     /// the map shows.
@@ -202,46 +203,45 @@ impl FeatureClipboard {
     }
 
     fn mercator_center(&self) -> Option<Mercator> {
-        let mut bounds: Option<(f64, f64, f64, f64)> = None;
+        let mut bounds: Option<MercRect> = None;
         for node in &self.nodes {
             let Mercator { x, y } = lat_lon_to_mercator(LatLon::new(node.lat, node.lon));
-            let b = bounds.get_or_insert((x, y, x, y));
-            b.0 = b.0.min(x);
-            b.1 = b.1.min(y);
-            b.2 = b.2.max(x);
-            b.3 = b.3.max(y);
+            let b = bounds.get_or_insert(MercRect::new(x, x, y, y));
+            b.min_x = b.min_x.min(x);
+            b.min_y = b.min_y.min(y);
+            b.max_x = b.max_x.max(x);
+            b.max_y = b.max_y.max(y);
         }
-        bounds.map(|(min_x, min_y, max_x, max_y)| {
-            Mercator::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
-        })
+        bounds.map(|b| Mercator::new((b.min_x + b.max_x) / 2.0, (b.min_y + b.max_y) / 2.0))
     }
 
-    /// The Mercator shift that puts the centre at `position`; `(0, 0)` for
-    /// the source position, for a clipboard without nodes and for a
-    /// position that is not a number.
-    fn mercator_shift(&self, position: PastePosition) -> (f64, f64) {
+    /// The Mercator shift that puts the centre at `position`; zero for the
+    /// source position, for a clipboard without nodes and for a position that
+    /// is not a number.
+    fn mercator_shift(&self, position: PastePosition) -> Mercator {
+        let none = Mercator::new(0.0, 0.0);
         let PastePosition::CenterAt(at) = position else {
-            return (0.0, 0.0);
+            return none;
         };
         if !at.lat.is_finite() || !at.lon.is_finite() {
-            return (0.0, 0.0);
+            return none;
         }
         let Some(center) = self.mercator_center() else {
-            return (0.0, 0.0);
+            return none;
         };
         let target = lat_lon_to_mercator(at);
-        (target.x - center.x, target.y - center.y)
+        Mercator::new(target.x - center.x, target.y - center.y)
     }
 
     /// Where the copied node `node` ends up under `position`.
     pub fn pasted_position(&self, node: &ClipNode, position: PastePosition) -> LatLon {
-        let (dx, dy) = self.mercator_shift(position);
+        let shift = self.mercator_shift(position);
         let source = LatLon::new(node.lat, node.lon);
-        if dx == 0.0 && dy == 0.0 {
+        if shift.x == 0.0 && shift.y == 0.0 {
             return source;
         }
         let Mercator { x, y } = lat_lon_to_mercator(source);
-        mercator_to_lat_lon_wrapped(Mercator::new(x + dx, y + dy))
+        mercator_to_lat_lon_wrapped(Mercator::new(x + shift.x, y + shift.y))
     }
 
     /// Check the clipboard against the server's size limits, before anything
@@ -342,15 +342,15 @@ impl FeatureClipboard {
 
         let mut new_nodes: HashMap<NodeId, NodeId> = HashMap::new();
         for node in &self.nodes {
-            let LatLon { lat, lon } = self.pasted_position(node, position);
-            let id = editable.add_node(lat, lon);
+            let at = self.pasted_position(node, position);
+            let id = editable.add_node(at);
             new_nodes.insert(node.id, id);
             pasted.nodes.push(DeletedFeatureSnapshot {
                 kind: FeatureKind::Node,
                 id: id.get(),
                 tags: node.tags.clone(),
                 way_nodes: Vec::new(),
-                node_lat_lon: Some((lat, lon)),
+                node_lat_lon: Some(at),
                 version: 0,
             });
             for (key, value) in node.tags.sorted() {
@@ -560,7 +560,7 @@ fn take_node(
     if seen.contains(&id) {
         return true;
     }
-    let Some((lat, lon)) = editable.node_lat_lon(id) else {
+    let Some(LatLon { lat, lon }) = editable.node_lat_lon(id) else {
         return false;
     };
     seen.insert(id);
@@ -801,10 +801,7 @@ mod tests {
     fn center_of(layer: &OsmLayer, nodes: &[i64]) -> LatLon {
         let merc: Vec<Mercator> = nodes
             .iter()
-            .map(|&id| {
-                let (lat, lon) = layer.node_lat_lon(NodeId(id)).unwrap();
-                lat_lon_to_mercator(LatLon::new(lat, lon))
-            })
+            .map(|&id| lat_lon_to_mercator(layer.node_lat_lon(NodeId(id)).unwrap()))
             .collect();
         let (min_x, max_x) = merc.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
             (lo.min(p.x), hi.max(p.x))
@@ -1046,8 +1043,7 @@ mod tests {
         // The shape is kept: each pasted node is offset from its original by
         // the same Mercator vector.
         let merc = |layer: &OsmLayer, id: i64| {
-            let (lat, lon) = layer.node_lat_lon(NodeId(id)).unwrap();
-            lat_lon_to_mercator(LatLon::new(lat, lon))
+            lat_lon_to_mercator(layer.node_lat_lon(NodeId(id)).unwrap())
         };
         let new_ids: Vec<i64> = pasted.nodes.iter().map(|s| s.id).collect();
         let shift = |old: i64, new: i64| {
@@ -1255,7 +1251,9 @@ mod tests {
         layer
             .set_tag(FeatureKind::Way, 10, "highway", "motorway")
             .unwrap();
-        layer.commit_node_moves(&[(NodeId(1), 10.0, 10.0)]).unwrap();
+        layer
+            .commit_node_moves(&[(NodeId(1), LatLon::new(10.0, 10.0))])
+            .unwrap();
         // A way a relation lists cannot be deleted: drop it from them first.
         for relation_id in layer.relations_containing_way(WayId(10)) {
             let mut members = layer.relation(relation_id).unwrap().members;
@@ -1267,7 +1265,7 @@ mod tests {
         let way = &pasted.ways[0];
         assert!(way.tags.is("highway", "residential"));
         let first = layer.way_node_ids(WayId(way.id)).unwrap()[0];
-        assert_eq!(layer.node_lat_lon(first), Some((47.000, 8.000)));
+        assert_eq!(layer.node_lat_lon(first), Some(LatLon::new(47.000, 8.000)));
 
         // And it outlives the source layer altogether.
         drop(layer);

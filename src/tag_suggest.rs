@@ -14,6 +14,7 @@
 //! present in the current selection, then the loaded data (most used first),
 //! then the schema, then taginfo (in taginfo's own order, by usage).
 
+use crate::coordinates::LatLon;
 use crate::fields::{FieldIndex, FieldType};
 use crate::osm::OsmData;
 use crate::presets::{Geometry, PresetIndex};
@@ -274,6 +275,8 @@ fn is_plain_key(key: &str) -> bool {
 pub enum Source {
     /// A value present on the selected features.
     Selection,
+    /// A named road near the selected features (`addr:street` only).
+    Nearby,
     /// The loaded data.
     Data,
     /// The bundled tagging schema.
@@ -383,6 +386,9 @@ pub struct SuggestInput<'a> {
     /// `Source::Selection`: the distinct values of `key` among the selected
     /// features (pass them for a multi-selection); listed first.
     pub selection: &'a [String],
+    /// `Source::Nearby`: names of roads near the selected features, nearest
+    /// first; listed right after the selection's own values.
+    pub nearby: &'a [String],
     /// `Source::Data`: one index per visible layer, merged by summing counts.
     pub data: &'a [&'a DataIndex],
     /// `Source::Schema`: the bundled tagging schema.
@@ -410,6 +416,7 @@ impl<'a> SuggestInput<'a> {
             key: "",
             query,
             selection: &[],
+            nearby: &[],
             data: &[],
             schema,
             taginfo: &[],
@@ -517,6 +524,7 @@ pub fn suggest_values(input: SuggestInput) -> Vec<Suggestion> {
         key,
         query,
         selection,
+        nearby,
         data,
         schema,
         taginfo,
@@ -528,6 +536,28 @@ pub fn suggest_values(input: SuggestInput) -> Vec<Suggestion> {
 
     // Texts an earlier source offered; a later source skips them.
     let taken: std::cell::RefCell<HashSet<String>> = Default::default();
+
+    // `nearby` is in distance order; a smaller `count` sorts first, but the
+    // merge sorts by larger count first, so rank by reversed position.
+    let from_nearby = || -> Candidates {
+        let mut out = Candidates::new();
+        for (i, v) in nearby.iter().enumerate() {
+            if v == query || v.is_empty() {
+                continue;
+            }
+            if let Some(class) = match_class(&q, v) {
+                if taken.borrow_mut().insert(v.clone()) {
+                    out.push(candidate(
+                        class,
+                        v,
+                        Source::Nearby,
+                        (nearby.len() - i) as u64,
+                    ));
+                }
+            }
+        }
+        out
+    };
 
     let from_selection = || -> Candidates {
         let mut out = Candidates::new();
@@ -611,8 +641,9 @@ pub fn suggest_values(input: SuggestInput) -> Vec<Suggestion> {
         }
         out
     };
-    let sources: [(Source, Collect); 3] = [
+    let sources: [(Source, Collect); 4] = [
         (Source::Selection, &from_selection),
+        (Source::Nearby, &from_nearby),
         (Source::Data, &from_data),
         (Source::Schema, &from_schema),
     ];
@@ -621,6 +652,124 @@ pub fn suggest_values(input: SuggestInput) -> Vec<Suggestion> {
         local.extend(collect());
     }
     finish(local, taginfo, &q, query, |_| true, limit)
+}
+
+/// How far from a feature a road still counts as "nearby", in meters.
+pub const NEARBY_ROAD_RADIUS_M: f64 = 200.0;
+
+/// Names of the named roads within `radius_m` of the node or way
+/// `(kind, id)`, nearest first, each name once (at its nearest way).
+/// Footways, paths, cycleways, steps and other non-street highways, and
+/// highways not yet built, are not offered as street names.
+pub fn nearby_road_names(
+    data: &OsmData,
+    kind: crate::selection::FeatureKind,
+    id: i64,
+    radius_m: f64,
+) -> Vec<String> {
+    use crate::ids::{NodeId, WayId};
+    use crate::selection::FeatureKind;
+
+    // The feature's position: a node's own, a way's mean node position.
+    let points: Vec<LatLon> = match kind {
+        FeatureKind::Node => data
+            .nodes
+            .get(&NodeId(id))
+            .map(|n| vec![n.lat_lon()])
+            .unwrap_or_default(),
+        FeatureKind::Way => data
+            .ways
+            .get(&WayId(id))
+            .map(|w| {
+                w.nodes
+                    .iter()
+                    .filter_map(|n| data.nodes.get(n))
+                    .map(|n| n.lat_lon())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        FeatureKind::Relation => Vec::new(),
+    };
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let lat0 = points.iter().map(|p| p.lat).sum::<f64>() / points.len() as f64;
+    let lon0 = points.iter().map(|p| p.lon).sum::<f64>() / points.len() as f64;
+    // Local flat-earth meters around the feature; fine at street scale.
+    const M_PER_DEG: f64 = 111_320.0;
+    let kx = M_PER_DEG * lat0.to_radians().cos();
+    let project = |at: LatLon| ((at.lon - lon0) * kx, (at.lat - lat0) * M_PER_DEG);
+
+    const NOT_STREETS: [&str; 10] = [
+        "footway",
+        "path",
+        "cycleway",
+        "steps",
+        "bridleway",
+        "pedestrian",
+        "corridor",
+        "proposed",
+        "construction",
+        "platform",
+    ];
+
+    let mut best: HashMap<&str, f64> = HashMap::new();
+    for way in data.ways.values() {
+        let (Some(name), Some(hw)) = (way.tags.get("name"), way.tags.get("highway")) else {
+            continue;
+        };
+        if name.is_empty()
+            || NOT_STREETS.contains(&hw)
+            || (kind == FeatureKind::Way && way.id.0 == id)
+        {
+            continue;
+        }
+        let pts: Vec<(f64, f64)> = way
+            .nodes
+            .iter()
+            .filter_map(|n| data.nodes.get(n))
+            .map(|n| project(n.lat_lon()))
+            .collect();
+        let dist = match pts.len() {
+            0 => continue,
+            1 => points_to_segment(&points, &project, pts[0], pts[0]),
+            _ => pts
+                .windows(2)
+                .map(|w| points_to_segment(&points, &project, w[0], w[1]))
+                .fold(f64::INFINITY, f64::min),
+        };
+        if dist <= radius_m {
+            let e = best.entry(name).or_insert(f64::INFINITY);
+            *e = e.min(dist);
+        }
+    }
+    let mut named: Vec<(&str, f64)> = best.into_iter().collect();
+    named.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(b.0)));
+    named.into_iter().map(|(n, _)| n.to_string()).collect()
+}
+
+/// Smallest distance in metres from any of `positions` to the segment
+/// `a`-`b`, which are already projected to local metres.
+fn points_to_segment(
+    positions: &[LatLon],
+    project: &impl Fn(LatLon) -> (f64, f64),
+    a: (f64, f64),
+    b: (f64, f64),
+) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    positions
+        .iter()
+        .map(|&at| {
+            let p = project(at);
+            let t = if len2 == 0.0 {
+                0.0
+            } else {
+                (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0)
+            };
+            ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 #[cfg(test)]
@@ -1170,5 +1319,92 @@ mod tests {
             2,
         );
         assert_eq!(got.len(), 2);
+    }
+
+    /// A node at (0, 0) and two roads: `Near St` ~55 m north, `Far Ave`
+    /// ~1.1 km north, plus a footway and an unnamed road right beside it.
+    fn nearby_fixture() -> OsmData {
+        let node = |id: i64, lat: f64, lon: f64| {
+            (
+                NodeId(id),
+                OsmNode {
+                    id: NodeId(id),
+                    lat,
+                    lon,
+                    version: 1,
+                    tags: Tags::new(),
+                },
+            )
+        };
+        let way = |id: i64, nodes: [i64; 2], t: &[(&str, &str)]| {
+            (
+                WayId(id),
+                OsmWay {
+                    id: WayId(id),
+                    nodes: nodes.iter().map(|n| NodeId(*n)).collect(),
+                    version: 1,
+                    tags: Tags::from(t),
+                },
+            )
+        };
+        OsmData {
+            nodes: [
+                node(1, 0.0, 0.0),
+                node(2, 0.0005, -0.001),
+                node(3, 0.0005, 0.001),
+                node(4, 0.01, -0.001),
+                node(5, 0.01, 0.001),
+                node(6, 0.0001, -0.001),
+                node(7, 0.0001, 0.001),
+            ]
+            .into_iter()
+            .collect(),
+            ways: [
+                way(
+                    10,
+                    [2, 3],
+                    &[("highway", "residential"), ("name", "Near St")],
+                ),
+                way(
+                    11,
+                    [4, 5],
+                    &[("highway", "residential"), ("name", "Far Ave")],
+                ),
+                way(12, [6, 7], &[("highway", "footway"), ("name", "Foot Path")]),
+                way(13, [6, 7], &[("highway", "residential")]),
+            ]
+            .into_iter()
+            .collect(),
+            relations: vec![],
+            bounds: vec![],
+        }
+    }
+
+    #[test]
+    fn nearby_roads_are_named_streets_within_the_radius() {
+        use crate::selection::FeatureKind;
+        let d = nearby_fixture();
+        let got = nearby_road_names(&d, FeatureKind::Node, 1, 200.0);
+        assert_eq!(got, vec!["Near St".to_string()]);
+        let wide = nearby_road_names(&d, FeatureKind::Node, 1, 2000.0);
+        assert_eq!(wide, vec!["Near St".to_string(), "Far Ave".to_string()]);
+        assert!(nearby_road_names(&d, FeatureKind::Node, 999, 200.0).is_empty());
+    }
+
+    #[test]
+    fn nearby_names_rank_after_selection_before_data() {
+        let schema = SchemaIndex::default();
+        let mut idx = DataIndex::default();
+        idx.add_tag("addr:street", "Main St");
+        let nearby = vec!["Near St".to_string(), "Next St".to_string()];
+        let got = super::suggest_values(SuggestInput {
+            key: "addr:street",
+            nearby: &nearby,
+            data: &[&idx],
+            ..SuggestInput::new("", &schema, 10)
+        });
+        let texts: Vec<&str> = got.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, vec!["Near St", "Next St", "Main St"]);
+        assert_eq!(got[0].source, Source::Nearby);
     }
 }

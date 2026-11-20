@@ -8,6 +8,7 @@ use super::{
 use crate::test_support::*;
 use crate::{MapViewer, SetMode};
 use gpui::{point, px, TestAppContext};
+use osm_gpui::coordinates::LatLon;
 use osm_gpui::edit_mode::EditMode;
 use osm_gpui::ids::{NodeId, WayId};
 use osm_gpui::layers::LayerId;
@@ -29,12 +30,12 @@ pub(crate) fn start_gesture(view: &mut MapViewer, layer: LayerId) {
             at_start: false,
         })),
         EditMode::Building => view.set_building_progress(Some(BuildingProgress {
-            corner_a: (LAT, LON),
+            corner_a: LatLon::new(LAT, LON),
             corner_b: None,
         })),
         EditMode::Arc => view.set_arc_progress(Some(ArcProgress {
             start: ArcPoint {
-                geo: (LAT, LON),
+                geo: LatLon::new(LAT, LON),
                 snap: None,
             },
             end: None,

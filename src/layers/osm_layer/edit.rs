@@ -1,4 +1,5 @@
 use super::*;
+use crate::coordinates::LatLon;
 use crate::osm::MemberType;
 use crate::tags::Tags;
 
@@ -251,10 +252,21 @@ impl EditableLayer for OsmLayer {
         self.view.drag_preview = None;
     }
 
-    fn node_lat_lon(&self, node_id: NodeId) -> Option<(f64, f64)> {
+    fn node_lat_lon(&self, node_id: NodeId) -> Option<LatLon> {
         let data = self.store.osm_data.as_ref()?;
         let n = data.nodes.get(&node_id)?;
-        Some((n.lat, n.lon))
+        Some(LatLon::new(n.lat, n.lon))
+    }
+
+    fn nearby_road_names(&self, feature: &FeatureRef, radius_m: f64) -> Vec<String> {
+        if feature.layer_id != self.id {
+            return Vec::new();
+        }
+        self.store
+            .osm_data
+            .as_ref()
+            .map(|d| crate::tag_suggest::nearby_road_names(d, feature.kind, feature.id, radius_m))
+            .unwrap_or_default()
     }
 
     fn way_node_ids(&self, way_id: WayId) -> Option<Vec<NodeId>> {
@@ -263,20 +275,20 @@ impl EditableLayer for OsmLayer {
         Some(way.nodes.clone())
     }
 
-    fn commit_node_moves(&mut self, moves: &[(NodeId, f64, f64)]) -> Result<(), EditError> {
+    fn commit_node_moves(&mut self, moves: &[(NodeId, LatLon)]) -> Result<(), EditError> {
         if moves.is_empty() {
             return Ok(());
         }
         let fs_phase = crate::frame_stats::start();
         let data = Arc::make_mut(self.store.osm_data.as_mut().ok_or(EditError::NoData)?);
-        if let Some(&(id, _, _)) = moves.iter().find(|m| !data.nodes.contains_key(&m.0)) {
+        if let Some(&(id, _)) = moves.iter().find(|m| !data.nodes.contains_key(&m.0)) {
             return Err(EditError::UnknownNode(id));
         }
         let mut moved_ids: Vec<NodeId> = Vec::with_capacity(moves.len());
-        for &(id, lat, lon) in moves {
+        for &(id, at) in moves {
             if let Some(node) = data.nodes.get_mut(&id) {
-                node.lat = lat;
-                node.lon = lon;
+                node.lat = at.lat;
+                node.lon = at.lon;
                 moved_ids.push(id);
             }
         }
@@ -319,9 +331,9 @@ impl EditableLayer for OsmLayer {
         })
     }
 
-    fn create_node(&mut self, lat: f64, lon: f64, id: Option<NodeId>) -> Result<NodeId, EditError> {
+    fn create_node(&mut self, at: LatLon, id: Option<NodeId>) -> Result<NodeId, EditError> {
         let Some(id) = id else {
-            return Ok(self.add_node(lat, lon));
+            return Ok(self.add_node(at));
         };
         if self
             .store
@@ -331,14 +343,14 @@ impl EditableLayer for OsmLayer {
         {
             return Err(EditError::IdInUse(FeatureKind::Node, id.get()));
         }
-        self.insert_node(id, lat, lon, Tags::new(), 0, false);
+        self.insert_node(id, at.lat, at.lon, Tags::new(), 0, false);
         Ok(id)
     }
 
-    fn add_node(&mut self, lat: f64, lon: f64) -> NodeId {
+    fn add_node(&mut self, at: LatLon) -> NodeId {
         let id = NodeId(self.store.next_new_id);
         self.store.next_new_id -= 1;
-        self.insert_node(id, lat, lon, Tags::new(), 0, false);
+        self.insert_node(id, at.lat, at.lon, Tags::new(), 0, false);
         id
     }
 
@@ -358,7 +370,7 @@ impl EditableLayer for OsmLayer {
                     id,
                     tags: node.tags,
                     way_nodes: Vec::new(),
-                    node_lat_lon: Some((node.lat, node.lon)),
+                    node_lat_lon: Some(LatLon::new(node.lat, node.lon)),
                     version: node.version,
                 })
             }
@@ -385,7 +397,7 @@ impl EditableLayer for OsmLayer {
         let id = snapshot.id;
         match snapshot.kind {
             FeatureKind::Node => {
-                let (lat, lon) = snapshot
+                let at = snapshot
                     .node_lat_lon
                     .ok_or(EditError::MissingCoordinates(NodeId(id)))?;
                 if self
@@ -396,7 +408,14 @@ impl EditableLayer for OsmLayer {
                 {
                     return Err(EditError::IdInUse(FeatureKind::Node, id));
                 }
-                self.insert_node(NodeId(id), lat, lon, snapshot.tags, snapshot.version, true);
+                self.insert_node(
+                    NodeId(id),
+                    at.lat,
+                    at.lon,
+                    snapshot.tags,
+                    snapshot.version,
+                    true,
+                );
                 Ok(())
             }
             FeatureKind::Way => {
@@ -438,8 +457,7 @@ impl EditableLayer for OsmLayer {
         &mut self,
         way_id: WayId,
         index: usize,
-        lat: f64,
-        lon: f64,
+        at: LatLon,
     ) -> Result<NodeId, EditError> {
         // Check before creating the node, so a refusal leaves no orphan.
         let len = self
@@ -449,7 +467,7 @@ impl EditableLayer for OsmLayer {
         if index > len {
             return Err(EditError::IndexOutOfRange { way_id, index, len });
         }
-        let new_id = self.add_node(lat, lon);
+        let new_id = self.add_node(at);
         self.edit_way_nodes(way_id, |nodes| {
             nodes.insert(index, new_id);
             Ok(new_id)
@@ -773,6 +791,44 @@ impl EditableLayer for OsmLayer {
         self.rebuild_caches(&data);
         self.store.osm_data = Some(data);
         self.store.original_data = Some(Arc::new(base));
+        self.store.revision += 1;
+    }
+
+    fn undelete_objects(&mut self, objects: PurgedFeatures) {
+        use crate::layers::diff::UNKNOWN_BASELINE_TAG;
+        let mut data = self.store.osm_data.as_deref().cloned().unwrap_or_default();
+        let mut base = self
+            .store
+            .original_data
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
+        let marker = || (UNKNOWN_BASELINE_TAG.to_string(), "yes".to_string());
+        for n in objects.nodes {
+            let mut stand_in = n.clone();
+            stand_in.tags.extend([marker()]);
+            base.nodes.insert(n.id, stand_in);
+            data.nodes.insert(n.id, n);
+        }
+        for w in objects.ways {
+            let mut stand_in = w.clone();
+            stand_in.tags.extend([marker()]);
+            base.ways.insert(w.id, stand_in);
+            data.ways.insert(w.id, w);
+        }
+        for (r, ..) in objects.relations {
+            let mut stand_in = r.clone();
+            stand_in.tags.extend([marker()]);
+            base.relations.retain(|b| b.id != r.id);
+            base.relations.push(stand_in);
+            data.relations.retain(|d| d.id != r.id);
+            data.relations.push(r);
+        }
+        let data = Arc::new(data);
+        self.rebuild_caches(&data);
+        self.store.osm_data = Some(data);
+        self.store.original_data = Some(Arc::new(base));
+        self.store.modified = true;
         self.store.revision += 1;
     }
 

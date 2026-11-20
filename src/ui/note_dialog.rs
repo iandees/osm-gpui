@@ -13,6 +13,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _, Disableable as _,
 };
 
+use crate::coordinates::LatLon;
 use crate::tr;
 use crate::ui::modal;
 use crate::ui::style::muted_text_size;
@@ -26,8 +27,7 @@ pub enum DialogEvent {
 pub struct NewNoteDialog {
     input: Entity<InputState>,
     focus_handle: FocusHandle,
-    lat: f64,
-    lon: f64,
+    at: LatLon,
     busy: bool,
     error: Option<SharedString>,
 }
@@ -35,7 +35,7 @@ pub struct NewNoteDialog {
 impl EventEmitter<DialogEvent> for NewNoteDialog {}
 
 impl NewNoteDialog {
-    pub fn new(lat: f64, lon: f64, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(at: LatLon, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
@@ -46,8 +46,7 @@ impl NewNoteDialog {
         Self {
             input,
             focus_handle: cx.focus_handle(),
-            lat,
-            lon,
+            at,
             busy: false,
             error: None,
         }
@@ -134,7 +133,7 @@ impl Render for NewNoteDialog {
                     .text_color(muted),
             )
             .child(
-                Label::new(format!("{:.5}, {:.5}", self.lat, self.lon))
+                Label::new(format!("{:.5}, {:.5}", self.at.lat, self.at.lon))
                     .text_size(muted_text_size())
                     .text_color(muted),
             )

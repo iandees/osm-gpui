@@ -41,8 +41,8 @@ pub struct DeletedFeatureSnapshot {
     pub tags: Tags,
     /// For a way: its ordered member node ids. Empty/unused for a node.
     pub way_nodes: Vec<crate::ids::NodeId>,
-    /// For a node: its (lat, lon) at the time of deletion. `None` for a way.
-    pub node_lat_lon: Option<(f64, f64)>,
+    /// For a node: its position at the time of deletion. `None` for a way.
+    pub node_lat_lon: Option<crate::coordinates::LatLon>,
     /// The server version the feature had when it was deleted (0 for one
     /// created locally). Restoring must put it back: an upload sends the
     /// current version in `<modify>`, and the API rejects a wrong one.

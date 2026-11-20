@@ -168,22 +168,20 @@ const SPEED_MIN_SECONDS: i64 = 4;
 /// ... and over at most this many segments, whatever the times say.
 const SPEED_MAX_SPAN: usize = 64;
 
-/// `TrackAttrs` (without the chunking) for a line of `(lon, lat)` positions,
-/// their Web Mercator projections `merc` and their times.
+/// `TrackAttrs` (without the chunking) for a line of positions, their Web
+/// Mercator projections `merc` and their times.
 fn track_measures(
-    lon_lat: &[(f64, f64)],
+    line: &[LatLon],
     merc: &[[f64; 2]],
     times: &[Option<i64>],
 ) -> (Vec<f32>, Vec<f32>) {
-    let n = lon_lat.len();
+    let n = line.len();
     // Metres along the line up to each vertex.
     let mut along = Vec::with_capacity(n);
     let mut total = 0.0;
-    for (i, &(lon, lat)) in lon_lat.iter().enumerate() {
+    for (i, &at) in line.iter().enumerate() {
         if i > 0 {
-            let (plon, plat) = lon_lat[i - 1];
-            total +=
-                crate::imagery_offset::distance_m(LatLon::new(plat, plon), LatLon::new(lat, lon));
+            total += crate::imagery_offset::distance_m(line[i - 1], at);
         }
         along.push(total);
     }
@@ -327,7 +325,11 @@ impl ReferenceData {
                     },
                 );
                 if let Some(q) = part.pts.get(i + 1) {
-                    let (sx, sy) = closest_on_segment((cx, cy), (p[0], p[1]), (q[0], q[1]));
+                    let Mercator { x: sx, y: sy } = closest_on_segment(
+                        Mercator::new(cx, cy),
+                        Mercator::new(p[0], p[1]),
+                        Mercator::new(q[0], q[1]),
+                    );
                     let d2 = sq(sx - cx) + sq(sy - cy);
                     if d2 <= tol2 && segment.as_ref().is_none_or(|(best, _)| d2 < *best) {
                         segment = Some((
@@ -351,15 +353,15 @@ fn sq(v: f64) -> f64 {
     v * v
 }
 
-/// The point of segment `a`-`b` closest to `p`.
-pub fn closest_on_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+/// The point of segment `a`-`b` closest to `p`, all in Web Mercator metres.
+pub fn closest_on_segment(p: Mercator, a: Mercator, b: Mercator) -> Mercator {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
     let len2 = dx * dx + dy * dy;
     if len2 <= f64::EPSILON {
         return a;
     }
-    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0);
-    (a.0 + t * dx, a.1 + t * dy)
+    let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0);
+    Mercator::new(a.x + t * dx, a.y + t * dy)
 }
 
 /// What `ReferenceData::nearest` found.
@@ -417,9 +419,10 @@ impl Builder {
         (self.features.len() - 1) as u32
     }
 
-    /// Check a `lon, lat` pair and widen the extent. Fails for anything that
-    /// is not a WGS84 position.
-    fn accept(&mut self, lon: f64, lat: f64) -> Result<Mercator, RefError> {
+    /// Check a position and widen the extent. Fails for anything that is not
+    /// a WGS84 position.
+    fn accept(&mut self, at: LatLon) -> Result<Mercator, RefError> {
+        let LatLon { lat, lon } = at;
         if !(lon.is_finite()
             && lat.is_finite()
             && (-180.0..=180.0).contains(&lon)
@@ -427,16 +430,15 @@ impl Builder {
         {
             return Err(RefError::NotGeographic { x: lon, y: lat });
         }
-        let at = LatLon::new(lat, lon);
         GeoBounds::extend(&mut self.extent, at);
         self.vertex_count += 1;
         Ok(lat_lon_to_mercator(at))
     }
 
-    /// Add a polyline of `(lon, lat)` positions. Fewer than two positions
-    /// draw nothing (but are still checked).
-    pub fn line(&mut self, feature: u32, lon_lat: &[(f64, f64)]) -> Result<(), RefError> {
-        self.add_line(feature, lon_lat, None)
+    /// Add a polyline. Fewer than two positions draw nothing (but are still
+    /// checked).
+    pub fn line(&mut self, feature: u32, line: &[LatLon]) -> Result<(), RefError> {
+        self.add_line(feature, line, None)
     }
 
     /// `line` for a GPS trace: `times` (one per position, Unix seconds) give
@@ -444,30 +446,30 @@ impl Builder {
     pub fn line_timed(
         &mut self,
         feature: u32,
-        lon_lat: &[(f64, f64)],
+        line: &[LatLon],
         times: &[Option<i64>],
         start: Option<i64>,
     ) -> Result<(), RefError> {
-        debug_assert_eq!(lon_lat.len(), times.len());
-        self.add_line(feature, lon_lat, Some((times, start)))
+        debug_assert_eq!(line.len(), times.len());
+        self.add_line(feature, line, Some((times, start)))
     }
 
     fn add_line(
         &mut self,
         feature: u32,
-        lon_lat: &[(f64, f64)],
+        line: &[LatLon],
         timed: Option<(&[Option<i64>], Option<i64>)>,
     ) -> Result<(), RefError> {
-        let mut merc: Vec<[f64; 2]> = Vec::with_capacity(lon_lat.len());
-        for &(lon, lat) in lon_lat {
-            let Mercator { x, y } = self.accept(lon, lat)?;
+        let mut merc: Vec<[f64; 2]> = Vec::with_capacity(line.len());
+        for &at in line {
+            let Mercator { x, y } = self.accept(at)?;
             merc.push([x, y]);
         }
         if merc.len() < 2 {
             return Ok(());
         }
         let measures = timed.map(|(times, start)| {
-            let (speed, bearing) = track_measures(lon_lat, &merc, times);
+            let (speed, bearing) = track_measures(line, &merc, times);
             (start, speed, bearing)
         });
         let mut start = 0;
@@ -497,8 +499,8 @@ impl Builder {
         Ok(())
     }
 
-    pub fn point(&mut self, feature: u32, lon: f64, lat: f64) -> Result<(), RefError> {
-        let Mercator { x, y } = self.accept(lon, lat)?;
+    pub fn point(&mut self, feature: u32, at: LatLon) -> Result<(), RefError> {
+        let Mercator { x, y } = self.accept(at)?;
         self.markers.push(Marker {
             feature,
             at: [x, y],
@@ -631,7 +633,9 @@ mod tests {
     fn long_lines_are_chunked_with_shared_end_vertices() {
         let mut b = Builder::new(Format::GeoJson);
         let f = line_feature(&mut b);
-        let pts: Vec<(f64, f64)> = (0..1000).map(|i| (i as f64 * 1e-4, 10.0)).collect();
+        let pts: Vec<LatLon> = (0..1000)
+            .map(|i| LatLon::new(10.0, i as f64 * 1e-4))
+            .collect();
         b.line(f, &pts).unwrap();
         let data = b.finish().unwrap();
         assert!(data.parts.len() > 3);
@@ -647,8 +651,9 @@ mod tests {
     fn extent_covers_all_geometry() {
         let mut b = Builder::new(Format::GeoJson);
         let f = line_feature(&mut b);
-        b.line(f, &[(-1.0, 50.0), (2.0, 51.0)]).unwrap();
-        b.point(f, 3.0, 49.0).unwrap();
+        b.line(f, &[LatLon::new(50.0, -1.0), LatLon::new(51.0, 2.0)])
+            .unwrap();
+        b.point(f, LatLon::new(49.0, 3.0)).unwrap();
         let data = b.finish().unwrap();
         assert_eq!(data.extent(), Some(GeoBounds::new(49.0, 51.0, -1.0, 3.0)));
         assert_eq!(data.vertex_count, 3);
@@ -659,14 +664,20 @@ mod tests {
         let mut b = Builder::new(Format::GeoJson);
         let f = line_feature(&mut b);
         let err = b
-            .line(f, &[(500_000.0, 4_649_776.0), (500_100.0, 4_649_800.0)])
+            .line(
+                f,
+                &[
+                    LatLon::new(4_649_776.0, 500_000.0),
+                    LatLon::new(4_649_800.0, 500_100.0),
+                ],
+            )
             .unwrap_err();
         assert!(matches!(err, RefError::NotGeographic { .. }));
         assert!(!err.to_string().is_empty());
         let mut b = Builder::new(Format::Gpx);
         let f = line_feature(&mut b);
-        assert!(b.point(f, 10.0, 95.0).is_err());
-        assert!(b.point(f, f64::NAN, 1.0).is_err());
+        assert!(b.point(f, LatLon::new(95.0, 10.0)).is_err());
+        assert!(b.point(f, LatLon::new(1.0, f64::NAN)).is_err());
     }
 
     #[test]
@@ -674,7 +685,7 @@ mod tests {
         let mut b = Builder::new(Format::Gpx);
         let f = line_feature(&mut b);
         // A one-position line draws nothing.
-        b.line(f, &[(1.0, 1.0)]).unwrap();
+        b.line(f, &[LatLon::new(1.0, 1.0)]).unwrap();
         assert_eq!(b.finish().unwrap_err(), RefError::NoGeometry);
     }
 
@@ -683,11 +694,14 @@ mod tests {
         let mut b = Builder::new(Format::GeoJson);
         let f = line_feature(&mut b);
         // Three well separated short lines.
-        b.line(f, &[(0.0, 0.0), (0.001, 0.0)]).unwrap();
-        b.line(f, &[(10.0, 10.0), (10.001, 10.0)]).unwrap();
-        b.line(f, &[(20.0, 20.0), (20.001, 20.0)]).unwrap();
-        b.point(f, 10.0005, 10.0).unwrap();
-        b.point(f, 30.0, 30.0).unwrap();
+        b.line(f, &[LatLon::new(0.0, 0.0), LatLon::new(0.0, 0.001)])
+            .unwrap();
+        b.line(f, &[LatLon::new(10.0, 10.0), LatLon::new(10.0, 10.001)])
+            .unwrap();
+        b.line(f, &[LatLon::new(20.0, 20.0), LatLon::new(20.0, 20.001)])
+            .unwrap();
+        b.point(f, LatLon::new(10.0, 10.0005)).unwrap();
+        b.point(f, LatLon::new(30.0, 30.0)).unwrap();
         let data = b.finish().unwrap();
         let Mercator { x: x0, y: y0 } = lat_lon_to_mercator(LatLon::new(9.0, 9.0));
         let Mercator { x: x1, y: y1 } = lat_lon_to_mercator(LatLon::new(11.0, 11.0));
@@ -712,7 +726,8 @@ mod tests {
     fn nearest_prefers_vertices_then_segments() {
         let mut b = Builder::new(Format::GeoJson);
         let f = line_feature(&mut b);
-        b.line(f, &[(0.0, 0.0), (0.01, 0.0)]).unwrap();
+        b.line(f, &[LatLon::new(0.0, 0.0), LatLon::new(0.0, 0.01)])
+            .unwrap();
         let data = b.finish().unwrap();
         let Mercator { x: ax, y: ay } = lat_lon_to_mercator(LatLon::new(0.0, 0.0));
         let Mercator { x: bx, .. } = lat_lon_to_mercator(LatLon::new(0.0, 0.01));
@@ -741,7 +756,7 @@ mod tests {
     fn nearest_finds_markers() {
         let mut b = Builder::new(Format::Gpx);
         let f = b.feature(FeatureKind::Waypoint, "", Some("w".into()), vec![]);
-        b.point(f, 1.0, 1.0).unwrap();
+        b.point(f, LatLon::new(1.0, 1.0)).unwrap();
         let data = b.finish().unwrap();
         let Mercator { x, y } = lat_lon_to_mercator(LatLon::new(1.0, 1.0));
         let n = data
@@ -753,21 +768,37 @@ mod tests {
     #[test]
     fn closest_point_clamps_to_the_segment() {
         assert_eq!(
-            closest_on_segment((5.0, 3.0), (0.0, 0.0), (10.0, 0.0)),
-            (5.0, 0.0)
+            closest_on_segment(
+                Mercator::new(5.0, 3.0),
+                Mercator::new(0.0, 0.0),
+                Mercator::new(10.0, 0.0)
+            ),
+            Mercator::new(5.0, 0.0)
         );
         assert_eq!(
-            closest_on_segment((-5.0, 3.0), (0.0, 0.0), (10.0, 0.0)),
-            (0.0, 0.0)
+            closest_on_segment(
+                Mercator::new(-5.0, 3.0),
+                Mercator::new(0.0, 0.0),
+                Mercator::new(10.0, 0.0)
+            ),
+            Mercator::new(0.0, 0.0)
         );
         assert_eq!(
-            closest_on_segment((15.0, 3.0), (0.0, 0.0), (10.0, 0.0)),
-            (10.0, 0.0)
+            closest_on_segment(
+                Mercator::new(15.0, 3.0),
+                Mercator::new(0.0, 0.0),
+                Mercator::new(10.0, 0.0)
+            ),
+            Mercator::new(10.0, 0.0)
         );
         // A zero-length segment.
         assert_eq!(
-            closest_on_segment((1.0, 1.0), (2.0, 2.0), (2.0, 2.0)),
-            (2.0, 2.0)
+            closest_on_segment(
+                Mercator::new(1.0, 1.0),
+                Mercator::new(2.0, 2.0),
+                Mercator::new(2.0, 2.0)
+            ),
+            Mercator::new(2.0, 2.0)
         );
     }
 

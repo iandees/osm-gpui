@@ -27,7 +27,7 @@ fn create_node_allocates_noncolliding_negative_id_and_is_hit_testable() {
     let new_lat = 40.5;
     let new_lon = -74.5;
     let id = layer
-        .create_node(new_lat, new_lon, None)
+        .create_node(LatLon::new(new_lat, new_lon), None)
         .expect("should allocate an id");
     assert!(id < NodeId(0), "new node id must be negative, got {}", id);
     assert!(layer.is_modified());
@@ -49,7 +49,9 @@ fn create_node_allocates_noncolliding_negative_id_and_is_hit_testable() {
     );
 
     // A second auto-allocation must not collide with the first.
-    let id2 = layer.create_node(new_lat, new_lon, None).unwrap();
+    let id2 = layer
+        .create_node(LatLon::new(new_lat, new_lon), None)
+        .unwrap();
     assert_ne!(id, id2);
 }
 
@@ -67,7 +69,7 @@ fn create_node_starts_below_existing_negative_ids() {
     let data = data_with(vec![n1], vec![]);
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
-    let id = layer.create_node(41.0, -75.0, None).unwrap();
+    let id = layer.create_node(LatLon::new(41.0, -75.0), None).unwrap();
     assert!(
         id < NodeId(-5),
         "new id ({}) must not collide with existing negative id -5",
@@ -88,11 +90,11 @@ fn create_node_with_explicit_id_fails_on_collision() {
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L", data);
 
     assert_eq!(
-        layer.create_node(41.0, -75.0, Some(NodeId(-1))),
+        layer.create_node(LatLon::new(41.0, -75.0), Some(NodeId(-1))),
         Err(EditError::IdInUse(FeatureKind::Node, -1))
     );
     assert_eq!(
-        layer.create_node(41.0, -75.0, Some(NodeId(-99))),
+        layer.create_node(LatLon::new(41.0, -75.0), Some(NodeId(-99))),
         Ok(NodeId(-99))
     );
 }
@@ -136,7 +138,7 @@ fn delete_feature_refuses_node_referenced_by_way_but_succeeds_once_way_deleted()
         .expect("standalone node should delete");
     assert_eq!(snapshot.kind, FeatureKind::Node);
     assert_eq!(snapshot.id, 1);
-    assert_eq!(snapshot.node_lat_lon, Some((40.0, -74.0)));
+    assert_eq!(snapshot.node_lat_lon, Some(LatLon::new(40.0, -74.0)));
 
     let updated = layer.get_osm_data().unwrap();
     assert!(!updated.nodes.contains_key(&NodeId(1)));
@@ -158,7 +160,7 @@ fn delete_feature_standalone_node_succeeds_directly() {
         .delete_feature(FeatureKind::Node, 1)
         .expect("standalone node should delete");
     assert!(layer.is_modified());
-    assert_eq!(snapshot.node_lat_lon, Some((40.0, -74.0)));
+    assert_eq!(snapshot.node_lat_lon, Some(LatLon::new(40.0, -74.0)));
     assert!(!layer.get_osm_data().unwrap().nodes.contains_key(&NodeId(1)));
     assert!(!layer
         .derived
@@ -343,7 +345,7 @@ fn restore_feature_round_trips_deleted_way() {
     // node_to_ways was patched so the restored way is picked up by a
     // node-move on one of its members.
     layer
-        .commit_node_moves(&[(NodeId(1), 41.0, -75.0)])
+        .commit_node_moves(&[(NodeId(1), LatLon::new(41.0, -75.0))])
         .unwrap();
     let Mercator { x: mx, y: my } =
         crate::coordinates::lat_lon_to_mercator(LatLon::new(41.0, -75.0));
