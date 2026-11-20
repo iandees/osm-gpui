@@ -351,6 +351,17 @@ panel:
       one: "%{count} lane"
       other: "%{count} lanes"
     both_ways: "Shared centre turn lanes: %{count}"
+    arrows_both_ways: "Arrows for shared centre lane %{lane}"
+    # Per-lane access tags (`bicycle:lanes`, `vehicle:lanes`, `cycleway:lanes`,
+    # `psv:lanes`).
+    cat_bicycle: "Bicycles (bicycle:lanes)"
+    cat_vehicle: "Motor vehicles (vehicle:lanes)"
+    cat_cycleway: "Cycle lane (cycleway:lanes)"
+    cat_bus: "Buses (psv:lanes)"
+    contraflow: "Cycling against the oneway: lane type and side"
+    parking: "On-street parking"
+    parking_left: "Left side of the way (looking from A to B)"
+    parking_right: "Right side of the way (looking from A to B)"
     hint: "Click a lane to set its turn arrows."
     # `%{lane}` counts from the left as the driver sees it; A and B are the
     # way's ends as the badges mark them.

@@ -800,8 +800,8 @@ struct MapViewer {
     side_panel_open: [bool; 10],
     /// The Junction inspector's chosen approach: `(junction node, arm index)`.
     junction_from: Option<(NodeId, usize)>,
-    /// The Lanes editor's chosen lane: `(way, forward, lane from the left)`.
-    lane_selected: Option<(WayId, bool, usize)>,
+    /// The Lanes editor's chosen lane: `(way, group, lane from the left)`.
+    lane_selected: Option<(WayId, osm_gpui::lanes::Group, usize)>,
     /// Focus handle for the map area, so it can receive key events (e.g.
     /// Escape to cancel an in-progress move-drag).
     focus_handle: gpui::FocusHandle,
