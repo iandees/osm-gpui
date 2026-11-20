@@ -5,7 +5,7 @@ use crate::test_support::{osm_window, redo_step, undo_step};
 use crate::EditMode;
 use gpui::TestAppContext;
 use osm_gpui::ids::WayId;
-use osm_gpui::lanes::{Arrow, LaneEdit};
+use osm_gpui::lanes::{Arrow, Group, LaneEdit};
 use osm_gpui::selection::FeatureKind;
 
 fn lane_tags(view: &crate::MapViewer) -> Vec<(String, String)> {
@@ -33,7 +33,7 @@ fn each_lane_edit_is_one_undo_step(cx: &mut TestAppContext) {
         .update(cx, |view, _window, _cx| {
             select(view, FeatureKind::Way, &[10]);
             view.apply_lane_edit(LaneEdit::Count {
-                forward: true,
+                group: Group::Forward,
                 add: true,
             });
             assert_eq!(
@@ -45,7 +45,7 @@ fn each_lane_edit_is_one_undo_step(cx: &mut TestAppContext) {
                 ])
             );
             view.apply_lane_edit(LaneEdit::Arrow {
-                forward: true,
+                group: Group::Forward,
                 lane: 0,
                 arrow: Arrow::Left,
             });
@@ -70,7 +70,7 @@ fn each_lane_edit_is_one_undo_step(cx: &mut TestAppContext) {
             let steps = view.undo_stack.actions.len();
             let before = lane_tags(view);
             view.apply_lane_edit(LaneEdit::Count {
-                forward: false,
+                group: Group::Backward,
                 add: false,
             });
             assert_eq!(view.undo_stack.actions.len(), steps);

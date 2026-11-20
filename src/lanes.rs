@@ -8,6 +8,7 @@
 //! driver going that way sees them, as `turn:lanes` does.
 
 use crate::tags::Tags;
+use std::collections::BTreeMap;
 
 /// One lane's `turn:lanes` arrows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -26,12 +27,14 @@ pub enum Arrow {
 
 impl Arrow {
     /// The arrows the Lanes editor offers, left to right.
-    pub const EDITABLE: [Arrow; 8] = [
+    pub const EDITABLE: [Arrow; 10] = [
         Arrow::Reverse,
         Arrow::SharpLeft,
         Arrow::Left,
         Arrow::SlightLeft,
+        Arrow::MergeToLeft,
         Arrow::Through,
+        Arrow::MergeToRight,
         Arrow::SlightRight,
         Arrow::Right,
         Arrow::SharpRight,
@@ -243,12 +246,178 @@ pub fn lanes_split_issue(tags: &Tags) -> Option<String> {
     })
 }
 
-/// The lanes of one direction, as the editor changes them.
-#[derive(Debug, Clone, PartialEq)]
+/// Which lanes of a road an edit or a diagram row belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Group {
+    /// Lanes driving with the node order.
+    Forward,
+    /// Lanes driving against the node order.
+    Backward,
+    /// Shared centre turn lanes (`:both_ways`).
+    BothWays,
+}
+
+impl Group {
+    /// The key suffix on a two-way road.
+    fn suffix(self) -> &'static str {
+        match self {
+            Group::Forward => "forward",
+            Group::Backward => "backward",
+            Group::BothWays => "both_ways",
+        }
+    }
+}
+
+/// A per-lane `*:lanes` access tag the editor offers besides `turn:lanes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Category {
+    Bicycle,
+    Vehicle,
+    Cycleway,
+    Bus,
+}
+
+impl Category {
+    pub const ALL: [Category; 4] = [
+        Category::Bicycle,
+        Category::Vehicle,
+        Category::Cycleway,
+        Category::Bus,
+    ];
+
+    /// The tag key without a direction.
+    pub fn key(self) -> &'static str {
+        match self {
+            Category::Bicycle => "bicycle:lanes",
+            Category::Vehicle => "vehicle:lanes",
+            Category::Cycleway => "cycleway:lanes",
+            Category::Bus => "psv:lanes",
+        }
+    }
+
+    /// The values the editor offers.
+    pub fn values(self) -> &'static [&'static str] {
+        match self {
+            Category::Bicycle => &["yes", "designated", "no", "permissive", "dismount"],
+            Category::Vehicle => &["yes", "no", "designated", "permissive", "hov"],
+            Category::Cycleway => &["no", "lane", "share_busway", "track"],
+            Category::Bus => &["yes", "designated", "no", "permissive"],
+        }
+    }
+}
+
+/// The lanes of one group, as the editor changes them.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DirLanes {
+    /// Every painted lane, including ones closed to motor vehicles.
     pub count: u32,
-    /// Per lane; `None` when the direction has no `turn:lanes`.
+    /// Per lane; `None` when the group has no `turn:lanes`.
     pub arrows: Option<Vec<LaneArrows>>,
+    /// Per lane, one value per [`Category`] (empty = unspecified).
+    pub attrs: BTreeMap<Category, Vec<String>>,
+}
+
+impl DirLanes {
+    /// The value of `cat` for `lane`, or "".
+    pub fn attr(&self, cat: Category, lane: usize) -> &str {
+        self.attrs
+            .get(&cat)
+            .and_then(|v| v.get(lane))
+            .map_or("", String::as_str)
+    }
+
+    /// Lanes that carry motor traffic: those not marked `vehicle=no`. This is
+    /// what `lanes=*` counts.
+    pub fn vehicle_count(&self) -> u32 {
+        (0..self.count as usize)
+            .filter(|&i| self.attr(Category::Vehicle, i) != "no")
+            .count() as u32
+    }
+
+    fn resize(&mut self) {
+        let n = self.count as usize;
+        if let Some(a) = &mut self.arrows {
+            a.resize(n, Vec::new());
+        }
+        for v in self.attrs.values_mut() {
+            v.resize(n, String::new());
+        }
+    }
+}
+
+/// Where cars stand beside the road (`parking:<side>`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ParkingSide {
+    /// `lane`, `street_side`, ... or "" for none.
+    pub kind: String,
+    /// `parallel`, `diagonal`, `perpendicular` or "".
+    pub orientation: String,
+}
+
+/// Parking types the editor offers.
+pub const PARKING_KINDS: [&str; 8] = [
+    "lane",
+    "street_side",
+    "half_on_kerb",
+    "on_kerb",
+    "shoulder",
+    "separate",
+    "yes",
+    "no",
+];
+/// Parking orientations the editor offers.
+pub const PARKING_ORIENTATIONS: [&str; 3] = ["parallel", "diagonal", "perpendicular"];
+
+/// Whether vehicles actually stand beside the road, the only parking an
+/// orientation applies to and the only one drawn as a band.
+pub fn parking_is_physical(kind: &str) -> bool {
+    matches!(
+        kind,
+        "lane" | "street_side" | "half_on_kerb" | "on_kerb" | "shoulder" | "yes"
+    )
+}
+
+/// A side of the way, looking along its node order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    fn name(self) -> &'static str {
+        match self {
+            Side::Left => "left",
+            Side::Right => "right",
+        }
+    }
+}
+
+/// A cycle lane against a oneway (`oneway:bicycle=no`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Contraflow {
+    pub side: Side,
+    pub kind: ContraflowKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContraflowKind {
+    /// `cycleway:<side>=lane`
+    Lane,
+    /// `cycleway:<side>=track`
+    Track,
+    /// Only `oneway:bicycle=no`: no separate lane.
+    Shared,
+}
+
+impl ContraflowKind {
+    fn tag(self) -> Option<&'static str> {
+        match self {
+            ContraflowKind::Lane => Some("lane"),
+            ContraflowKind::Track => Some("track"),
+            ContraflowKind::Shared => None,
+        }
+    }
 }
 
 /// A way's whole lane layout, as the Lanes editor shows and changes it.
@@ -258,77 +427,196 @@ pub struct LaneConfig {
     pub forward: Option<DirLanes>,
     /// Against the node order; `None` when a oneway forbids it.
     pub backward: Option<DirLanes>,
-    /// Shared centre turn lanes (`lanes:both_ways`).
-    pub both_ways: u32,
+    /// Shared centre turn lanes (`lanes:both_ways`); `count` 0 for none.
+    pub both_ways: DirLanes,
+    /// Contraflow cycling on a oneway.
+    pub contraflow: Option<Contraflow>,
+    pub parking_left: ParkingSide,
+    pub parking_right: ParkingSide,
 }
 
 /// Lane edits the editor offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaneEdit {
-    /// One more lane (`true`) or one fewer in a direction (`forward`). A
-    /// lane is added or removed on the driver's right.
-    Count { forward: bool, add: bool },
-    /// Turn `arrow` on or off for lane `lane` (left to right) of a direction.
+    /// One more lane (`add`) or one fewer in a group. A lane is added or
+    /// removed on the driver's right.
+    Count { group: Group, add: bool },
+    /// Turn `arrow` on or off for lane `lane` (left to right) of a group.
     Arrow {
-        forward: bool,
+        group: Group,
         lane: usize,
         arrow: Arrow,
     },
+    /// Set a lane's access value for `cat`, or clear it (`value` "") when it
+    /// already has that value.
+    Attr {
+        group: Group,
+        lane: usize,
+        cat: Category,
+        value: String,
+    },
+    /// Set (or with `None`, remove) contraflow cycling.
+    Contraflow(Option<Contraflow>),
+    /// Set a side's parking; choosing the current type clears it.
+    Parking {
+        side: Side,
+        kind: String,
+        orientation: String,
+    },
+}
+
+fn read_list(tags: &Tags, key: &str, count: usize) -> Option<Vec<String>> {
+    tags.get(key).map(|v| {
+        let mut l: Vec<String> = v.split('|').map(|s| s.trim().to_string()).collect();
+        l.resize(count.max(l.len()), String::new());
+        l
+    })
+}
+
+/// Reads `base` for a group: the directional key, or on a oneway also the
+/// plain one.
+fn group_key(tags: &Tags, base: &str, group: Group, oneway: bool) -> Option<String> {
+    let k = format!("{base}:{}", group.suffix());
+    if tags.get(&k).is_some() {
+        return Some(k);
+    }
+    (oneway && group != Group::BothWays && tags.get(base).is_some()).then(|| base.to_string())
+}
+
+fn read_parking(tags: &Tags, side: Side) -> ParkingSide {
+    let get = |key: String| tags.get(&key).map(str::to_string);
+    let both = |suffix: &str| get(format!("parking:both{suffix}"));
+    let own = |suffix: &str| get(format!("parking:{}{suffix}", side.name()));
+    ParkingSide {
+        kind: own("").or_else(|| both("")).unwrap_or_default(),
+        orientation: own(":orientation")
+            .or_else(|| both(":orientation"))
+            .unwrap_or_default(),
+    }
 }
 
 impl LaneConfig {
     /// The layout `tags` describe.
     pub fn read(tags: &Tags) -> LaneConfig {
-        let dir = |forward| {
-            lane_group(tags, forward).map(|g| DirLanes {
-                count: g.count,
-                arrows: g.arrows.map(|mut a| {
-                    a.resize(g.count as usize, Vec::new());
-                    a
-                }),
-            })
+        let ow = oneway(tags);
+        let one_way = ow.is_some();
+        let group = |g: Group| -> DirLanes {
+            let base = match g {
+                Group::BothWays => {
+                    let n = parse_count(tags, "lanes:both_ways").unwrap_or(0);
+                    DirLanes {
+                        count: n,
+                        ..Default::default()
+                    }
+                }
+                _ => match lane_group(tags, g == Group::Forward) {
+                    Some(lg) => DirLanes {
+                        count: lg.count,
+                        arrows: lg.arrows,
+                        attrs: BTreeMap::new(),
+                    },
+                    None => DirLanes::default(),
+                },
+            };
+            let mut d = base;
+            if g == Group::BothWays {
+                if let Some(v) = tags.get("turn:lanes:both_ways") {
+                    d.arrows = Some(parse_turn_lanes(v));
+                }
+            }
+            for cat in Category::ALL {
+                if let Some(k) = group_key(tags, cat.key(), g, one_way) {
+                    if let Some(list) = read_list(tags, &k, d.count as usize) {
+                        d.attrs.insert(cat, list);
+                    }
+                }
+            }
+            // Lanes closed to cars aren't in `lanes`, so the lists can run
+            // longer than the tagged count.
+            let longest = d
+                .attrs
+                .values()
+                .map(Vec::len)
+                .chain(d.arrows.iter().map(Vec::len))
+                .max()
+                .unwrap_or(0) as u32;
+            if g == Group::BothWays || d.attrs.contains_key(&Category::Vehicle) {
+                d.count = d.count.max(longest);
+            } else if longest > d.count && d.arrows.is_none() {
+                d.count = longest;
+            }
+            d.resize();
+            d
         };
+        let forward = lane_group(tags, true).map(|_| group(Group::Forward));
+        let backward = lane_group(tags, false).map(|_| group(Group::Backward));
+        let contraflow =
+            (ow == Some(true) && tags.get("oneway:bicycle") == Some("no")).then(|| {
+                let side = [Side::Left, Side::Right]
+                    .into_iter()
+                    .find(|s| {
+                        matches!(
+                            tags.get(&format!("cycleway:{}", s.name())),
+                            Some("lane" | "track")
+                        )
+                    })
+                    .unwrap_or(Side::Left);
+                let kind = match tags.get(&format!("cycleway:{}", side.name())) {
+                    Some("lane") => ContraflowKind::Lane,
+                    Some("track") => ContraflowKind::Track,
+                    _ => ContraflowKind::Shared,
+                };
+                Contraflow { side, kind }
+            });
         LaneConfig {
-            forward: dir(true),
-            backward: dir(false),
-            both_ways: parse_count(tags, "lanes:both_ways").unwrap_or(0),
+            forward,
+            backward,
+            both_ways: group(Group::BothWays),
+            contraflow,
+            parking_left: read_parking(tags, Side::Left),
+            parking_right: read_parking(tags, Side::Right),
         }
     }
 
-    fn dir_mut(&mut self, forward: bool) -> Option<&mut DirLanes> {
-        if forward {
-            self.forward.as_mut()
-        } else {
-            self.backward.as_mut()
+    /// The lanes of a group.
+    pub fn group(&self, g: Group) -> Option<&DirLanes> {
+        match g {
+            Group::Forward => self.forward.as_ref(),
+            Group::Backward => self.backward.as_ref(),
+            Group::BothWays => Some(&self.both_ways),
+        }
+    }
+
+    fn group_mut(&mut self, g: Group) -> Option<&mut DirLanes> {
+        match g {
+            Group::Forward => self.forward.as_mut(),
+            Group::Backward => self.backward.as_mut(),
+            Group::BothWays => Some(&mut self.both_ways),
         }
     }
 
     /// Apply `edit`; `false` (and nothing changed) when it can't be: a
-    /// direction the road doesn't have, or removing its last lane.
+    /// direction the road doesn't have, removing a direction's last lane, or
+    /// a contraflow lane on a road that isn't a oneway.
     pub fn apply(&mut self, edit: LaneEdit) -> bool {
         match edit {
-            LaneEdit::Count { forward, add } => {
-                let Some(d) = self.dir_mut(forward) else {
+            LaneEdit::Count { group, add } => {
+                let min = if group == Group::BothWays { 0 } else { 1 };
+                let Some(d) = self.group_mut(group) else {
                     return false;
                 };
                 if add {
                     d.count += 1;
-                } else if d.count > 1 {
+                } else if d.count > min {
                     d.count -= 1;
                 } else {
                     return false;
                 }
-                if let Some(a) = &mut d.arrows {
-                    a.resize(d.count as usize, Vec::new());
-                }
+                d.resize();
                 true
             }
-            LaneEdit::Arrow {
-                forward,
-                lane,
-                arrow,
-            } => {
-                let Some(d) = self.dir_mut(forward) else {
+            LaneEdit::Arrow { group, lane, arrow } => {
+                let Some(d) = self.group_mut(group) else {
                     return false;
                 };
                 if lane >= d.count as usize {
@@ -348,6 +636,66 @@ impl LaneConfig {
                 }
                 true
             }
+            LaneEdit::Attr {
+                group,
+                lane,
+                cat,
+                value,
+            } => {
+                let Some(d) = self.group_mut(group) else {
+                    return false;
+                };
+                if lane >= d.count as usize {
+                    return false;
+                }
+                let n = d.count as usize;
+                let list = d.attrs.entry(cat).or_insert_with(|| vec![String::new(); n]);
+                list[lane] = if list[lane] == value {
+                    String::new()
+                } else {
+                    value
+                };
+                true
+            }
+            LaneEdit::Contraflow(c) => {
+                // Only a oneway has a contraflow.
+                if c.is_some() && self.forward.is_some() == self.backward.is_some() {
+                    return false;
+                }
+                self.contraflow = c;
+                true
+            }
+            LaneEdit::Parking {
+                side,
+                kind,
+                orientation,
+            } => {
+                let p = match side {
+                    Side::Left => &mut self.parking_left,
+                    Side::Right => &mut self.parking_right,
+                };
+                if !kind.is_empty() {
+                    *p = if p.kind == kind {
+                        ParkingSide::default()
+                    } else {
+                        ParkingSide {
+                            orientation: if parking_is_physical(&kind) {
+                                p.orientation.clone()
+                            } else {
+                                String::new()
+                            },
+                            kind,
+                        }
+                    };
+                } else if parking_is_physical(&p.kind) {
+                    p.orientation = if p.orientation == orientation {
+                        String::new()
+                    } else {
+                        orientation
+                    };
+                }
+                true
+            }
         }
     }
 
@@ -355,56 +703,139 @@ impl LaneConfig {
     /// value or None to remove)`, only keys whose value changes. On a oneway
     /// the plain `lanes` / `turn:lanes` hold the open direction; a two-way
     /// road gets `lanes:forward` / `lanes:backward` unless both are equal and
-    /// weren't tagged, and `turn:lanes:forward` / `:backward`. A direction
-    /// whose lanes all lack arrows has no `turn:lanes`.
+    /// weren't tagged, and `turn:lanes:forward` / `:backward`. A group
+    /// whose lanes all lack a value has no such tag. `lanes` counts only
+    /// lanes not marked `vehicle=no`.
     pub fn tag_changes(&self, tags: &Tags) -> Vec<(String, Option<String>)> {
-        let mut want: Vec<(&str, Option<String>)> = Vec::new();
+        let mut want: Vec<(String, Option<String>)> = Vec::new();
+        let mut put = |k: String, v: Option<String>| want.push((k, v));
         let arrows_value = |d: &DirLanes| {
             d.arrows
                 .as_ref()
-                .filter(|a| a.iter().any(|l| !l.is_empty()))
+                .filter(|a| d.count > 0 && a.iter().any(|l| !l.is_empty()))
                 .map(|a| format_turn_lanes(a))
         };
+        let attr_value = |d: &DirLanes, cat: Category| {
+            let list = d.attrs.get(&cat)?;
+            (d.count > 0 && list.iter().any(|v| !v.is_empty())).then(|| list.join("|"))
+        };
+        let two_way = self.forward.is_some() && self.backward.is_some();
+        let base = LaneConfig::read(tags);
+        let lanes_changed = (&self.forward, &self.backward, &self.both_ways)
+            != (&base.forward, &base.backward, &base.both_ways);
         match (&self.forward, &self.backward) {
+            _ if !lanes_changed => {}
             (Some(d), None) | (None, Some(d)) => {
-                want.push(("lanes", Some(d.count.to_string())));
-                want.push(("turn:lanes", arrows_value(d)));
-                for key in [
-                    "lanes:forward",
-                    "lanes:backward",
-                    "lanes:both_ways",
-                    "turn:lanes:forward",
-                    "turn:lanes:backward",
-                ] {
-                    want.push((key, None));
+                put("lanes".into(), Some(d.vehicle_count().to_string()));
+                put("turn:lanes".into(), arrows_value(d));
+                for cat in Category::ALL {
+                    put(cat.key().into(), attr_value(d, cat));
+                }
+                for g in ["forward", "backward", "both_ways"] {
+                    put(format!("lanes:{g}"), None);
+                    put(format!("turn:lanes:{g}"), None);
+                    for cat in Category::ALL {
+                        put(format!("{}:{g}", cat.key()), None);
+                    }
                 }
             }
             (Some(f), Some(b)) => {
-                let total = f.count + b.count + self.both_ways;
-                want.push(("lanes", Some(total.to_string())));
+                let bw = &self.both_ways;
+                let (fc, bc, wc) = (f.vehicle_count(), b.vehicle_count(), bw.vehicle_count());
+                put("lanes".into(), Some((fc + bc + wc).to_string()));
                 let was_split =
                     tags.get("lanes:forward").is_some() || tags.get("lanes:backward").is_some();
-                let split = was_split || f.count != b.count || self.both_ways > 0;
-                want.push(("lanes:forward", split.then(|| f.count.to_string())));
-                want.push(("lanes:backward", split.then(|| b.count.to_string())));
-                want.push((
-                    "lanes:both_ways",
-                    (self.both_ways > 0).then(|| self.both_ways.to_string()),
-                ));
-                let (tf, tb) = (arrows_value(f), arrows_value(b));
-                // A plain turn:lanes on a two-way road is replaced once
-                // either direction is written.
-                if tf.is_some() || tb.is_some() || tags.get("turn:lanes:forward").is_some() {
-                    want.push(("turn:lanes", None));
+                let split = was_split || fc != bc || wc > 0;
+                put("lanes:forward".into(), split.then(|| fc.to_string()));
+                put("lanes:backward".into(), split.then(|| bc.to_string()));
+                put("lanes:both_ways".into(), (wc > 0).then(|| wc.to_string()));
+                // A plain `*:lanes` on a two-way road is replaced once any
+                // directional value is written.
+                let mut series: Vec<(&str, Box<dyn Fn(&DirLanes) -> Option<String> + '_>)> =
+                    vec![("turn:lanes", Box::new(&arrows_value))];
+                for cat in Category::ALL {
+                    series.push((cat.key(), Box::new(move |d| attr_value(d, cat))));
                 }
-                want.push(("turn:lanes:forward", tf));
-                want.push(("turn:lanes:backward", tb));
+                for (base, value) in &series {
+                    let vals = [(&f, "forward"), (&b, "backward"), (&bw, "both_ways")]
+                        .map(|(d, g)| (g, value(d)));
+                    let existing = ["forward", "backward", "both_ways"]
+                        .iter()
+                        .any(|g| tags.get(&format!("{base}:{g}")).is_some());
+                    if existing || vals.iter().any(|(_, v)| v.is_some()) {
+                        put((*base).into(), None);
+                    }
+                    for (g, v) in vals {
+                        put(format!("{base}:{g}"), v);
+                    }
+                }
             }
             (None, None) => {}
         }
-        want.into_iter()
+        // Contraflow cycling, on a oneway with the node order only.
+        if oneway(tags) == Some(true) && !two_way {
+            let (cf, prev) = (self.contraflow, LaneConfig::read(tags).contraflow);
+            put("oneway:bicycle".into(), cf.map(|_| "no".to_string()));
+            for side in [Side::Left, Side::Right] {
+                let tag_of =
+                    |c: Option<Contraflow>| c.filter(|c| c.side == side).and_then(|c| c.kind.tag());
+                let (mine, was) = (tag_of(cf), tag_of(prev));
+                if mine.is_some() || was.is_some() {
+                    let k = format!("cycleway:{}", side.name());
+                    put(format!("{k}:oneway"), mine.map(|_| "-1".to_string()));
+                    put(k, mine.map(str::to_string));
+                }
+            }
+        }
+        // Parking.
+        let (l, r) = (&self.parking_left, &self.parking_right);
+        let side_tags = |side: &str, p: &ParkingSide| -> Vec<(String, Option<String>)> {
+            vec![
+                (
+                    format!("parking:{side}"),
+                    (!p.kind.is_empty()).then(|| p.kind.clone()),
+                ),
+                (
+                    format!("parking:{side}:orientation"),
+                    (!p.orientation.is_empty() && parking_is_physical(&p.kind))
+                        .then(|| p.orientation.clone()),
+                ),
+            ]
+        };
+        let blank = vec![
+            ("parking:both".to_string(), None),
+            ("parking:both:orientation".to_string(), None),
+            ("parking:left".to_string(), None),
+            ("parking:left:orientation".to_string(), None),
+            ("parking:right".to_string(), None),
+            ("parking:right:orientation".to_string(), None),
+        ];
+        let mut parking = blank;
+        let mut set = |v: Vec<(String, Option<String>)>| {
+            for (k, val) in v {
+                if let Some(e) = parking.iter_mut().find(|(ek, _)| *ek == k) {
+                    e.1 = val;
+                }
+            }
+        };
+        // `both` is the shorthand for two identical sides.
+        if !l.kind.is_empty() && l == r {
+            set(side_tags("both", l));
+        } else {
+            set(side_tags("left", l));
+            set(side_tags("right", r));
+        }
+        want.extend(parking);
+        // Later entries win; keep the last value per key.
+        let mut out: Vec<(String, Option<String>)> = Vec::new();
+        for (k, v) in want {
+            match out.iter_mut().find(|(ek, _)| *ek == k) {
+                Some(e) => e.1 = v,
+                None => out.push((k, v)),
+            }
+        }
+        out.into_iter()
             .filter(|(k, v)| tags.get(k) != v.as_deref())
-            .map(|(k, v)| (k.to_string(), v))
             .collect()
     }
 }
@@ -475,7 +906,7 @@ mod tests {
     fn adding_a_lane_one_way_splits_the_counts() {
         let c = changes(&[("highway", "primary"), ("lanes", "2")], |c| {
             assert!(c.apply(LaneEdit::Count {
-                forward: true,
+                group: Group::Forward,
                 add: true
             }));
         });
@@ -501,7 +932,7 @@ mod tests {
             |c| {
                 for (lane, arrow) in [(0, Arrow::Left), (1, Arrow::Right), (1, Arrow::Through)] {
                     assert!(c.apply(LaneEdit::Arrow {
-                        forward: true,
+                        group: Group::Forward,
                         lane,
                         arrow
                     }));
@@ -520,7 +951,7 @@ mod tests {
             ],
             |c| {
                 c.apply(LaneEdit::Arrow {
-                    forward: true,
+                    group: Group::Forward,
                     lane: 0,
                     arrow: Arrow::Left,
                 });
@@ -540,16 +971,16 @@ mod tests {
             ],
             |c| {
                 assert!(c.apply(LaneEdit::Count {
-                    forward: true,
+                    group: Group::Forward,
                     add: false
                 }));
                 assert!(!c.apply(LaneEdit::Count {
-                    forward: true,
+                    group: Group::Forward,
                     add: false
                 }));
                 // A oneway has no backward lanes to change.
                 assert!(!c.apply(LaneEdit::Count {
-                    forward: false,
+                    group: Group::Backward,
                     add: true
                 }));
             },
@@ -567,7 +998,7 @@ mod tests {
             ],
             |c| {
                 c.apply(LaneEdit::Arrow {
-                    forward: false,
+                    group: Group::Backward,
                     lane: 0,
                     arrow: Arrow::Through,
                 });
@@ -577,5 +1008,196 @@ mod tests {
             c,
             [unset("turn:lanes"), set("turn:lanes:backward", "through")]
         );
+    }
+
+    #[test]
+    fn a_bike_only_lane_is_painted_but_not_counted_in_lanes() {
+        let tags = &[
+            ("highway", "primary"),
+            ("oneway", "yes"),
+            ("lanes", "2"),
+            ("vehicle:lanes", "yes|yes|no"),
+            ("bicycle:lanes", "yes|yes|designated"),
+        ];
+        let c = LaneConfig::read(&Tags::from(tags));
+        assert_eq!(c.forward.as_ref().unwrap().count, 3);
+        assert_eq!(changes(tags, |_| {}), []);
+        // Opening the bike lane to cars makes it count.
+        let c = changes(tags, |c| {
+            c.apply(LaneEdit::Attr {
+                group: Group::Forward,
+                lane: 2,
+                cat: Category::Vehicle,
+                value: "no".into(),
+            });
+        });
+        assert_eq!(c, [set("lanes", "3"), set("vehicle:lanes", "yes|yes|")]);
+    }
+
+    #[test]
+    fn access_values_toggle_and_use_directional_keys_on_a_two_way_road() {
+        let c = changes(&[("highway", "primary"), ("lanes", "2")], |c| {
+            for g in [Group::Forward, Group::Backward] {
+                c.apply(LaneEdit::Attr {
+                    group: g,
+                    lane: 0,
+                    cat: Category::Bus,
+                    value: "designated".into(),
+                });
+            }
+            // Choosing the same value again clears it.
+            c.apply(LaneEdit::Attr {
+                group: Group::Backward,
+                lane: 0,
+                cat: Category::Bus,
+                value: "designated".into(),
+            });
+        });
+        assert_eq!(c, [set("psv:lanes:forward", "designated")]);
+    }
+
+    #[test]
+    fn shared_centre_lanes_have_their_own_count_and_arrows() {
+        let c = changes(
+            &[
+                ("highway", "primary"),
+                ("lanes", "2"),
+                ("lanes:forward", "1"),
+                ("lanes:backward", "1"),
+            ],
+            |c| {
+                assert!(c.apply(LaneEdit::Count {
+                    group: Group::BothWays,
+                    add: true
+                }));
+                assert!(c.apply(LaneEdit::Arrow {
+                    group: Group::BothWays,
+                    lane: 0,
+                    arrow: Arrow::Left
+                }));
+            },
+        );
+        assert_eq!(
+            c,
+            [
+                set("lanes", "3"),
+                set("lanes:both_ways", "1"),
+                set("turn:lanes:both_ways", "left"),
+            ]
+        );
+        let tags = &[
+            ("highway", "primary"),
+            ("lanes", "3"),
+            ("lanes:forward", "1"),
+            ("lanes:backward", "1"),
+            ("lanes:both_ways", "1"),
+            ("turn:lanes:both_ways", "left"),
+        ];
+        assert_eq!(changes(tags, |_| {}), []);
+        // Removing it drops its tags.
+        let c = changes(tags, |c| {
+            c.apply(LaneEdit::Count {
+                group: Group::BothWays,
+                add: false,
+            });
+        });
+        assert!(c.contains(&unset("lanes:both_ways")));
+        assert!(c.contains(&unset("turn:lanes:both_ways")));
+        assert!(c.contains(&set("lanes", "2")));
+    }
+
+    #[test]
+    fn merge_arrows_round_trip() {
+        let tags = &[
+            ("highway", "primary"),
+            ("oneway", "yes"),
+            ("lanes", "2"),
+            ("turn:lanes", "through|merge_to_left"),
+        ];
+        assert_eq!(changes(tags, |_| {}), []);
+    }
+
+    #[test]
+    fn contraflow_cycling_on_a_oneway() {
+        let base = &[("highway", "residential"), ("oneway", "yes")][..];
+        let cf = |side, kind| LaneEdit::Contraflow(Some(Contraflow { side, kind }));
+        let c = changes(base, |c| {
+            assert!(c.apply(cf(Side::Left, ContraflowKind::Lane)));
+        });
+        assert_eq!(
+            c,
+            [
+                set("cycleway:left", "lane"),
+                set("cycleway:left:oneway", "-1"),
+                set("oneway:bicycle", "no"),
+            ]
+        );
+        let c = changes(base, |c| {
+            c.apply(cf(Side::Right, ContraflowKind::Shared));
+        });
+        assert_eq!(c, [set("oneway:bicycle", "no")]);
+        let tagged = &[
+            ("highway", "residential"),
+            ("oneway", "yes"),
+            ("oneway:bicycle", "no"),
+            ("cycleway:right", "track"),
+            ("cycleway:right:oneway", "-1"),
+        ];
+        assert_eq!(changes(tagged, |_| {}), []);
+        let c = changes(tagged, |c| {
+            c.apply(LaneEdit::Contraflow(None));
+        });
+        assert_eq!(
+            c,
+            [
+                unset("cycleway:right"),
+                unset("cycleway:right:oneway"),
+                unset("oneway:bicycle")
+            ]
+        );
+        // Not on a two-way road.
+        let mut two = LaneConfig::read(&Tags::from([("highway", "residential")]));
+        assert!(!two.apply(cf(Side::Left, ContraflowKind::Lane)));
+    }
+
+    #[test]
+    fn parking_collapses_to_both_and_orients_only_physical_parking() {
+        let edit = |side, kind: &str, orientation: &str| LaneEdit::Parking {
+            side,
+            kind: kind.into(),
+            orientation: orientation.into(),
+        };
+        let c = changes(&[("highway", "residential")], |c| {
+            c.apply(edit(Side::Left, "lane", ""));
+            c.apply(edit(Side::Right, "lane", ""));
+            c.apply(edit(Side::Left, "", "parallel"));
+            c.apply(edit(Side::Right, "", "parallel"));
+        });
+        assert_eq!(
+            c,
+            [
+                set("parking:both", "lane"),
+                set("parking:both:orientation", "parallel")
+            ]
+        );
+        // Splitting the sides rewrites `both`.
+        let c = changes(
+            &[("highway", "residential"), ("parking:both", "lane")],
+            |c| {
+                c.apply(edit(Side::Right, "no", ""));
+            },
+        );
+        assert_eq!(
+            c,
+            [
+                unset("parking:both"),
+                set("parking:left", "lane"),
+                set("parking:right", "no")
+            ]
+        );
+        // `no` takes no orientation.
+        let mut cfg = LaneConfig::read(&Tags::from([("parking:left", "no")]));
+        cfg.apply(edit(Side::Left, "", "diagonal"));
+        assert_eq!(cfg.parking_left.orientation, "");
     }
 }
