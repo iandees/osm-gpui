@@ -635,6 +635,7 @@ shortcut:
   select_all: "Select All"
   find: "Find…"
   show_history: "Show Object History"
+  change_feature_type: "Change Feature Type…"
   copy_features: "Copy"
   paste_features: "Paste"
   duplicate_features: "Duplicate"

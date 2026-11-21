@@ -198,6 +198,11 @@ fn key_binding_for(id: &'static str, spec: &str) -> Option<KeyBinding> {
             history_actions::ShowObjectHistory,
             Some(MAP_VIEWER_KEY_CONTEXT),
         )),
+        "change_feature_type" => Some(KeyBinding::new(
+            spec,
+            ChangeFeatureType,
+            Some(MAP_VIEWER_KEY_CONTEXT),
+        )),
         // Copy/Paste Tags run the same selection actions as the menus.
         // Scoped to the map like Select All, so they never steal the
         // keys from a focused text input.

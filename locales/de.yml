@@ -618,6 +618,7 @@ shortcut:
   select_all: "Alles auswählen"
   find: "Suchen…"
   show_history: "Objektverlauf anzeigen"
+  change_feature_type: "Objekttyp ändern …"
   copy_features: "Kopieren"
   paste_features: "Einsetzen"
   duplicate_features: "Duplizieren"
