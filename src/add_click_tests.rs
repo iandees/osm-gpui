@@ -363,6 +363,31 @@ fn double_click_finishes_the_way_without_a_duplicate_node(cx: &mut TestAppContex
     });
 }
 
+// Closing a way by clicking its first node already finishes it, so the second
+// click of that double-click must not start a new way or splice a node into
+// the closed one.
+#[gpui::test]
+fn double_click_on_the_first_node_closes_the_way_without_a_stray_node(cx: &mut TestAppContext) {
+    with_refs(
+        cx,
+        |_| vec![],
+        |view, _w, cx, layer| {
+            let a = screen(view, A_V1);
+            view.mode_click(a, false, 1, false, cx);
+            view.mode_click(screen(view, A_V2), false, 1, false, cx);
+            view.mode_click(screen(view, MARKER), false, 1, false, cx);
+            // First click of the double-click: connects back to the first node.
+            view.mode_click(a, false, 1, false, cx);
+            assert!(view.add_progress().is_none());
+            let closed = state(view, layer);
+            // Second click of the double-click: nothing more happens.
+            view.mode_click(a, false, 2, false, cx);
+            assert!(view.add_progress().is_none());
+            assert_eq!(state(view, layer), closed);
+        },
+    );
+}
+
 // Escape (cancelling the in-progress way) neither adds nor removes steps:
 // the first node stays and one undo still removes it.
 #[gpui::test]
