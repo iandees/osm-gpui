@@ -7,6 +7,35 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.14.0
+
+### Editing
+
+- The validator offers automatic fixes with Fix and Fix all buttons, and checks for redundant area tags, repeated relation members and repeated way nodes. ([#351](https://github.com/iandees/osm-gpui/pull/351))
+- An opening hours editor converts hours pasted from a website. ([#347](https://github.com/iandees/osm-gpui/pull/347))
+- Right-click Split Way Here asks which part keeps the history. ([#344](https://github.com/iandees/osm-gpui/pull/344))
+- Combo dropdowns in Fields filter as you type and pick the highlighted option. ([#343](https://github.com/iandees/osm-gpui/pull/343))
+- Footways can snap to buildings. ([#345](https://github.com/iandees/osm-gpui/pull/345))
+- Preset names that are `{preset_id}` references, such as the US post box, show the referenced preset's name. ([#355](https://github.com/iandees/osm-gpui/pull/355))
+- Change Feature Type has a shortcut, Cmd+Shift+T (Ctrl+Shift+T elsewhere), which can be rebound in Settings. ([#357](https://github.com/iandees/osm-gpui/pull/357))
+- In Add mode a double-click finishes the way being drawn, including when it closes the way on its first node. ([#349](https://github.com/iandees/osm-gpui/pull/349)), ([#358](https://github.com/iandees/osm-gpui/pull/358))
+
+### Map
+
+- Dropped files are opened, and GPX layers are styled like GPS Traces. ([#348](https://github.com/iandees/osm-gpui/pull/348))
+
+### Fixes
+
+- The preset picker's search box stays full width when a result's tag preview is long. ([#346](https://github.com/iandees/osm-gpui/pull/346))
+
+### Development
+
+- Edit, reference builder and tile-shift code use typed `LatLon`, `Mercator` and `GeoBounds`. ([#352](https://github.com/iandees/osm-gpui/pull/352))
+
+### Documentation
+
+- The README is slimmer, CONTRIBUTING covers translations and releases, and there is a user guide. ([#350](https://github.com/iandees/osm-gpui/pull/350))
+
 ## 0.13.0
 
 ### Editing
