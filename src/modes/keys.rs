@@ -16,8 +16,8 @@ pub(crate) enum MapKey {
     /// Held Space turns a left-drag into a pan.
     Space,
     Escape,
-    /// Enter while a Rotate is in progress: keep the rotation.
-    FinishRotate,
+    /// Enter while a Rotate or Scale is in progress: keep the rotation.
+    FinishTransform,
     /// Enter in Add mode: finish the way being drawn.
     FinishDrawing,
     DeleteSelection,
@@ -45,7 +45,7 @@ impl MapKey {
         match key {
             "space" => MapKey::Space,
             "escape" => MapKey::Escape,
-            "enter" if rotating => MapKey::FinishRotate,
+            "enter" if rotating => MapKey::FinishTransform,
             "enter" if mode == EditMode::Add => MapKey::FinishDrawing,
             "delete" | "backspace" => MapKey::DeleteSelection,
             _ => Self::bound_key(key, settings),
@@ -82,7 +82,7 @@ impl MapViewer {
             key,
             modifiers,
             self.offset_field_focused(window, cx),
-            self.pointer.rotate_session.is_some(),
+            self.pointer.transform_session.is_some(),
             self.mode(),
             &osm_gpui::settings_store::snapshot(),
         );
@@ -102,7 +102,16 @@ impl MapViewer {
                 {
                     return;
                 }
+                let starts_transform = matches!(meaning, MapKey::SelectionAction(_))
+                    && self.pointer.transform_session.is_none();
                 self.run_map_key(meaning, window, cx);
+                // A transform this key just started stays running when the key
+                // is tapped, and is applied when it is released after a hold.
+                if starts_transform {
+                    if let Some(session) = self.pointer.transform_session.as_mut() {
+                        session.hold = Some((key.to_string(), std::time::Instant::now()));
+                    }
+                }
             }
         }
     }
@@ -110,8 +119,8 @@ impl MapViewer {
     fn run_map_key(&mut self, meaning: MapKey, window: &mut Window, cx: &mut Context<Self>) {
         match meaning {
             MapKey::Escape => self.escape(cx),
-            MapKey::FinishRotate => {
-                self.finish_rotate();
+            MapKey::FinishTransform => {
+                self.finish_transform();
                 cx.notify();
             }
             MapKey::FinishDrawing => {
@@ -130,7 +139,7 @@ impl MapViewer {
     /// New Note waiting for its click, then the current mode's gesture and
     /// finally the mode itself.
     pub(crate) fn escape(&mut self, cx: &mut Context<Self>) {
-        if self.close_photo_fullscreen() || self.cancel_rotate() || self.cancel_armed_note() {
+        if self.close_photo_fullscreen() || self.cancel_transform() || self.cancel_armed_note() {
             cx.notify();
             return;
         }
@@ -211,7 +220,7 @@ mod tests {
     #[test]
     fn enter_finishes_a_rotate_before_a_drawing() {
         let got = classify("enter", Modifiers::default(), false, true, EditMode::Add);
-        assert_eq!(got, MapKey::FinishRotate);
+        assert_eq!(got, MapKey::FinishTransform);
     }
 
     #[test]

@@ -79,6 +79,7 @@ Select features, then use the **Tools** menu or the right-click menu. Each actio
 - **Reverse Way** (`R`) flips direction (and direction-dependent tags).
 - **Join Ways** (`C`), **Split Way** (`P`), **Merge Nodes** (`M`) and **Straighten Way** (`T`) change how ways connect.
 - **Separate Node** (`G`) and **Unjoin Node from Way** pull shared nodes apart; **Extend Way** (`E`) continues a way.
+- **Rotate Selection** (`W`) and **Scale Selection** (`D`) turn or resize the selected nodes and ways about their centre. Hold the key and move the pointer, then release it to apply; or tap the key, move the pointer, and click or press Enter. Rotate follows the pointer around the centre (Shift snaps to 15°); Scale follows its distance from the centre (Shift snaps to 5%). Esc cancels.
 - **Extract Point** moves POI tags from a building onto a new node.
 - **Copy Tags** and **Paste Tags** (`⇧⌘C`, `⇧⌘V`) copy tags between features.
 - **Add to Relation** and **New Relation** manage relation membership. Selecting a relation from the side panel highlights its members and lets you edit their roles and order.

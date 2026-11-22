@@ -185,7 +185,7 @@ impl MapViewer {
                             .on_click(cx.listener(|this, _, _window, cx| this.cancel_transfer(cx))),
                     )
                 })
-        } else if let Some(rotating) = self.rotate_status() {
+        } else if let Some(rotating) = self.transform_status() {
             div().child(rotating)
         } else if let Some((message, _)) = self.status_message.clone() {
             div().text_color(foreground).child(message)

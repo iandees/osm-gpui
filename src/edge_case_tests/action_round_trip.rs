@@ -26,6 +26,7 @@ const NOT_STEPS: &[&str] = &[
     "add_to_relation",
     "parallel",
     "rotate",
+    "scale",
 ];
 
 fn point(id: i64, lat: f64, lon: f64) -> (i64, f64, f64) {

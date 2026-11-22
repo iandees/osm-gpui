@@ -14,7 +14,7 @@ fn a_dropped_file_does_not_click_the_map(cx: &mut TestAppContext) {
         .update(cx, |view, _, cx| {
             select(view, Way, &[100]);
             view.run_selection_action("rotate", cx);
-            view.pointer.rotate_session.as_mut().unwrap().moved = true;
+            view.pointer.transform_session.as_mut().unwrap().moved = true;
         })
         .unwrap();
     let vcx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
@@ -39,7 +39,7 @@ fn a_dropped_file_does_not_click_the_map(cx: &mut TestAppContext) {
     window
         .update(vcx, |view, _, cx| {
             assert!(
-                view.pointer.rotate_session.is_some(),
+                view.pointer.transform_session.is_some(),
                 "the drop applied the rotation"
             );
             assert_eq!(view.undo_stack.actions.len(), 0);

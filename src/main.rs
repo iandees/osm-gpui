@@ -430,24 +430,64 @@ fn window_to_map_origin(
     )
 }
 
-/// An interactive Rotate in progress: the selection's nodes turn around their
-/// centre as the pointer circles it. The nodes are really moved on every
-/// pointer move (so the map redraws the true result); `originals` is what a
-/// cancel puts back and what the undo step's "before" is.
-struct RotateSession {
+/// Which transform a [`TransformSession`] applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransformKind {
+    Rotate,
+    Scale,
+}
+
+/// How long a transform's shortcut key must be held before releasing it
+/// applies the transform. A shorter tap leaves the transform running (toggle
+/// style) until a click, Enter or Escape.
+const TRANSFORM_HOLD: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// An interactive Rotate or Scale in progress: the selection's nodes turn
+/// (or grow) about their centre as the pointer moves. The nodes are really
+/// moved on every pointer move (so the map redraws the true result);
+/// `originals` is what a cancel puts back and what the undo step's "before"
+/// is.
+struct TransformSession {
+    kind: TransformKind,
     layer: LayerId,
-    /// The nodes being turned with their positions when the session began.
+    /// The nodes being moved with their positions when the session began.
     originals: Vec<(NodeId, osm_gpui::geometry::LatLon)>,
     center: osm_gpui::geometry::LatLon,
     /// The pointer's angle around the centre when the session began; set by
     /// the first pointer move if the pointer position was not known yet.
+    /// Rotate only.
     start_angle: Option<f64>,
+    /// The pointer's distance from the centre (pixels) when the session
+    /// began; set like `start_angle`. Scale only.
+    start_distance: Option<f64>,
     /// The rotation currently applied, radians counter-clockwise (map).
     angle: f64,
+    /// The scale factor currently applied (1 is unchanged).
+    factor: f64,
     /// Whether the pointer has moved since the session began. A click only
-    /// commits after that, so the click that picked Rotate in the context
+    /// commits after that, so the click that picked the action in the context
     /// menu cannot also finish it.
     moved: bool,
+    /// The shortcut key that started the session, while it may still be held,
+    /// and when it went down. Releasing it after [`TRANSFORM_HOLD`] applies
+    /// the transform; a quicker tap hands over to click/Enter/Escape.
+    hold: Option<(String, std::time::Instant)>,
+}
+
+impl TransformSession {
+    /// The session's nodes at their current transformed positions, in
+    /// `originals` order.
+    fn transformed(&self) -> Vec<osm_gpui::geometry::LatLon> {
+        let before: Vec<_> = self.originals.iter().map(|&(_, p)| p).collect();
+        match self.kind {
+            TransformKind::Rotate => {
+                osm_gpui::rotate::rotate_points(&before, self.center, self.angle)
+            }
+            TransformKind::Scale => {
+                osm_gpui::scale::scale_points(&before, self.center, self.factor)
+            }
+        }
+    }
 }
 
 /// A pointer position as plain f64 pixels.
@@ -1335,11 +1375,11 @@ impl MapViewer {
         }
         if self
             .pointer
-            .rotate_session
+            .transform_session
             .as_ref()
             .is_some_and(|r| r.layer == id)
         {
-            self.pointer.rotate_session = None;
+            self.pointer.transform_session = None;
         }
         self.pointer.interaction = Interaction::Idle;
         if self.pointer.hovered.is_some_and(|h| h.layer_id == id) {
@@ -1452,7 +1492,7 @@ impl MapViewer {
         self.switch_to_mode(mode);
         self.pointer.hovered = None;
         self.clear_vertex_preview();
-        self.cancel_rotate();
+        self.cancel_transform();
         cx.notify();
     }
 
@@ -2083,7 +2123,7 @@ impl MapViewer {
         }
         // A rotation in progress owns the selection until it is applied or
         // cancelled (Enter, click, Escape).
-        if self.pointer.rotate_session.is_some() {
+        if self.pointer.transform_session.is_some() {
             return;
         }
         let env = selection_actions::ActionEnv {
@@ -2124,18 +2164,21 @@ impl MapViewer {
                     self.dialogs.pending_parallel_dialog = true
                 }
             },
-            selection_actions::Run::Interactive(selection_actions::Interactive::Rotate) => {
-                self.start_rotate()
+            selection_actions::Run::Interactive(interactive) => {
+                self.start_transform(match interactive {
+                    selection_actions::Interactive::Rotate => TransformKind::Rotate,
+                    selection_actions::Interactive::Scale => TransformKind::Scale,
+                })
             }
         }
         cx.notify();
     }
 
-    /// Start an interactive Rotate of the selection: the nodes of the selected
-    /// nodes and ways turn around their mean position as the pointer circles
-    /// it (Shift snaps to 15 degrees). A click or Enter applies it as one
-    /// undo step; Escape puts everything back.
-    fn start_rotate(&mut self) {
+    /// Start an interactive Rotate or Scale of the selection: the nodes of
+    /// the selected nodes and ways turn around (or grow away from) their mean
+    /// position as the pointer circles (or leaves) it; Shift snaps. A click or
+    /// Enter applies it as one undo step; Escape puts everything back.
+    fn start_transform(&mut self, kind: TransformKind) {
         let Some(layer) = self.active_layer else {
             return;
         };
@@ -2155,18 +2198,27 @@ impl MapViewer {
         let Some(center) = osm_gpui::rotate::center(&points) else {
             return;
         };
+        let center_px = self.rotate_center_px(center);
         let start_angle = self
             .pointer
             .last_mouse_pos
-            .map(|p| osm_gpui::rotate::pointer_angle(self.rotate_center_px(center), pointer_px(p)));
+            .map(|p| osm_gpui::rotate::pointer_angle(center_px, pointer_px(p)));
+        let start_distance = self
+            .pointer
+            .last_mouse_pos
+            .map(|p| osm_gpui::scale::pointer_distance(center_px, pointer_px(p)));
         self.status_message = None;
-        self.pointer.rotate_session = Some(RotateSession {
+        self.pointer.transform_session = Some(TransformSession {
+            kind,
             layer,
             originals,
             center,
             start_angle,
+            start_distance,
             angle: 0.0,
+            factor: 1.0,
             moved: false,
+            hold: None,
         });
     }
 
@@ -2175,16 +2227,48 @@ impl MapViewer {
         pointer_px(self.viewport.geo_to_screen(center))
     }
 
+    /// Move the nodes of the transform in progress to follow the pointer.
+    fn update_transform(&mut self, pointer: gpui::Point<gpui::Pixels>, snap: bool) {
+        match self.pointer.transform_session.as_ref().map(|t| t.kind) {
+            Some(TransformKind::Rotate) => self.update_rotate(pointer, snap),
+            Some(TransformKind::Scale) => self.update_scale(pointer, snap),
+            None => {}
+        }
+    }
+
+    /// Grow or shrink the nodes of the Scale in progress to follow the
+    /// pointer's distance from the centre.
+    fn update_scale(&mut self, pointer: gpui::Point<gpui::Pixels>, snap: bool) {
+        let Some(session) = self.pointer.transform_session.as_ref() else {
+            return;
+        };
+        let now = osm_gpui::scale::pointer_distance(
+            self.rotate_center_px(session.center),
+            pointer_px(pointer),
+        );
+        let Some(session) = self.pointer.transform_session.as_mut() else {
+            return;
+        };
+        let start = *session.start_distance.get_or_insert(now);
+        let mut factor = osm_gpui::scale::factor_for_pointer(start, now);
+        if snap {
+            factor = osm_gpui::scale::snap_factor(factor);
+        }
+        session.moved = true;
+        session.factor = factor;
+        self.apply_transform();
+    }
+
     /// Turn the nodes of the Rotate in progress to follow the pointer.
     fn update_rotate(&mut self, pointer: gpui::Point<gpui::Pixels>, snap: bool) {
-        let Some(session) = self.pointer.rotate_session.as_ref() else {
+        let Some(session) = self.pointer.transform_session.as_ref() else {
             return;
         };
         let now = osm_gpui::rotate::pointer_angle(
             self.rotate_center_px(session.center),
             pointer_px(pointer),
         );
-        let Some(session) = self.pointer.rotate_session.as_mut() else {
+        let Some(session) = self.pointer.transform_session.as_mut() else {
             return;
         };
         let start = *session.start_angle.get_or_insert(now);
@@ -2194,16 +2278,15 @@ impl MapViewer {
         }
         session.moved = true;
         session.angle = angle;
-        self.apply_rotation();
+        self.apply_transform();
     }
 
-    /// Move the session's nodes to `originals` turned by the session's angle.
-    fn apply_rotation(&mut self) {
-        let Some(session) = self.pointer.rotate_session.as_ref() else {
+    /// Move the session's nodes to `originals` transformed by the session.
+    fn apply_transform(&mut self) {
+        let Some(session) = self.pointer.transform_session.as_ref() else {
             return;
         };
-        let before: Vec<_> = session.originals.iter().map(|&(_, p)| p).collect();
-        let after = osm_gpui::rotate::rotate_points(&before, session.center, session.angle);
+        let after = session.transformed();
         let moves: Vec<(NodeId, LatLon)> = session
             .originals
             .iter()
@@ -2225,29 +2308,52 @@ impl MapViewer {
     /// The Rotate in progress, in degrees clockwise as the user sees it.
     fn rotate_degrees(&self) -> Option<f64> {
         self.pointer
-            .rotate_session
+            .transform_session
             .as_ref()
             .map(|s| -s.angle.to_degrees())
     }
 
-    /// What the status bar says while a Rotate is in progress.
-    fn rotate_status(&self) -> Option<SharedString> {
-        let degrees = self.rotate_degrees()?;
-        Some(tr!(
-            "action.rotate.status",
-            degrees = format!("{degrees:.0}")
-        ))
+    /// What the status bar says while a Rotate or Scale is in progress.
+    fn transform_status(&self) -> Option<SharedString> {
+        let session = self.pointer.transform_session.as_ref()?;
+        Some(match session.kind {
+            TransformKind::Rotate => tr!(
+                "action.rotate.status",
+                degrees = format!("{:.0}", -session.angle.to_degrees())
+            ),
+            TransformKind::Scale => tr!(
+                "action.scale.status",
+                percent = format!("{:.0}", session.factor * 100.0)
+            ),
+        })
     }
 
-    /// Abandon the Rotate in progress, putting the nodes back. Returns
+    /// A key was released: if it started the transform in progress and was
+    /// held long enough, apply the transform (hold-to-transform). A quick tap
+    /// leaves it running until a click, Enter or Escape (toggle).
+    pub(crate) fn transform_key_released(&mut self, key: &str) -> bool {
+        let Some(session) = self.pointer.transform_session.as_mut() else {
+            return false;
+        };
+        let Some((_, since)) = session.hold.take_if(|(k, _)| k == key) else {
+            return false;
+        };
+        if since.elapsed() >= TRANSFORM_HOLD {
+            self.finish_transform();
+        }
+        true
+    }
+
+    /// Abandon the Rotate or Scale in progress, putting the nodes back. Returns
     /// whether there was one.
-    fn cancel_rotate(&mut self) -> bool {
-        let Some(session) = self.pointer.rotate_session.as_mut() else {
+    fn cancel_transform(&mut self) -> bool {
+        let Some(session) = self.pointer.transform_session.as_mut() else {
             return false;
         };
         session.angle = 0.0;
-        self.apply_rotation();
-        if let Some(session) = self.pointer.rotate_session.take() {
+        session.factor = 1.0;
+        self.apply_transform();
+        if let Some(session) = self.pointer.transform_session.take() {
             if let Some(layer) = self
                 .layer_manager
                 .find_layer_mut(session.layer)
@@ -2259,14 +2365,26 @@ impl MapViewer {
         true
     }
 
-    /// Apply the Rotate in progress as one undo step.
-    fn finish_rotate(&mut self) {
-        let Some(session) = self.pointer.rotate_session.take() else {
+    /// Apply the Rotate or Scale in progress as one undo step.
+    fn finish_transform(&mut self) {
+        let Some(session) = self.pointer.transform_session.take() else {
             return;
         };
-        let degrees = -session.angle.to_degrees();
-        let before: Vec<_> = session.originals.iter().map(|&(_, p)| p).collect();
-        let after = osm_gpui::rotate::rotate_points(&before, session.center, session.angle);
+        let done_status = match session.kind {
+            TransformKind::Rotate => tr!(
+                "action.rotate.done",
+                degrees = format!("{:.0}", -session.angle.to_degrees())
+            ),
+            TransformKind::Scale => tr!(
+                "action.scale.done",
+                percent = format!("{:.0}", session.factor * 100.0)
+            ),
+        };
+        let history_label = match session.kind {
+            TransformKind::Rotate => tr!("history.rotated"),
+            TransformKind::Scale => tr!("history.scaled"),
+        };
+        let after = session.transformed();
         let entries: Vec<NodeMoveUndoEntry> = session
             .originals
             .iter()
@@ -2285,13 +2403,13 @@ impl MapViewer {
             return;
         }
         self.undo_stack.push(UndoableAction::Batch {
-            label: tr!("history.rotated").to_string(),
+            label: history_label.to_string(),
             actions: vec![UndoableAction::move_nodes(
                 vec![(session.layer, entries)],
                 None,
             )],
         });
-        self.set_status(tr!("action.rotate.done", degrees = format!("{degrees:.0}")));
+        self.set_status(done_status);
     }
 
     /// Record what a selection action produced: its undo step, selection
@@ -2787,7 +2905,7 @@ impl MapViewer {
         if self.edits_blocked(cx) {
             return;
         }
-        self.cancel_rotate();
+        self.cancel_transform();
         if let Some(action) = self.undo_stack.undo() {
             self.run_history_step(&action, false);
             cx.notify();
@@ -2848,7 +2966,7 @@ impl MapViewer {
         if self.edits_blocked(cx) {
             return;
         }
-        self.cancel_rotate();
+        self.cancel_transform();
         if let Some(action) = self.undo_stack.redo() {
             self.run_history_step(&action, true);
             cx.notify();
@@ -3381,8 +3499,8 @@ impl MapViewer {
         self.pointer.last_mouse_pos = Some(adjusted_position);
         self.pointer.last_modifiers = event.modifiers;
         // Rotating: the selection follows the pointer around its centre.
-        if self.pointer.rotate_session.is_some() {
-            self.update_rotate(adjusted_position, event.modifiers.shift);
+        if self.pointer.transform_session.is_some() {
+            self.update_transform(adjusted_position, event.modifiers.shift);
             cx.notify();
             return;
         }
@@ -3485,16 +3603,16 @@ impl MapViewer {
 
     fn handle_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         let up_pos = self.window_to_map(event.position);
-        if self.pointer.rotate_session.is_some() {
+        if self.pointer.transform_session.is_some() {
             // A click applies the rotation, once the pointer has moved (the
             // click that chose Rotate from a menu does not).
             if self
                 .pointer
-                .rotate_session
+                .transform_session
                 .as_ref()
                 .is_some_and(|r| r.moved)
             {
-                self.finish_rotate();
+                self.finish_transform();
             }
             cx.notify();
             return;
@@ -6293,6 +6411,9 @@ impl Render for MapViewer {
                     .on_key_up(cx.listener(|this, ev: &gpui::KeyUpEvent, _, cx| {
                         if ev.keystroke.key == "space" && this.pointer.space_held {
                             this.pointer.space_held = false;
+                            cx.notify();
+                        }
+                        if this.transform_key_released(&ev.keystroke.key) {
                             cx.notify();
                         }
                     }))
