@@ -143,6 +143,11 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         category: ShortcutCategory::Edit,
     },
     ShortcutDef {
+        id: "change_feature_type",
+        default_spec: "secondary-shift-t",
+        category: ShortcutCategory::Edit,
+    },
+    ShortcutDef {
         id: "copy_features",
         default_spec: "secondary-c",
         category: ShortcutCategory::Edit,
