@@ -45,6 +45,12 @@ pub(super) fn click(
         view.set_add_progress(None);
         return;
     }
+    // Likewise when the first click of the pair already ended the way by
+    // connecting to an existing node (closing it on its first node): there is
+    // no progress left, and the second click must not start a new way there.
+    if click_count >= 2 {
+        return;
+    }
     view.handle_add_click(at, snapping_off);
 }
 
