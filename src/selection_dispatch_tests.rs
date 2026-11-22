@@ -23,6 +23,7 @@ fn every_action_has_the_run_kind_its_id_implies() {
             "add_to_relation" => Some(Run::Dialog(Dialog::RelationPicker)),
             "parallel" => Some(Run::Dialog(Dialog::ParallelOffset)),
             "rotate" => Some(Run::Interactive(Interactive::Rotate)),
+            "scale" => Some(Run::Interactive(Interactive::Scale)),
             _ => None,
         };
         match (action.run, expected) {
@@ -132,7 +133,7 @@ fn the_upload_guard_refuses_every_editing_action_in_one_place(cx: &mut TestAppCo
             assert_eq!(s.steps(), steps, "{}", action.id);
             assert!(!s.view.dialogs.pending_relation_picker, "{}", action.id);
             assert!(!s.view.dialogs.pending_parallel_dialog, "{}", action.id);
-            assert!(s.view.pointer.rotate_session.is_none(), "{}", action.id);
+            assert!(s.view.pointer.transform_session.is_none(), "{}", action.id);
         }
         // Copy only reads, so the guard lets it through.
         s.view.status_message = None;

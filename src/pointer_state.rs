@@ -1,6 +1,6 @@
 //! What the mouse and keyboard modifiers are doing on the map right now.
 
-use crate::{ContextMenuState, RotateSession, SnapTarget};
+use crate::{ContextMenuState, SnapTarget, TransformSession};
 use osm_gpui::interaction::Interaction;
 
 pub(crate) struct PointerState {
@@ -30,8 +30,8 @@ pub(crate) struct PointerState {
     /// and the node becomes the selection once the drag passes the threshold
     /// (a release without moving is a plain click and selects it that way).
     pub(crate) vertex_grab: Option<osm_gpui::selection::FeatureRef>,
-    /// The interactive Rotate in progress, if any (see `RotateSession`).
-    pub(crate) rotate_session: Option<RotateSession>,
+    /// The interactive Rotate in progress, if any (see `TransformSession`).
+    pub(crate) transform_session: Option<TransformSession>,
     /// Window position of the last right-button press on the map, kept until
     /// the button is released: a release within `CLICK_SLOP` of it is a click
     /// (opens the context menu), anything further was a pan.
@@ -53,7 +53,7 @@ impl Default for PointerState {
             last_mouse_pos: None,
             hovered: None,
             vertex_grab: None,
-            rotate_session: None,
+            transform_session: None,
             right_press: None,
             menu_swallow_press: false,
             context_menu: None,

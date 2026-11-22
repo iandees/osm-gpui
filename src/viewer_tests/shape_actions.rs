@@ -150,7 +150,7 @@ fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext)
             view.run_selection_action("rotate", cx);
             let center = view
                 .pointer
-                .rotate_session
+                .transform_session
                 .as_ref()
                 .expect("session started")
                 .center;
@@ -160,7 +160,7 @@ fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext)
             };
             // The pointer starts east of the centre ...
             view.pointer.last_mouse_pos = Some(at(100.0, 0.0));
-            view.pointer.rotate_session.as_mut().unwrap().start_angle = Some(
+            view.pointer.transform_session.as_mut().unwrap().start_angle = Some(
                 osm_gpui::rotate::pointer_angle((cx_px, cy_px), (cx_px + 100.0, cy_px)),
             );
             // ... and circles a quarter turn clockwise (to the south).
@@ -170,8 +170,8 @@ fn rotate_follows_the_pointer_and_commits_one_undo_step(cx: &mut TestAppContext)
             assert_ne!(during, original);
             // Nothing is on the undo stack until it is applied.
             assert_eq!(view.undo_stack.actions.len(), 0);
-            view.finish_rotate();
-            assert!(view.pointer.rotate_session.is_none());
+            view.finish_transform();
+            assert!(view.pointer.transform_session.is_none());
             assert_eq!(view.undo_stack.actions.len(), 1);
             let done: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_eq!(done, during);
@@ -196,9 +196,9 @@ fn rotate_snaps_with_shift_and_cancel_restores_everything(cx: &mut TestAppContex
             let original: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             select(view, Node, &ids);
             view.run_selection_action("rotate", cx);
-            let center = view.pointer.rotate_session.as_ref().unwrap().center;
+            let center = view.pointer.transform_session.as_ref().unwrap().center;
             let (cx_px, cy_px) = view.rotate_center_px(center);
-            view.pointer.rotate_session.as_mut().unwrap().start_angle = Some(
+            view.pointer.transform_session.as_mut().unwrap().start_angle = Some(
                 osm_gpui::rotate::pointer_angle((cx_px, cy_px), (cx_px + 100.0, cy_px)),
             );
             // About 20 degrees clockwise snaps to 15.
@@ -212,8 +212,8 @@ fn rotate_snaps_with_shift_and_cancel_restores_everything(cx: &mut TestAppContex
             view.update_rotate(pointer, false);
             assert!((view.rotate_degrees().unwrap() - 20.0).abs() < 1e-2);
 
-            assert!(view.cancel_rotate());
-            assert!(view.pointer.rotate_session.is_none());
+            assert!(view.cancel_transform());
+            assert!(view.pointer.transform_session.is_none());
             let now: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
             assert_eq!(now, original);
             assert_eq!(view.undo_stack.actions.len(), 0);
@@ -229,7 +229,7 @@ fn rotate_is_refused_for_a_single_node(cx: &mut TestAppContext) {
         .update(cx, |view, _window, cx| {
             select(view, Node, &[1]);
             view.run_selection_action("rotate", cx);
-            assert!(view.pointer.rotate_session.is_none());
+            assert!(view.pointer.transform_session.is_none());
         })
         .unwrap();
 }
@@ -630,6 +630,75 @@ fn separate_is_one_undo_step_and_redoable(cx: &mut TestAppContext) {
             assert_eq!(pending(view), (1, 1, 0));
             undo_step(view);
             assert_eq!(pending(view), (0, 0, 0));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn scale_follows_the_pointer_distance_and_commits_one_undo_step(cx: &mut TestAppContext) {
+    use osm_gpui::selection::FeatureKind::Way;
+    let window = setup_network(cx);
+    window
+        .update(cx, |view, _window, cx| {
+            let ids = [1, 2, 3];
+            let original: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
+            select(view, Way, &[100]);
+            view.run_selection_action("scale", cx);
+            let center = view.pointer.transform_session.as_ref().unwrap().center;
+            let (cx_px, cy_px) = view.rotate_center_px(center);
+            let at = |dx: f64, dy: f64| {
+                gpui::point(gpui::px((cx_px + dx) as f32), gpui::px((cy_px + dy) as f32))
+            };
+            view.pointer
+                .transform_session
+                .as_mut()
+                .unwrap()
+                .start_distance = Some(100.0);
+            // Twice as far from the centre doubles the selection.
+            view.update_transform(at(200.0, 0.0), false);
+            let status = view.transform_status().unwrap();
+            assert!(status.contains("200%"), "{status}");
+            let during: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
+            assert_ne!(during, original);
+            assert_eq!(view.undo_stack.actions.len(), 0);
+            view.finish_transform();
+            assert_eq!(view.undo_stack.actions.len(), 1);
+            undo_step(view);
+            let now: Vec<LatLon> = ids.iter().map(|&id| node_position(view, id)).collect();
+            assert_eq!(now, original);
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn a_held_shortcut_key_applies_the_transform_on_release_and_a_tap_keeps_it(
+    cx: &mut TestAppContext,
+) {
+    use osm_gpui::selection::FeatureKind::Way;
+    let window = setup_network(cx);
+    window
+        .update(cx, |view, _window, cx| {
+            select(view, Way, &[100]);
+            view.run_selection_action("rotate", cx);
+            let session = view.pointer.transform_session.as_mut().unwrap();
+            // A quick tap hands over to click / Enter / Escape.
+            session.hold = Some(("w".into(), std::time::Instant::now()));
+            assert!(view.transform_key_released("w"));
+            assert!(view.pointer.transform_session.is_some());
+            // Another key's release is not ours.
+            let session = view.pointer.transform_session.as_mut().unwrap();
+            session.hold = Some(("w".into(), std::time::Instant::now()));
+            assert!(!view.transform_key_released("k"));
+            // A long hold applies on release.
+            let session = view.pointer.transform_session.as_mut().unwrap();
+            session.hold = Some((
+                "w".into(),
+                std::time::Instant::now() - std::time::Duration::from_millis(500),
+            ));
+            session.angle = 0.5;
+            assert!(view.transform_key_released("w"));
+            assert!(view.pointer.transform_session.is_none());
+            assert_eq!(view.undo_stack.actions.len(), 1);
         })
         .unwrap();
 }

@@ -69,7 +69,7 @@ impl MapViewer {
     ) {
         let owner = press_owner(
             self.pointer.menu_swallow_press,
-            self.pointer.rotate_session.is_some(),
+            self.pointer.transform_session.is_some(),
             self.pointer.space_held,
         );
         if owner == PressOwner::Swallowed {
