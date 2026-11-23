@@ -284,8 +284,11 @@ pub(crate) enum Dialog {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Interactive {
     /// The selection turns with the pointer until clicked or Enter; see
-    /// `MapViewer::start_rotate`.
+    /// `MapViewer::start_transform`.
     Rotate,
+    /// The selection grows or shrinks with the pointer's distance from its
+    /// centre until clicked or Enter; see `MapViewer::start_transform`.
+    Scale,
 }
 
 /// What is wrong with the selection for an action, if anything.
@@ -554,6 +557,26 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
             osm_gpui::rotate::can_rotate(&points)
         },
         run: Run::Interactive(Interactive::Rotate),
+    },
+    SelectionAction {
+        id: "scale",
+        shortcut_id: Some("action_scale"),
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            let points: Vec<LatLon> = rotatable_nodes(editable, layer_id, env.selection)
+                .into_iter()
+                .map(|(_, p)| p)
+                .collect();
+            osm_gpui::rotate::can_rotate(&points)
+        },
+        run: Run::Interactive(Interactive::Scale),
     },
     SelectionAction {
         id: "join_node_way",
@@ -3441,7 +3464,7 @@ fn apply_purge(
     })
 }
 
-/// The distinct nodes of the active layer that Rotate turns: the selected
+/// The distinct nodes of the active layer that Rotate and Scale move: the selected
 /// nodes plus every node of the selected ways, with their positions, in first
 /// seen order.
 pub(crate) fn rotatable_nodes(
@@ -3840,6 +3863,7 @@ mod tests {
                 "copy_features",
                 "duplicate_features",
                 "rotate",
+                "scale",
                 "parallel",
                 "copy_tags",
                 "new_relation",
@@ -3858,6 +3882,7 @@ mod tests {
                 "copy_features",
                 "duplicate_features",
                 "rotate",
+                "scale",
                 "parallel",
                 "new_relation",
                 "purge",

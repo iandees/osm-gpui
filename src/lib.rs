@@ -63,6 +63,7 @@ pub mod relation_overlay;
 pub mod relation_sort;
 pub mod relations;
 pub mod rotate;
+pub mod scale;
 pub mod script;
 pub mod search;
 pub mod secrets;
