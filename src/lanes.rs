@@ -10,6 +10,9 @@
 use crate::tags::Tags;
 use std::collections::BTreeMap;
 
+/// Writes one direction's lanes out as a tag value.
+type LaneValueFn<'a> = Box<dyn Fn(&DirLanes) -> Option<String> + 'a>;
+
 /// One lane's `turn:lanes` arrows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Arrow {
@@ -825,7 +828,7 @@ impl LaneConfig {
                 put("lanes:both_ways".into(), (wc > 0).then(|| wc.to_string()));
                 // A plain `*:lanes` on a two-way road is replaced once any
                 // directional value is written.
-                let mut series: Vec<(&str, Box<dyn Fn(&DirLanes) -> Option<String> + '_>)> =
+                let mut series: Vec<(&str, LaneValueFn<'_>)> =
                     vec![("turn:lanes", Box::new(&arrows_value))];
                 for cat in Category::ALL {
                     series.push((cat.key(), Box::new(move |d| attr_value(d, cat))));
