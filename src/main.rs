@@ -2306,6 +2306,7 @@ impl MapViewer {
     }
 
     /// The Rotate in progress, in degrees clockwise as the user sees it.
+    #[cfg(test)]
     fn rotate_degrees(&self) -> Option<f64> {
         self.pointer
             .transform_session
