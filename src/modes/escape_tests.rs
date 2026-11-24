@@ -23,7 +23,10 @@ fn escape_drops_the_unfinished_gesture_and_stays_in_the_mode(cx: &mut TestAppCon
 
 #[gpui::test]
 fn escape_without_a_gesture_leaves_the_mode(cx: &mut TestAppContext) {
-    for mode in GESTURE_MODES.into_iter().chain([EditMode::Improve]) {
+    for mode in GESTURE_MODES
+        .into_iter()
+        .chain([EditMode::Improve, EditMode::Detect])
+    {
         with_osm(cx, empty_data(), mode, move |view, _w, cx, _layer| {
             assert!(!has_gesture(view));
             view.escape(cx);

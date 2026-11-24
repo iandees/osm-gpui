@@ -64,6 +64,7 @@ pub(crate) fn mode_hint(
         (EditMode::Arc, ModeProgress::EdgePlaced) => tr!("status.hint.arc_end_placed"),
         (EditMode::Improve, ModeProgress::Idle) => tr!("status.hint.improve_idle"),
         (EditMode::Improve, _) => tr!("status.hint.improve_way_chosen"),
+        (EditMode::Detect, _) => tr!("status.hint.detect"),
     }
 }
 
@@ -102,7 +103,7 @@ impl MapViewer {
                     ModeProgress::Idle
                 }
             }
-            EditMode::Select | EditMode::Extrude => ModeProgress::Idle,
+            EditMode::Select | EditMode::Extrude | EditMode::Detect => ModeProgress::Idle,
         }
     }
 

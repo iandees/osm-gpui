@@ -49,7 +49,7 @@ pub(crate) fn start_gesture(view: &mut MapViewer, layer: LayerId) {
             style: ExtrudeStyle::Reshape,
             down: point(px(0.0), px(0.0)),
         })),
-        EditMode::Select | EditMode::Improve => {}
+        EditMode::Select | EditMode::Improve | EditMode::Detect => {}
     }
 }
 

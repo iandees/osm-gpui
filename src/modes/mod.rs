@@ -16,6 +16,7 @@
 pub(crate) mod add;
 pub(crate) mod arc;
 pub(crate) mod building;
+pub(crate) mod detect;
 #[cfg(test)]
 mod escape_tests;
 pub(crate) mod extrude;
@@ -36,6 +37,7 @@ pub(crate) use add::{AddProgress, AddState};
 pub(crate) use arc::ArcPoint;
 pub(crate) use arc::{ArcProgress, ArcState};
 pub(crate) use building::{BuildingPress, BuildingProgress, BuildingReference, BuildingState};
+pub(crate) use detect::DetectState;
 #[cfg(test)]
 pub(crate) use extrude::ExtrudeStyle;
 pub(crate) use extrude::{ExtrudeDrag, ExtrudeState};
@@ -54,6 +56,7 @@ pub(crate) enum ModeState {
     Extrude(ExtrudeState),
     Arc(ArcState),
     Improve(ImproveState),
+    Detect(DetectState),
 }
 
 impl ModeState {
@@ -66,6 +69,7 @@ impl ModeState {
             EditMode::Extrude => ModeState::Extrude(ExtrudeState::default()),
             EditMode::Arc => ModeState::Arc(ArcState::default()),
             EditMode::Improve => ModeState::Improve(ImproveState),
+            EditMode::Detect => ModeState::Detect(DetectState::default()),
         }
     }
 
@@ -77,6 +81,7 @@ impl ModeState {
             ModeState::Extrude(_) => EditMode::Extrude,
             ModeState::Arc(_) => EditMode::Arc,
             ModeState::Improve(_) => EditMode::Improve,
+            ModeState::Detect(_) => EditMode::Detect,
         }
     }
 
@@ -84,7 +89,7 @@ impl ModeState {
     /// session keeps its reference way.
     pub(crate) fn reset_progress(&mut self) {
         match self {
-            ModeState::Select(_) | ModeState::Improve(_) => {}
+            ModeState::Select(_) | ModeState::Improve(_) | ModeState::Detect(_) => {}
             ModeState::Add(s) => *s = AddState::default(),
             ModeState::Building(s) => s.reset_progress(),
             ModeState::Extrude(s) => *s = ExtrudeState::default(),
@@ -97,7 +102,10 @@ impl ModeState {
     /// cannot arrive during it.
     pub(crate) fn is_drawing(&self) -> bool {
         match self {
-            ModeState::Select(_) | ModeState::Improve(_) | ModeState::Extrude(_) => false,
+            ModeState::Select(_)
+            | ModeState::Improve(_)
+            | ModeState::Detect(_)
+            | ModeState::Extrude(_) => false,
             ModeState::Add(s) => s.is_drawing(),
             ModeState::Building(s) => s.is_drawing(),
             ModeState::Arc(s) => s.is_drawing(),
@@ -133,28 +141,36 @@ state_accessors!(
     AddState,
     add,
     add_mut,
-    [Select, Building, Extrude, Arc, Improve]
+    [Select, Building, Extrude, Arc, Improve, Detect]
 );
 state_accessors!(
     Building,
     BuildingState,
     building,
     building_mut,
-    [Select, Add, Extrude, Arc, Improve]
+    [Select, Add, Extrude, Arc, Improve, Detect]
 );
 state_accessors!(
     Arc,
     ArcState,
     arc,
     arc_mut,
-    [Select, Add, Building, Extrude, Improve]
+    [Select, Add, Building, Extrude, Improve, Detect]
 );
+impl ModeState {
+    fn detect(&self) -> Option<&DetectState> {
+        match self {
+            ModeState::Detect(s) => Some(s),
+            _ => None,
+        }
+    }
+}
 state_accessors!(
     Extrude,
     ExtrudeState,
     extrude,
     extrude_mut,
-    [Select, Add, Building, Arc, Improve]
+    [Select, Add, Building, Arc, Improve, Detect]
 );
 
 /// Accessors for one mode's slot on `MapViewer`: `get` reads it, `take`
@@ -213,6 +229,7 @@ pub(crate) fn cursor(mode: EditMode, hovering: bool) -> CursorStyle {
         EditMode::Extrude => extrude::cursor(),
         EditMode::Arc => arc::cursor(),
         EditMode::Improve => improve::cursor(),
+        EditMode::Detect => detect::cursor(),
     }
 }
 
@@ -240,7 +257,8 @@ impl crate::MapViewer {
             ModeState::Select(_)
             | ModeState::Add(_)
             | ModeState::Arc(_)
-            | ModeState::Improve(_) => false,
+            | ModeState::Improve(_)
+            | ModeState::Detect(_) => false,
         };
         if !took_press {
             let grab_vertices = matches!(self.mode_state, ModeState::Select(_));
@@ -257,7 +275,8 @@ impl crate::MapViewer {
             ModeState::Select(_)
             | ModeState::Add(_)
             | ModeState::Arc(_)
-            | ModeState::Improve(_) => false,
+            | ModeState::Improve(_)
+            | ModeState::Detect(_) => false,
         }
     }
 
@@ -269,7 +288,8 @@ impl crate::MapViewer {
             | ModeState::Building(_)
             | ModeState::Extrude(_)
             | ModeState::Arc(_)
-            | ModeState::Improve(_) => false,
+            | ModeState::Improve(_)
+            | ModeState::Detect(_) => false,
         }
     }
 
@@ -283,6 +303,10 @@ impl crate::MapViewer {
             | EditMode::Extrude
             | EditMode::Arc
             | EditMode::Improve => self.enter_mode(mode),
+            EditMode::Detect => {
+                self.detect_ai.retry();
+                self.enter_mode(mode);
+            }
         }
     }
 
@@ -296,7 +320,8 @@ impl crate::MapViewer {
             | ModeState::Building(_)
             | ModeState::Extrude(_)
             | ModeState::Arc(_)
-            | ModeState::Improve(_) => false,
+            | ModeState::Improve(_)
+            | ModeState::Detect(_) => false,
         }
     }
 
@@ -308,7 +333,8 @@ impl crate::MapViewer {
             | ModeState::Building(_)
             | ModeState::Extrude(_)
             | ModeState::Arc(_)
-            | ModeState::Improve(_) => false,
+            | ModeState::Improve(_)
+            | ModeState::Detect(_) => false,
         }
     }
 
@@ -324,14 +350,15 @@ impl crate::MapViewer {
             | ModeState::Building(_)
             | ModeState::Extrude(_)
             | ModeState::Arc(_)
-            | ModeState::Improve(_) => None,
+            | ModeState::Improve(_)
+            | ModeState::Detect(_) => None,
         }
     }
 
     /// Whether the mode's preview changes with the held modifier keys.
     pub(crate) fn preview_depends_on_modifiers(&self) -> bool {
         match self.mode_state {
-            ModeState::Improve(_) => true,
+            ModeState::Improve(_) | ModeState::Detect(_) => true,
             ModeState::Select(_)
             | ModeState::Add(_)
             | ModeState::Building(_)
@@ -356,6 +383,7 @@ impl crate::MapViewer {
             ModeState::Building(_) => building::click(self, at),
             ModeState::Arc(_) => arc::click(self, at, snapping_off),
             ModeState::Improve(_) => improve::click(self, at, cx),
+            ModeState::Detect(_) => detect::click(self, at, cx),
             ModeState::Extrude(_) => extrude::click(),
         }
     }
@@ -371,6 +399,7 @@ impl crate::MapViewer {
             ModeState::Extrude(_) => extrude::escape(self),
             ModeState::Arc(_) => arc::escape(self),
             ModeState::Improve(_) => improve::escape(self),
+            ModeState::Detect(_) => detect::escape(self),
         }
     }
 
@@ -406,6 +435,10 @@ impl crate::MapViewer {
             }
             ModeState::Improve(_) => {
                 improve::paint_preview(self, frame, window);
+                paint_snap(window);
+            }
+            ModeState::Detect(_) => {
+                detect::paint_preview(self, frame, window);
                 paint_snap(window);
             }
         }

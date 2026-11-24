@@ -112,6 +112,15 @@ mode:
     name: "Weg verbessern"
     label: "Verb"
     tooltip: "Form des ausgewählten Wegs verbessern"
+  detect:
+    name: "Aus Luftbild erkennen"
+    label: "Erk"
+    tooltip: "Das Gebäude oder die Baumfläche unter dem Klick im Luftbild umranden"
+    created_area: "Fläche aus Luftbild erstellt"
+    downloading: "Erkennungsmodell wird heruntergeladen … %{percent} %"
+    download_failed: "Das Erkennungsmodell konnte nicht heruntergeladen werden: %{error}"
+    load_failed: "Das Erkennungsmodell konnte nicht geladen werden: %{error}"
+    nothing_found: "Dort wurde nichts umrandet: Das Luftbild ist nicht geladen, oder das Objekt ist zu groß, zu klein oder zu uneinheitlich in der Farbe"
   # `%{shortcut}` ist die Taste, die den Modus aktiviert, z. B. „A“.
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — zuerst OSM-Daten öffnen oder herunterladen"
@@ -188,6 +197,7 @@ status:
     arc_end_placed: "Bogen durch Bewegen formen, dann klicken zum Abschließen · Esc zum Abbrechen"
     improve_idle: "Weg zum Verbessern anklicken · Esc zum Beenden"
     improve_way_chosen: "Klicken, um den nächsten Knoten zu verschieben · Cmd/Strg/Alt-Klick fügt einen Knoten hinzu · Umschalt-Klick löscht den nächsten Knoten · Esc, um einen anderen Weg zu wählen"
+    detect: "Klick in ein Gebäude umrandet es · Umschalt-Klick fügt einen vergessenen Teil hinzu · Cmd/Strg-Klick markiert etwas außerhalb · Alt-Klick umrandet eine ganze Fläche wie Bäume · Esc löscht Punkte, dann beendet es den Modus"
     adjust_offset: "Ziehen verschiebt das Luftbild · Pfeiltasten schieben (Umschalt: 10 px) · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
@@ -651,6 +661,7 @@ shortcut:
   mode_extrude: "Zum Modus „Ausziehen“ wechseln"
   mode_arc: "Zum Modus „Bogen“ wechseln"
   mode_improve: "Zum Modus „Weg verbessern“ wechseln"
+  mode_detect: "Zum Modus „Aus Luftbild erkennen“ wechseln"
   action_square: "Rechtwinklig machen"
   action_circularize: "Kreisförmig anordnen"
   action_reverse: "Weg umkehren"

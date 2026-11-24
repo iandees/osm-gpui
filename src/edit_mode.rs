@@ -20,17 +20,19 @@ pub enum EditMode {
     Extrude,
     Arc,
     Improve,
+    Detect,
 }
 
 impl EditMode {
     /// Every mode in toolbar and menu order.
-    pub const ALL: [EditMode; 6] = [
+    pub const ALL: [EditMode; 7] = [
         EditMode::Select,
         EditMode::Add,
         EditMode::Building,
         EditMode::Extrude,
         EditMode::Arc,
         EditMode::Improve,
+        EditMode::Detect,
     ];
 
     /// Stable lowercase name: the script keyword, and the infix of the
@@ -44,6 +46,7 @@ impl EditMode {
             EditMode::Extrude => "extrude",
             EditMode::Arc => "arc",
             EditMode::Improve => "improve",
+            EditMode::Detect => "detect",
         }
     }
 
@@ -60,6 +63,7 @@ impl EditMode {
             EditMode::Extrude => "mode_extrude",
             EditMode::Arc => "mode_arc",
             EditMode::Improve => "mode_improve",
+            EditMode::Detect => "mode_detect",
         }
     }
 
@@ -71,6 +75,7 @@ impl EditMode {
             EditMode::Extrude => IconName::LayoutDashboard,
             EditMode::Arc => IconName::Redo2,
             EditMode::Improve => IconName::Replace,
+            EditMode::Detect => IconName::Search,
         }
     }
 
@@ -83,7 +88,8 @@ impl EditMode {
             | EditMode::Building
             | EditMode::Extrude
             | EditMode::Arc
-            | EditMode::Improve => true,
+            | EditMode::Improve
+            | EditMode::Detect => true,
         }
     }
 

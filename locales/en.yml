@@ -114,6 +114,15 @@ mode:
     name: "Improve Way"
     label: "Impr"
     tooltip: "Improve the shape of the selected way"
+  detect:
+    name: "Detect from Imagery"
+    label: "Det"
+    tooltip: "Outline the building or tree area under a click in the imagery"
+    created_area: "Created an area from imagery"
+    downloading: "Downloading the detection model… %{percent}%"
+    download_failed: "Could not download the detection model: %{error}"
+    load_failed: "Could not load the detection model: %{error}"
+    nothing_found: "Nothing outlined there: the imagery is not loaded, or the thing is too big, too small or too varied in colour"
   # `%{shortcut}` is the key that activates the mode, e.g. "A".
   tooltip: "%{name} (%{shortcut})"
   tooltip_disabled: "%{name} (%{shortcut}) — open or download OSM data first"
@@ -193,6 +202,7 @@ status:
     arc_end_placed: "Move to bend the arc, then click to finish · Esc to cancel"
     improve_idle: "Click a way to improve · Esc to exit"
     improve_way_chosen: "Click to move the nearest node · Cmd/Ctrl/Alt-click to add a node · Shift-click to delete the nearest node · Esc to pick another way"
+    detect: "Click inside a building to outline it · Shift-click adds a part the outline missed · Cmd/Ctrl-click marks something outside it · Alt-click outlines a whole area such as trees · Esc clears points, then exits"
     adjust_offset: "Drag to move the imagery · arrow keys nudge (Shift for 10 px) · Space-drag to pan · Enter to keep · Esc to cancel"
   pending_edits:
     one: "%{count} unsaved edit"
@@ -671,6 +681,7 @@ shortcut:
   mode_extrude: "Switch to Extrude mode"
   mode_arc: "Switch to Arc mode"
   mode_improve: "Switch to Improve Way mode"
+  mode_detect: "Switch to Detect from Imagery mode"
   action_square: "Square"
   action_circularize: "Circularize"
   action_reverse: "Reverse Way"

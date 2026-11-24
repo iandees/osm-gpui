@@ -28,7 +28,7 @@ open = "5"
 quick-xml = "0.37"
 rand = "0.8"
 rfd = "0.15"
-rstar = "0.13"
+rstar = "0.13.1"
 rustybuzz = "0.20"
 schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -45,6 +45,7 @@ sys-locale = "0.3.2"
 mvt-reader = "2.5.0"
 geo-types = "0.7"
 flate2 = "1"
+ort = "2.0.0-rc.15"
 
 # gpui_linux is pulled in with default-features = false, so without these two
 # features no windowing backend is compiled in and gpui panics at startup

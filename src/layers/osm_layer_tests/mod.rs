@@ -114,3 +114,71 @@ fn node_point(layer: &OsmLayer, vp: &Viewport, id: i64) -> gpui::Point<gpui::Pix
     let (_, mx, my) = layer.derived.node_cache.flat[idx];
     vp.mercator_to_screen(Mercator::new(mx, my))
 }
+
+/// rstar 0.13.0 panicked ("This is a bug in rstar") when entries were
+/// removed from a bulk-loaded tree and others inserted, which is what moving
+/// and deleting ways does to the way index: it crashed the whole app. 0.13.1
+/// fixes it; this reproduces the churn so a downgrade is caught.
+#[test]
+fn the_way_index_survives_inserts_and_removals() {
+    use rstar::primitives::{GeomWithData, Rectangle};
+    use rstar::RTree;
+
+    let mut state: u64 = 99;
+    let mut next = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 33) as f64) / (1u64 << 31) as f64
+    };
+    let rect = |x: f64, y: f64, w: f64, h: f64| Rectangle::from_corners([x, y], [x + w, y + h]);
+    for _ in 0..3000 {
+        let n = (next() * 400.0) as usize + 2;
+        let mut rects: Vec<Rectangle<[f64; 2]>> = (0..n)
+            .map(|_| {
+                let c = (next() * 5.0).floor() * 0.3;
+                rect(
+                    c + next() * 0.01,
+                    c + next() * 0.01,
+                    next() * 0.02,
+                    next() * 0.02,
+                )
+            })
+            .collect();
+        let mut tree = RTree::bulk_load(
+            rects
+                .iter()
+                .enumerate()
+                .map(|(i, r)| GeomWithData::new(*r, i))
+                .collect(),
+        );
+        let mut live = vec![true; n];
+        for _ in 0..n * 4 {
+            let i = (next() * n as f64) as usize % n;
+            let op = next();
+            if op < 0.4 {
+                if live[i] {
+                    tree.remove(&GeomWithData::new(rects[i], i));
+                }
+                let c = (next() * 5.0).floor() * 0.3;
+                rects[i] = rect(
+                    c + next() * 0.01,
+                    c + next() * 0.01,
+                    next() * 0.02,
+                    next() * 0.02,
+                );
+                tree.insert(GeomWithData::new(rects[i], i));
+                live[i] = true;
+            } else if op < 0.7 {
+                if live[i] {
+                    tree.remove(&GeomWithData::new(rects[i], i));
+                    live[i] = false;
+                }
+            } else if !live[i] {
+                rects[i] = rect(next() * 1.5, next() * 1.5, next() * 0.02, next() * 0.02);
+                tree.insert(GeomWithData::new(rects[i], i));
+                live[i] = true;
+            }
+        }
+    }
+}

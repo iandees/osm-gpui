@@ -326,6 +326,12 @@ fn cache_dir() -> PathBuf {
         .join("tiles")
 }
 
+/// Where the cached copy of the tile at `url` of the imagery source
+/// `source_key` is on disk (the file may not exist).
+pub fn cached_tile_path(source_key: &str, url: &str) -> PathBuf {
+    tile_file_path(&cache_dir(), source_key, url)
+}
+
 /// Cache filename for `url`: a SHA-256 of the full URL. A collision-resistant
 /// hash (unlike `DefaultHasher`) keeps two tile servers or templates from ever
 /// sharing a cache file.

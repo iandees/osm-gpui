@@ -385,6 +385,61 @@ impl ImageryLayer for TileLayer {
         &self.imagery_id
     }
 
+    fn raster_job(
+        &self,
+        viewport: &Viewport,
+        scale_factor: f32,
+        center: Point<Pixels>,
+        half: usize,
+    ) -> Option<crate::layers::RasterJob> {
+        let tile_zoom = self.render_tile_zoom(viewport.zoom_level(), scale_factor)?;
+        let offset = self.mercator_offset(viewport);
+        let viewport = viewport.clone();
+        let url_template = self.url_template.clone();
+        let source_key = self.source_key.clone();
+        Some(Box::new(move || {
+            let n = 2.0_f64.powi(tile_zoom as i32);
+            let tile_m = crate::coordinates::MERCATOR_HALF_WORLD_M * 2.0 / n;
+            let size = half * 2;
+            let mut raster = crate::detect::Raster::new(size, size);
+            let mut tiles: HashMap<TileCoord, Option<image::RgbImage>> = HashMap::new();
+            for j in 0..size {
+                for i in 0..size {
+                    let at = gpui::point(
+                        center.x + px(i as f32 + 0.5 - half as f32),
+                        center.y + px(j as f32 + 0.5 - half as f32),
+                    );
+                    let m = viewport.screen_to_mercator(at);
+                    let col = (m.x - offset.x + crate::coordinates::MERCATOR_HALF_WORLD_M) / tile_m;
+                    let row =
+                        (crate::coordinates::MERCATOR_HALF_WORLD_M - (m.y - offset.y)) / tile_m;
+                    if col < 0.0 || row < 0.0 || col >= n || row >= n {
+                        continue;
+                    }
+                    let coord = TileCoord::new(col.floor() as u32, row.floor() as u32, tile_zoom);
+                    let tile = tiles.entry(coord).or_insert_with(|| {
+                        let url = url_from_template(&url_template, &coord);
+                        let path = crate::tile_cache::cached_tile_path(&source_key, &url);
+                        // The file's name says PNG whatever the server sent
+                        // (Esri sends JPEG), so the format is read from its
+                        // contents.
+                        std::fs::read(path)
+                            .ok()
+                            .and_then(|bytes| image::load_from_memory(&bytes).ok())
+                            .map(|img| img.to_rgb8())
+                    });
+                    let Some(tile) = tile else { continue };
+                    let x = (((col - col.floor()) * f64::from(tile.width())) as u32)
+                        .min(tile.width() - 1);
+                    let y = (((row - row.floor()) * f64::from(tile.height())) as u32)
+                        .min(tile.height() - 1);
+                    raster.set(i, j, tile.get_pixel(x, y).0);
+                }
+            }
+            raster
+        }))
+    }
+
     fn cached_file_count(&self) -> usize {
         self.tile_cache
             .try_lock()
