@@ -728,6 +728,10 @@ action:
     done:
       one: "%{count} Punkt aus einem Weg herausgelöst"
       other: "%{count} Punkte aus Wegen herausgelöst"
+  replace_geometry:
+    label: "Geometrie ersetzen"
+    hint: "Zwei offene oder zwei geschlossene Wege wählen, um einem die Form des anderen zu geben"
+    done: "Geometrie eines Weges ersetzt"
   delete_segment:
     label: "Wegsegment löschen"
     hint: "Zwei benachbarte Knoten eines Weges wählen, um das Segment dazwischen zu löschen"
