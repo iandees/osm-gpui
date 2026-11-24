@@ -714,7 +714,7 @@ action:
       tag_too_long: "Can't reverse: flipping the tags of way %{way} would make a key or value longer than 255 characters"
   join:
     label: "Join Ways"
-    hint: "Select two or more ways that connect end to end to join them"
+    hint: "Select two or more ways that connect end to end, or two overlapping closed ways, to join them"
     done:
       one: "Joined %{count} way"
       other: "Joined %{count} ways"

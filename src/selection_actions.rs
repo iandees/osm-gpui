@@ -60,6 +60,15 @@ impl<'a> ActionEnv<'a> {
         join_ways_in(editable, layer_id, self.selection)
     }
 
+    /// Whether the selection is two closed ways whose areas overlap, which
+    /// Join unites into one.
+    fn selected_overlap_union(&self) -> bool {
+        let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
+            return false;
+        };
+        overlap_union(editable, layer_id, self.selection).is_some()
+    }
+
     /// Where Extend Way would continue from, for the selection: a single
     /// open way, or a single node that ends exactly one open way.
     fn extend_target(&self) -> Option<topology::Continuation> {
@@ -357,7 +366,9 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         menu: MenuSlot::Tools,
         destructive: false,
         problem: None,
-        is_applicable: |env| topology::can_chain(&env.selected_join_ways()),
+        is_applicable: |env| {
+            topology::can_chain(&env.selected_join_ways()) || env.selected_overlap_union()
+        },
         run: Run::Apply(apply_join),
     },
     SelectionAction {
@@ -1363,12 +1374,177 @@ fn apply_reverse(
     })
 }
 
-/// Join the selected ways into one (JOSM "Combine Way"). See
-/// `topology::plan_join` for the chaining, survivor and tag rules. A removed
-/// way that is a relation member is folded into the survivor's membership (see
-/// `relations::join_members`; roles that differ, and turn restrictions, refuse
-/// the join). One undo step: the survivor's new nodes and tags, the relations'
-/// new member lists, then the deletion of the rest.
+/// Two closed ways, the outline positions of each (the closing node not
+/// repeated) and their union, when the selection is exactly two closed ways
+/// whose areas overlap in a single outline.
+struct OverlapUnion {
+    ways: Vec<JoinWay>,
+    union: osm_gpui::polygon_union::Union,
+    /// Longitude scale that makes the plane the union was built in roughly
+    /// metric.
+    lon_scale: f64,
+}
+
+fn overlap_union(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Option<OverlapUnion> {
+    let ways = join_ways_in(editable, layer_id, selection);
+    if ways.len() != 2
+        || ways
+            .iter()
+            .any(|w| w.nodes.len() < 4 || w.nodes.first() != w.nodes.last())
+    {
+        return None;
+    }
+    let positions = |which: usize| -> Option<Vec<LatLon>> {
+        ids_of_ring(&ways, which)
+            .iter()
+            .map(|&id| editable.node_lat_lon(NodeId(id)))
+            .collect()
+    };
+    let points = [positions(0)?, positions(1)?];
+    let mean_lat = points[0].iter().map(|p| p.lat).sum::<f64>() / points[0].len() as f64;
+    let lon_scale = mean_lat.to_radians().cos();
+    let plane = |ring: &[LatLon]| -> Vec<osm_gpui::polygon_union::Pt> {
+        ring.iter().map(|p| (p.lon * lon_scale, p.lat)).collect()
+    };
+    let (ids_a, ids_b) = (ids_of_ring(&ways, 0), ids_of_ring(&ways, 1));
+    let union = osm_gpui::polygon_union::union(&plane(&points[0]), &plane(&points[1]), |i, j| {
+        ids_a[i] == ids_b[j]
+    })
+    .ok()?;
+    Some(OverlapUnion {
+        ways,
+        union,
+        lon_scale,
+    })
+}
+
+/// Join two overlapping closed ways into one: the first selected way takes
+/// the outline around both and the other is deleted.
+fn apply_overlap_union(
+    editable: &mut dyn EditableLayer,
+    layer_id: LayerId,
+    ov: OverlapUnion,
+) -> Result<ActionOutcome, String> {
+    use osm_gpui::polygon_union::Vertex;
+
+    let keep = ov.ways[0].id;
+    let drop = ov.ways[1].id;
+    let tags = topology::merge_way_tags(&ov.ways).map_err(|e| e.message())?;
+    let ids_of = |i: usize| ids_of_ring(&ov.ways, i);
+    let ring_len = ov.union.ring.len() + 1;
+    if let Some(m) = osm_gpui::limits::way_over_limit(ring_len, osm_gpui::limits::join_message) {
+        return Err(m);
+    }
+    // Relations the dropped way is in: its place goes to the kept way.
+    let (keep_way, drop_way) = (WayId(keep), WayId(drop));
+    let mut relation_ids = editable.relations_containing_way(drop_way);
+    relation_ids.sort_unstable();
+    relation_ids.dedup();
+    let mut relation_edits = Vec::new();
+    for relation_id in relation_ids {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        let after = osm_gpui::relations::join_members(&relation, keep_way, &[drop_way])
+            .map_err(|e| e.message())?;
+        if let Some(after) = after {
+            relation_edits.push((relation_id, after));
+        }
+    }
+    // Corners that end up inside the union, and so off the outline: they go
+    // too unless something else still uses them.
+    let on_outline: std::collections::HashSet<i64> = ov
+        .union
+        .ring
+        .iter()
+        .filter_map(|v| match *v {
+            Vertex::Original { which, index } => Some(ids_of(which)[index]),
+            Vertex::Crossing(_) => None,
+        })
+        .collect();
+    let mut dropped_nodes: Vec<i64> = Vec::new();
+    for which in 0..2 {
+        for &id in ids_of(which) {
+            let only_ours = editable
+                .ways_using_node(NodeId(id))
+                .iter()
+                .all(|w| w.get() == keep || w.get() == drop);
+            let plain = editable
+                .feature_tags(&FeatureRef {
+                    layer_id,
+                    kind: FeatureKind::Node,
+                    id,
+                })
+                .is_none_or(|t| t.is_empty())
+                && editable.relations_containing_node(NodeId(id)).is_empty();
+            if !on_outline.contains(&id) && only_ours && plain && !dropped_nodes.contains(&id) {
+                dropped_nodes.push(id);
+            }
+        }
+    }
+    let kept_tags = ov.ways[0].tags.clone();
+    let (lon_scale, union) = (ov.lon_scale, ov.union);
+
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        let mut crossing_ids = Vec::new();
+        for &(x, y) in &union.crossings {
+            crossing_ids.push(rec.add_node(LatLon::new(y, x / lon_scale)));
+        }
+        let mut nodes: Vec<NodeId> = union
+            .ring
+            .iter()
+            .map(|v| match *v {
+                Vertex::Original { which, index } => NodeId(ids_of_ring(&ov.ways, which)[index]),
+                Vertex::Crossing(k) => crossing_ids[k],
+            })
+            .collect();
+        nodes.push(nodes[0]);
+        rec.set_way_nodes(keep_way, nodes).map_err(refused)?;
+        for (key, value) in tags.sorted() {
+            if !kept_tags.contains_key(key) {
+                rec.set_tag(FeatureKind::Way, keep, key, value)
+                    .map_err(refused)?;
+            }
+        }
+        for (relation_id, after) in relation_edits {
+            rec.set_relation_members(relation_id, after)
+                .map_err(refused)?;
+        }
+        rec.delete_feature(FeatureKind::Way, drop)
+            .map_err(refused)?;
+        for id in &dropped_nodes {
+            rec.delete_feature(FeatureKind::Node, *id)
+                .map_err(refused)?;
+        }
+        Ok(())
+    })?;
+
+    let label = tr_count!("action.join.done", 2).to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
+        status: label,
+        clear_selection: false,
+        select: Some(vec![FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: keep,
+        }]),
+        continue_way: None,
+    })
+}
+
+fn ids_of_ring(ways: &[JoinWay], which: usize) -> &[i64] {
+    &ways[which].nodes[..ways[which].nodes.len() - 1]
+}
+
 /// The way that keeps its identity and the way whose shape it takes, when the
 /// selection is exactly two ways that are both open or both closed. The way
 /// from the server (positive id) is kept when only one is; otherwise the
@@ -1489,12 +1665,21 @@ fn apply_replace_geometry(
     })
 }
 
+/// Join the selected ways into one (JOSM "Combine Way"). See
+/// `topology::plan_join` for the chaining, survivor and tag rules. A removed
+/// way that is a relation member is folded into the survivor's membership (see
+/// `relations::join_members`; roles that differ, and turn restrictions, refuse
+/// the join). One undo step: the survivor's new nodes and tags, the relations'
+/// new member lists, then the deletion of the rest.
 fn apply_join(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
     active: Option<LayerId>,
 ) -> Result<ActionOutcome, String> {
     let (layer_id, editable) = active_editable_mut(layers, active)?;
+    if let Some(ov) = overlap_union(editable, layer_id, selection) {
+        return apply_overlap_union(editable, layer_id, ov);
+    }
     let ways = join_ways_in(editable, layer_id, selection);
     let plan = topology::plan_join(&ways).map_err(|e| e.message())?;
     if let Some(m) =
@@ -4536,7 +4721,7 @@ mod tests {
         assert!(!n.applicable(&[]).contains(&"separate"));
     }
 
-    /// Ways 200 and 201: two 0.002-degree squares that overlap, 201 shifted
+    /// Ways 200 and 201: two overlapping 0.002-degree squares, 201 shifted
     /// by 0.001 in both directions, so their outlines cross twice. 201 has an
     /// extra tag. Node 25 is a tagged corner of 200 inside 201.
     fn overlapping_squares() -> Net {
@@ -4607,6 +4792,45 @@ mod tests {
     }
 
     #[test]
+    fn join_unites_two_overlapping_closed_ways_into_the_first() {
+        let mut n = overlapping_squares();
+        let both = n.ways(&[200, 201]);
+        assert!(n.applicable(&both).contains(&"join"));
+        let out = n.run("join", &both).unwrap();
+        assert_eq!(out.select, Some(n.ways(&[200])));
+
+        let nodes = n.editable().way_node_ids(WayId(200)).unwrap();
+        // Six corners and two crossings, closed.
+        assert_eq!(nodes.len(), 9);
+        assert_eq!(nodes.first(), nodes.last());
+        assert!(n.editable().way_node_ids(WayId(201)).is_none());
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 200),
+            pairs(&[("building", "yes"), ("name", "Annex")])
+        );
+        // Each way's corner inside the other is off the outline (23, 31);
+        // the untagged one is deleted, the tagged one stays on the map.
+        for inside in [NodeId(23), NodeId(31)] {
+            assert!(!nodes.contains(&inside));
+        }
+        assert!(n.editable().node_lat_lon(NodeId(31)).is_none());
+        assert!(n.editable().node_lat_lon(NodeId(23)).is_some());
+        // The far corners stay.
+        for outside in [NodeId(21), NodeId(33)] {
+            assert!(nodes.contains(&outside));
+        }
+
+        let ops = edit_of(&out).1.to_vec();
+        let mut failures = Vec::new();
+        let layer_id = n.layer_id;
+        let layer = n.layers.find_layer_mut(layer_id).unwrap();
+        osm_gpui::edit_ops::replay(&ops, false, layer.as_editable_mut().unwrap(), &mut failures);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(n.editable().way_node_ids(WayId(200)).unwrap().len(), 5);
+        assert!(n.editable().way_node_ids(WayId(201)).is_some());
+    }
+
+    #[test]
     fn replace_geometry_gives_the_server_way_the_new_ways_shape() {
         let mut n = overlapping_squares();
         // Both are server ways, so the first selected keeps its identity.
@@ -4634,6 +4858,18 @@ mod tests {
         let layer = n.layers.find_layer_mut(layer_id).unwrap();
         osm_gpui::edit_ops::replay(&ops, false, layer.as_editable_mut().unwrap(), &mut failures);
         assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(n.editable().way_node_ids(WayId(200)).unwrap().len(), 5);
+        assert!(n.editable().way_node_ids(WayId(201)).is_some());
+    }
+
+    #[test]
+    fn join_of_overlapping_ways_with_conflicting_tags_changes_nothing() {
+        let mut n = overlapping_squares();
+        n.tag(FeatureKind::Way, 200, "name", "Main");
+        let Err(err) = n.run("join", &n.ways(&[200, 201])) else {
+            panic!("conflicting tags should refuse");
+        };
+        assert!(err.contains("name"), "{err}");
         assert_eq!(n.editable().way_node_ids(WayId(200)).unwrap().len(), 5);
         assert!(n.editable().way_node_ids(WayId(201)).is_some());
     }
@@ -5865,7 +6101,7 @@ mod tests {
         };
         assert_eq!(
             find("join").unwrap().why_not(&none),
-            "Select two or more ways that connect end to end to join them"
+            "Select two or more ways that connect end to end, or two overlapping closed ways, to join them"
         );
         assert_eq!(
             find("separate").unwrap().why_not(&none),

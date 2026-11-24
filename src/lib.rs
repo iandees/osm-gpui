@@ -54,6 +54,7 @@ pub mod osm_upload;
 pub mod parallel;
 pub mod persist;
 pub mod pmtiles;
+pub mod polygon_union;
 pub mod polylabel;
 pub mod preset_recents;
 pub mod preset_translations;
