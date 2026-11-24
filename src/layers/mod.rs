@@ -196,6 +196,9 @@ impl LayerHit {
 }
 
 /// What tile imagery has that other layers do not.
+/// Reads a picture of the imagery; see `ImageryLayer::raster_job`.
+pub type RasterJob = Box<dyn FnOnce() -> crate::detect::Raster + Send>;
+
 pub trait ImageryLayer {
     /// Required source-credit (text and optional link) for this layer's
     /// content, if any (e.g. "© OpenStreetMap contributors").
@@ -214,6 +217,19 @@ pub trait ImageryLayer {
 
     /// How many tile files the layer's cache holds (0 while the cache is busy).
     fn cached_file_count(&self) -> usize;
+
+    /// A job that reads the imagery as painted around `center` (a screen
+    /// position) into a square picture `2 * half` screen pixels wide, from the
+    /// tiles already in the disk cache; pixels whose tile is not cached are
+    /// unknown. The job owns what it needs, so it can run on another thread.
+    /// `None` if the layer shows nothing at this zoom.
+    fn raster_job(
+        &self,
+        viewport: &crate::viewport::Viewport,
+        scale_factor: f32,
+        center: gpui::Point<gpui::Pixels>,
+        half: usize,
+    ) -> Option<RasterJob>;
 }
 
 /// The numbers the status line shows, read from the layers' typed accessors.

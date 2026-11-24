@@ -790,6 +790,9 @@ struct MapViewer {
     /// a poll task re-renders. Unlike `status_message` it never expires on
     /// its own, and at most one transfer runs at a time.
     transfer: Option<TransferHandle>,
+    /// Detect mode's segmentation model: downloaded, loaded and run on worker
+    /// threads, kept across mode switches.
+    detect_ai: modes::detect::DetectAi,
     /// Bumped whenever layer data changes outside the undo stack (upload
     /// reconciliation, layer add/delete); part of `pending_edits`' cache key.
     data_generation: u64,
@@ -1038,6 +1041,7 @@ impl MapViewer {
             window_bounds: None,
             status_message: None,
             transfer: None,
+            detect_ai: Default::default(),
             data_generation: 0,
             pending_edits: None,
             selected: Vec::new(),
@@ -3505,6 +3509,9 @@ impl MapViewer {
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.pointer.last_mouse_pos = Some(adjusted_position);
         self.pointer.last_modifiers = event.modifiers;
+        if self.mode() == osm_gpui::edit_mode::EditMode::Detect {
+            self.detect_prepare(cx);
+        }
         // Rotating: the selection follows the pointer around its centre.
         if self.pointer.transform_session.is_some() {
             self.update_transform(adjusted_position, event.modifiers.shift);
