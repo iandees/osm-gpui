@@ -14,6 +14,7 @@ use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
+use super::locales::Locales;
 use super::manifest::Manifest;
 use crate::http::{Body, HttpClient, HttpRequest, Method};
 
@@ -44,6 +45,8 @@ pub struct CallContext {
     pub viewport: Bounds,
     pub zoom: f64,
     pub selection: Vec<FeatureRef>,
+    /// The app's UI language.
+    pub locale: String,
 }
 
 impl Default for CallContext {
@@ -57,6 +60,7 @@ impl Default for CallContext {
             },
             zoom: 0.0,
             selection: Vec::new(),
+            locale: "en".into(),
         }
     }
 }
@@ -64,13 +68,75 @@ impl Default for CallContext {
 /// Something an extension asked the app to do, in the order it asked.
 #[derive(Debug, Clone)]
 pub enum Effect {
-    FlyTo { at: LatLon, zoom: f64 },
+    FlyTo {
+        at: LatLon,
+        zoom: f64,
+    },
     DownloadArea(Bounds),
     Status(String),
     OpenUrl(String),
     SetMarkers(Vec<Marker>),
-    ShowPanel(Option<Panel>),
+    /// Show (`Some`) or close (`None`) the extension's panel `id`.
+    ShowPanel {
+        id: String,
+        panel: Option<Panel>,
+    },
 }
+
+/// Where extensions keep secrets. Names are already namespaced per
+/// extension by the caller.
+pub trait SecretStore: Send + Sync {
+    fn get(&self, name: &str) -> Option<String>;
+    /// `None` deletes.
+    fn set(&self, name: &str, value: Option<&str>);
+}
+
+/// The app's secret storage (`crate::secrets`): the system keychain, or an
+/// owner-only file where there is none; cached for the session.
+pub struct KeychainSecrets;
+
+impl SecretStore for KeychainSecrets {
+    fn get(&self, name: &str) -> Option<String> {
+        crate::secrets::get(name)
+    }
+
+    fn set(&self, name: &str, value: Option<&str>) {
+        match value {
+            Some(v) => crate::secrets::set(name, v),
+            None => crate::secrets::clear(name),
+        }
+    }
+}
+
+/// Secrets held in memory only (tests).
+#[derive(Default)]
+pub struct MemorySecrets(Mutex<BTreeMap<String, String>>);
+
+impl SecretStore for MemorySecrets {
+    fn get(&self, name: &str) -> Option<String> {
+        self.0.lock().unwrap().get(name).cloned()
+    }
+
+    fn set(&self, name: &str, value: Option<&str>) {
+        let mut m = self.0.lock().unwrap();
+        match value {
+            Some(v) => {
+                m.insert(name.to_string(), v.to_string());
+            }
+            None => {
+                m.remove(name);
+            }
+        }
+    }
+}
+
+/// The secret-store name of extension `id`'s secret `key`.
+pub fn secret_name(id: &str, key: &str) -> String {
+    format!("extension:{id}:{key}")
+}
+
+/// Longest secret key or value an extension may store.
+const MAX_SECRET_BYTES: usize = 8 * 1024;
 
 /// What one call left behind.
 #[derive(Debug)]
@@ -140,6 +206,8 @@ struct HostState {
     context: CallContext,
     effects: Vec<Effect>,
     storage: Storage,
+    secrets: Arc<dyn SecretStore>,
+    locales: Arc<Locales>,
 }
 
 impl WasiView for HostState {
@@ -235,8 +303,38 @@ impl host::Host for HostState {
         self.effects.push(Effect::SetMarkers(markers));
     }
 
-    fn show_panel(&mut self, panel: Option<Panel>) {
-        self.effects.push(Effect::ShowPanel(panel));
+    fn show_panel(&mut self, id: String, panel: Option<Panel>) {
+        self.effects.push(Effect::ShowPanel { id, panel });
+    }
+
+    fn secret_get(&mut self, key: String) -> Option<String> {
+        if key.is_empty() || key.len() > 128 {
+            return None;
+        }
+        self.secrets
+            .get(&secret_name(&self.manifest.id, &key))
+            .filter(|v| !v.is_empty())
+    }
+
+    fn secret_set(&mut self, key: String, value: Option<String>) {
+        if key.is_empty() || key.len() > 128 {
+            return;
+        }
+        let value = value.filter(|v| !v.is_empty());
+        if value.as_ref().is_some_and(|v| v.len() > MAX_SECRET_BYTES) {
+            eprintln!("[ext {}] secret {key:?} too large", self.manifest.id);
+            return;
+        }
+        self.secrets
+            .set(&secret_name(&self.manifest.id, &key), value.as_deref());
+    }
+
+    fn locale(&mut self) -> String {
+        self.context.locale.clone()
+    }
+
+    fn translate(&mut self, key: String, args: Vec<(String, String)>) -> String {
+        self.locales.translate(&self.context.locale, &key, &args)
     }
 
     fn storage_get(&mut self, key: String) -> Option<String> {
@@ -269,10 +367,20 @@ struct Instance {
     bindings: bindings::Extension,
 }
 
+/// What the app hands an extension when it loads it.
+pub struct Services {
+    pub http: Arc<dyn HttpClient>,
+    pub secrets: Arc<dyn SecretStore>,
+    /// Where its key-value storage lives (`None`: in memory only).
+    pub storage: Option<PathBuf>,
+}
+
 /// A loaded, initialised extension.
 pub struct LoadedExtension {
     pub manifest: Arc<Manifest>,
     pub dir: PathBuf,
+    /// Its translations (`locales/*.toml`).
+    pub locales: Arc<Locales>,
     instance: Mutex<Instance>,
 }
 
@@ -289,26 +397,28 @@ impl LoadedExtension {
     /// Compile and start the extension in `dir` (`extension.toml` and
     /// `extension.wasm`), keeping its storage at `storage` (none: kept in
     /// memory only). Slow (it compiles the wasm): call off the UI thread.
-    pub fn load(
-        dir: &Path,
-        http: Arc<dyn HttpClient>,
-        storage: Option<PathBuf>,
-    ) -> Result<LoadedExtension, String> {
+    pub fn load(dir: &Path, services: Services) -> Result<LoadedExtension, String> {
         let text = std::fs::read_to_string(dir.join("extension.toml"))
             .map_err(|e| format!("{}: {e}", dir.join("extension.toml").display()))?;
         let manifest = Arc::new(Manifest::parse(&text)?);
         let wasm = std::fs::read(dir.join("extension.wasm"))
             .map_err(|e| format!("{}: {e}", dir.join("extension.wasm").display()))?;
-        Self::from_parts(manifest, dir.to_path_buf(), &wasm, http, storage)
+        let locales = Arc::new(Locales::load(dir));
+        Self::from_parts(manifest, dir.to_path_buf(), &wasm, locales, services)
     }
 
     pub fn from_parts(
         manifest: Arc<Manifest>,
         dir: PathBuf,
         wasm: &[u8],
-        http: Arc<dyn HttpClient>,
-        storage: Option<PathBuf>,
+        locales: Arc<Locales>,
+        services: Services,
     ) -> Result<LoadedExtension, String> {
+        let Services {
+            http,
+            secrets,
+            storage,
+        } = services;
         let engine = engine();
         let component =
             Component::new(engine, wasm).map_err(|e| format!("{}: {e}", manifest.id))?;
@@ -328,6 +438,8 @@ impl LoadedExtension {
             context: CallContext::default(),
             effects: Vec::new(),
             storage: Storage::open(storage),
+            secrets,
+            locales: locales.clone(),
         };
         let mut store = Store::new(engine, state);
         store.set_fuel(FUEL_PER_CALL).map_err(|e| e.to_string())?;
@@ -341,6 +453,7 @@ impl LoadedExtension {
         let ext = LoadedExtension {
             manifest,
             dir,
+            locales,
             instance: Mutex::new(Instance { store, bindings }),
         };
         let init = ext.call(CallContext::default(), |b, s| b.call_init(s));
@@ -390,10 +503,26 @@ impl LoadedExtension {
     pub fn panel_button(
         &self,
         context: CallContext,
-        id: &str,
+        panel: &str,
+        button: &str,
         inputs: &[(String, String)],
     ) -> Outcome<()> {
-        self.call(context, |b, s| b.call_panel_button(s, id, inputs))
+        self.call(context, |b, s| {
+            b.call_panel_button(s, panel, button, inputs)
+        })
+    }
+
+    pub fn panel_closed(&self, context: CallContext, panel: &str) -> Outcome<()> {
+        self.call(context, |b, s| b.call_panel_closed(s, panel).map(Ok))
+    }
+
+    /// The extension's name in `locale` (its `name` message, else the
+    /// manifest's).
+    pub fn display_name(&self, locale: &str) -> String {
+        self.locales
+            .lookup(locale, "name")
+            .unwrap_or(&self.manifest.name)
+            .to_string()
     }
 
     pub fn changeset_tags(&self, context: CallContext) -> Outcome<Vec<(String, String)>> {

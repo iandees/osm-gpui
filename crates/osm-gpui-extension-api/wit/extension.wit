@@ -144,12 +144,29 @@ interface host {
 
     /// Replace every marker this extension draws.
     set-markers: func(markers: list<marker>);
-    /// Show this extension's section in the side panel, or close it.
-    show-panel: func(panel: option<panel>);
+    /// Show (or replace) panel `id`, one of this extension's sections in the
+    /// side panel, or close it with `none`. An extension may have several
+    /// panels open; each is its own collapsible section.
+    show-panel: func(id: string, panel: option<panel>);
 
-    /// Small persistent key-value storage, private to this extension.
+    /// Small persistent key-value storage, private to this extension. Not
+    /// for secrets: it is a plain file.
     storage-get: func(key: string) -> option<string>;
     storage-set: func(key: string, value: option<string>);
+
+    /// Secret storage, private to this extension: the system keychain (or
+    /// an owner-only file where there is none). The first read of a secret
+    /// in a session may show the system's keychain prompt.
+    secret-get: func(key: string) -> option<string>;
+    /// Store a secret; `none` (or an empty value) deletes it.
+    secret-set: func(key: string, value: option<string>);
+
+    /// The app's UI language (a BCP 47 tag such as `de` or `fr-CA`).
+    locale: func() -> string;
+    /// `key` from the extension's own `locales/<tag>.toml`, in the app's
+    /// language (falling back to its base language, then to `en`, then to
+    /// the key itself), with each `%{name}` replaced from `args`.
+    translate: func(key: string, args: list<tuple<string, string>>) -> string;
 
     /// Write a line to the app's log.
     log: func(message: string);
@@ -167,9 +184,12 @@ world extension {
     /// One of this extension's markers was clicked.
     export marker-clicked: func(id: string) -> result<_, string>;
 
-    /// A button in this extension's panel was clicked. `inputs` holds the
-    /// current text of every input in the panel, by id.
-    export panel-button: func(id: string, inputs: list<tuple<string, string>>) -> result<_, string>;
+    /// A button in panel `panel` was clicked. `inputs` holds the current
+    /// text of every input in that panel, by id.
+    export panel-button: func(panel: string, button: string, inputs: list<tuple<string, string>>) -> result<_, string>;
+
+    /// The user closed panel `panel`.
+    export panel-closed: func(panel: string);
 
     /// Tags this extension wants on the next changeset (asked when the
     /// upload dialog opens). `comment` and `hashtags` fill the dialog's

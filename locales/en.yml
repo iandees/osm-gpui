@@ -292,6 +292,8 @@ limits:
 # Side panel sections. Preset and field labels shown inside them come from
 # the bundled iD tagging schema and are not translated here.
 panel:
+  extensions:
+    title: "Extensions"
   layers:
     title: "Layers"
     empty: "No layers yet"
@@ -1633,3 +1635,18 @@ revert:
     unavailable: "%{kind} %{id}: not available from the server"
     edited_locally: "%{kind} %{id}: has edits that are not uploaded yet"
     refused: "%{kind} %{id}: %{detail}"
+extensions:
+  load_failed: "An extension failed to load: %{detail}"
+  not_installed: "Extension %{id} is not installed"
+  busy: "%{name} is still working…"
+  bad_area: "%{name} asked to download an area that is not valid"
+  open_url_failed: "Could not open %{url}: %{detail}"
+  pick_folder: "Choose an extension folder (with extension.toml)"
+  building: "Building the extension in %{path}…"
+  installed: "Installed %{name} %{version}"
+  install_failed: "Installing the extension failed: %{detail}"
+  uninstalled: "Uninstalled %{name}"
+  uninstall_failed: "Could not uninstall %{name}: %{detail}"
+  panel:
+    working: "Working…"
+    close: "Close"

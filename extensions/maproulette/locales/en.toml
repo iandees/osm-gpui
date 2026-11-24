@@ -1,0 +1,59 @@
+name = "MapRoulette"
+
+[commands]
+show-tasks = "Show Tasks Here"
+hide-tasks = "Hide Tasks"
+settings = "API Key…"
+
+[status]
+0 = "Open"
+1 = "Fixed"
+2 = "Not an issue"
+3 = "Skipped"
+5 = "Already fixed"
+6 = "Too hard"
+other = "Status %{code}"
+
+[button.status]
+1 = "Fixed"
+2 = "Not an Issue"
+3 = "Skip"
+5 = "Already Fixed"
+6 = "Too Hard"
+
+[panel]
+title = "MapRoulette Task"
+task = "Task"
+status = "Status"
+features = "Features: %{ids}"
+load = "Load Data"
+zoom = "Zoom to Task"
+mark_hint = "When you are done, mark the task:"
+need_key = "Add your MapRoulette API key to mark tasks done."
+marked = "Marked %{status}."
+open_site = "Open in MapRoulette"
+add_key = "Add API Key…"
+uploaded = "Uploaded. Mark the task when it is done."
+
+[key]
+title = "MapRoulette API Key"
+explain = "Marking tasks needs your MapRoulette API key. It is kept in your system keychain and sent only to maproulette.org."
+find = "Find your key in MapRoulette's user settings"
+label = "API key"
+placeholder = "Paste your API key"
+placeholder_replace = "A key is saved; type a new one to replace it"
+save = "Save"
+forget = "Forget Key"
+cancel = "Cancel"
+
+[status_bar]
+zoom_in = "MapRoulette: zoom in to see tasks"
+none = "MapRoulette: no tasks here"
+one = "MapRoulette: 1 task"
+many = "MapRoulette: %{count} tasks"
+first = "MapRoulette: the first %{count} tasks"
+marked = "MapRoulette: task %{id} marked %{status}"
+key_refused = "MapRoulette refused the API key"
+http = "MapRoulette answered HTTP %{status}"
+key_saved = "MapRoulette: API key saved"
+key_forgotten = "MapRoulette: API key forgotten"

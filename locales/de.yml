@@ -280,6 +280,8 @@ limits:
 # Abschnitte der Seitenleiste. Vorlagen- und Feldbezeichnungen darin stammen
 # aus dem mitgelieferten iD-Tagging-Schema und werden hier nicht übersetzt.
 panel:
+  extensions:
+    title: "Erweiterungen"
   layers:
     title: "Ebenen"
     empty: "Noch keine Ebenen"
@@ -1568,3 +1570,18 @@ revert:
     unavailable: "%{kind} %{id}: beim Server nicht verfügbar"
     edited_locally: "%{kind} %{id}: hat noch nicht hochgeladene Änderungen"
     refused: "%{kind} %{id}: %{detail}"
+extensions:
+  load_failed: "Eine Erweiterung konnte nicht geladen werden: %{detail}"
+  not_installed: "Die Erweiterung %{id} ist nicht installiert"
+  busy: "%{name} arbeitet noch…"
+  bad_area: "%{name} wollte einen ungültigen Bereich herunterladen"
+  open_url_failed: "%{url} konnte nicht geöffnet werden: %{detail}"
+  pick_folder: "Erweiterungsordner wählen (mit extension.toml)"
+  building: "Die Erweiterung in %{path} wird gebaut…"
+  installed: "%{name} %{version} installiert"
+  install_failed: "Installieren der Erweiterung fehlgeschlagen: %{detail}"
+  uninstalled: "%{name} deinstalliert"
+  uninstall_failed: "%{name} konnte nicht deinstalliert werden: %{detail}"
+  panel:
+    working: "Arbeitet…"
+    close: "Schließen"

@@ -62,10 +62,13 @@ pub trait Extension: 'static {
         Ok(())
     }
 
-    /// A button in the panel shown with [`show_panel`] was clicked.
-    fn panel_button(&mut self, _id: &str, _inputs: &Inputs) -> Result<()> {
+    /// A button in panel `panel` (shown with [`show_panel`]) was clicked.
+    fn panel_button(&mut self, _panel: &str, _button: &str, _inputs: &Inputs) -> Result<()> {
         Ok(())
     }
+
+    /// The user closed panel `panel`.
+    fn panel_closed(&mut self, _panel: &str) {}
 
     /// Tags for the next changeset: `comment` and `hashtags` fill the upload
     /// dialog, anything else is added as a changeset tag.
@@ -142,8 +145,9 @@ pub fn set_markers(markers: &[Marker]) {
     host::set_markers(markers)
 }
 
-pub fn show_panel(panel: Option<&Panel>) {
-    host::show_panel(panel)
+/// Show (or replace) panel `id` in the side panel; `None` closes it.
+pub fn show_panel(id: &str, panel: Option<&Panel>) {
+    host::show_panel(id, panel)
 }
 
 pub fn storage_get(key: &str) -> Option<String> {
@@ -152,6 +156,35 @@ pub fn storage_get(key: &str) -> Option<String> {
 
 pub fn storage_set(key: &str, value: Option<&str>) {
     host::storage_set(key, value)
+}
+
+/// A secret from the system keychain, private to this extension.
+pub fn secret_get(key: &str) -> Option<String> {
+    host::secret_get(key)
+}
+
+/// Store a secret in the system keychain; `None` deletes it.
+pub fn secret_set(key: &str, value: Option<&str>) {
+    host::secret_set(key, value)
+}
+
+/// The app's UI language, such as `de` or `fr-CA`.
+pub fn locale() -> String {
+    host::locale()
+}
+
+/// `key` from this extension's `locales/<tag>.toml` in the app's language.
+pub fn t(key: &str) -> String {
+    host::translate(key, &[])
+}
+
+/// [`t`] with each `%{name}` replaced from `args`.
+pub fn t_args(key: &str, args: &[(&str, &str)]) -> String {
+    let args: Vec<(String, String)> = args
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    host::translate(key, &args)
 }
 
 pub fn log(message: &str) {
@@ -214,8 +247,16 @@ impl bindings::Guest for Component {
         with_extension(|e| e.marker_clicked(&id))
     }
 
-    fn panel_button(id: String, inputs: Vec<(String, String)>) -> Result<(), String> {
-        with_extension(|e| e.panel_button(&id, &Inputs(inputs)))
+    fn panel_button(
+        panel: String,
+        button: String,
+        inputs: Vec<(String, String)>,
+    ) -> Result<(), String> {
+        with_extension(|e| e.panel_button(&panel, &button, &Inputs(inputs)))
+    }
+
+    fn panel_closed(panel: String) {
+        with_extension(|e| e.panel_closed(&panel))
     }
 
     fn changeset_tags() -> Vec<(String, String)> {

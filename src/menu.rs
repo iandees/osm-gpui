@@ -749,6 +749,7 @@ pub(crate) fn in_window_menu_bar(cx: &App) -> Option<gpui::Entity<AppMenuBar>> {
 /// then Install Dev Extension.
 fn extension_items() -> Vec<MenuItem> {
     use crate::extensions_ui::{InstallDevExtension, RunExtensionCommand, UninstallExtension};
+    let locale = osm_gpui::i18n::current_locale();
     let mut items: Vec<MenuItem> = crate::extensions_ui::menu_snapshot()
         .into_iter()
         .map(|ext| {
@@ -757,7 +758,7 @@ fn extension_items() -> Vec<MenuItem> {
                 .iter()
                 .map(|c| {
                     MenuItem::action(
-                        c.label.clone(),
+                        ext.command_label(c, &locale),
                         RunExtensionCommand {
                             extension: ext.id.clone(),
                             command: c.id.clone(),
@@ -775,7 +776,7 @@ fn extension_items() -> Vec<MenuItem> {
                 },
             ));
             MenuItem::submenu(Menu {
-                name: ext.name.into(),
+                name: ext.name_in(&locale).into(),
                 items: sub,
                 disabled: false,
             })

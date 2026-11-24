@@ -6,23 +6,29 @@
 //! `crates/osm-gpui-extension-api/wit` (Rust extensions use that crate). It
 //! runs sandboxed in wasmtime ([`runtime`]): no files, sockets or
 //! environment; HTTPS only to the hosts its manifest lists; a fuel limit per
-//! call. It cannot touch the app directly. It draws markers, shows a
-//! side-panel section and moves the map by asking the host, which applies
-//! those requests on the UI thread.
+//! call. It cannot touch the app directly. It draws markers, shows
+//! side-panel sections (as many as it likes, each with its own id) and moves
+//! the map by asking the host, which applies those requests on the UI thread.
+//! It keeps secrets in the system keychain through the host (namespaced to
+//! its id), and carries its own translations in `locales/<tag>.toml`
+//! ([`locales`]), which name its menu commands and answer its `translate`
+//! calls in the app's language.
 //!
 //! Installed extensions live in `<config>/osm-gpui/extensions/installed/<id>/`
 //! and are all loaded at startup. "Install Dev Extension…" builds a Rust
 //! extension from its source folder with `cargo` and installs the result,
 //! as Zed's command of the same name does.
 
+pub mod locales;
 pub mod manifest;
 pub mod runtime;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub use locales::Locales;
 pub use manifest::Manifest;
-pub use runtime::{CallContext, Effect, LoadedExtension, Outcome};
+pub use runtime::{CallContext, Effect, LoadedExtension, Outcome, Services};
 
 /// The Rust target extensions are built for.
 pub const WASM_TARGET: &str = "wasm32-wasip2";
@@ -166,6 +172,17 @@ pub fn install(root: &Path, src: &Path, wasm: &Path) -> Result<PathBuf, String> 
     std::fs::copy(src.join("extension.toml"), staging.join("extension.toml"))
         .map_err(|e| e.to_string())?;
     std::fs::copy(wasm, staging.join("extension.wasm")).map_err(|e| e.to_string())?;
+    // Its translations, if it has any.
+    if let Ok(entries) = std::fs::read_dir(src.join("locales")) {
+        let locales = staging.join("locales");
+        std::fs::create_dir_all(&locales).map_err(|e| e.to_string())?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                std::fs::copy(&path, locales.join(entry.file_name())).map_err(|e| e.to_string())?;
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(&dest);
     std::fs::rename(&staging, &dest).map_err(|e| e.to_string())?;
     Ok(dest)

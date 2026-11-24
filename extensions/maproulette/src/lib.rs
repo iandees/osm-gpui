@@ -85,17 +85,6 @@ impl Status {
             _ => return None,
         })
     }
-
-    fn label(self) -> &'static str {
-        match self {
-            Status::Created => "Open",
-            Status::Fixed => "Fixed",
-            Status::NotAnIssue => "Not an issue",
-            Status::Skipped => "Skipped",
-            Status::AlreadyFixed => "Already fixed",
-            Status::TooHard => "Too hard",
-        }
-    }
 }
 
 /// Pin colour for a task status: open tasks stand out, finished ones recede.
@@ -108,10 +97,12 @@ pub fn status_color(code: i32) -> u32 {
     }
 }
 
+/// A status's name in the app's language (`status.<code>` in the locales).
 fn status_label(code: i32) -> String {
-    Status::from_code(code)
-        .map(|s| s.label().to_string())
-        .unwrap_or_else(|| format!("Status {code}"))
+    match Status::from_code(code) {
+        Some(_) => osm::t(&format!("status.{code}")),
+        None => osm::t_args("status.other", &[("code", &code.to_string())]),
+    }
 }
 
 pub fn box_url(b: &Bounds) -> String {
@@ -202,12 +193,24 @@ struct Open {
     note: Option<String>,
 }
 
+/// The side-panel sections this extension shows.
+const TASK_PANEL: &str = "task";
+const KEY_PANEL: &str = "api-key";
+
 #[derive(Default)]
 struct MapRoulette {
     tasks: Vec<TaskSummary>,
     open: Option<Open>,
-    /// The API-key panel is showing.
-    asking_key: bool,
+}
+
+/// The saved MapRoulette API key, from the keychain. A key an earlier
+/// version kept in plain storage is moved there first.
+fn api_key() -> Option<String> {
+    if let Some(old) = osm::storage_get(API_KEY) {
+        osm::secret_set(API_KEY, Some(&old));
+        osm::storage_set(API_KEY, None);
+    }
+    osm::secret_get(API_KEY)
 }
 
 impl MapRoulette {
@@ -229,19 +232,16 @@ impl MapRoulette {
 
     fn redraw(&self) {
         osm::set_markers(&self.markers());
-        osm::show_panel(self.panel().as_ref());
+        osm::show_panel(TASK_PANEL, self.task_panel().as_ref());
     }
 
-    fn panel(&self) -> Option<Panel> {
-        if self.asking_key {
-            return Some(key_panel());
-        }
+    fn task_panel(&self) -> Option<Panel> {
         let open = self.open.as_ref()?;
         let (task, challenge) = (&open.task, &open.challenge);
         let mut elements = vec![
             Element::Heading(challenge.name.clone()),
-            Element::Property(("Task".into(), format!("{} · {}", task.id, task.name))),
-            Element::Property(("Status".into(), status_label(task.status))),
+            Element::Property((osm::t("panel.task"), format!("{} · {}", task.id, task.name))),
+            Element::Property((osm::t("panel.status"), status_label(task.status))),
         ];
         let instruction = if task.instruction.trim().is_empty() {
             &challenge.instruction
@@ -255,67 +255,73 @@ impl MapRoulette {
         }
         let ids = feature_ids(&task.geometries);
         if !ids.is_empty() {
-            elements.push(Element::Muted(format!("Features: {}", ids.join(", "))));
+            elements.push(Element::Muted(osm::t_args(
+                "panel.features",
+                &[("ids", &ids.join(", "))],
+            )));
         }
         elements.push(Element::Buttons(vec![
-            button("load", "Load Data", ButtonStyle::Primary),
-            button("zoom", "Zoom to Task", ButtonStyle::Secondary),
+            button("load", &osm::t("panel.load"), ButtonStyle::Primary),
+            button("zoom", &osm::t("panel.zoom"), ButtonStyle::Secondary),
         ]));
         elements.push(Element::Divider);
-        let has_key = osm::storage_get(API_KEY).is_some();
-        if has_key {
-            elements.push(Element::Muted("When you are done, mark the task:".into()));
+        let has_key = api_key().is_some();
+        elements.push(Element::Muted(osm::t(if has_key {
+            "panel.mark_hint"
         } else {
-            elements.push(Element::Muted(
-                "Add your MapRoulette API key to mark tasks done.".into(),
-            ));
-        }
-        let status = |id: &str, label: &str, style| {
-            let mut b = button(id, label, style);
+            "panel.need_key"
+        })));
+        let status = |code: i32, style| {
+            let mut b = button(
+                &format!("status-{code}"),
+                &osm::t(&format!("button.status.{code}")),
+                style,
+            );
             b.enabled = has_key;
             b
         };
         elements.push(Element::Buttons(vec![
-            status("status-1", "Fixed", ButtonStyle::Primary),
-            status("status-5", "Already Fixed", ButtonStyle::Secondary),
+            status(1, ButtonStyle::Primary),
+            status(5, ButtonStyle::Secondary),
         ]));
         elements.push(Element::Buttons(vec![
-            status("status-2", "Not an Issue", ButtonStyle::Secondary),
-            status("status-6", "Too Hard", ButtonStyle::Secondary),
-            status("status-3", "Skip", ButtonStyle::Ghost),
+            status(2, ButtonStyle::Secondary),
+            status(6, ButtonStyle::Secondary),
+            status(3, ButtonStyle::Ghost),
         ]));
         if let Some(note) = &open.note {
             elements.push(Element::Muted(note.clone()));
         }
         elements.push(Element::Divider);
         elements.push(Element::Link((
-            "Open in MapRoulette".into(),
+            osm::t("panel.open_site"),
             format!("{SITE}/challenge/{}/task/{}", challenge.id, task.id),
         )));
         if !has_key {
             elements.push(Element::Buttons(vec![button(
                 "ask-key",
-                "Add API Key…",
+                &osm::t("panel.add_key"),
                 ButtonStyle::Ghost,
             )]));
         }
         Some(Panel {
-            title: "MapRoulette".into(),
+            title: osm::t("panel.title"),
             elements,
         })
     }
 
     fn show_tasks(&mut self) -> osm::Result<()> {
         if osm::zoom() < MIN_ZOOM {
-            osm::set_status("MapRoulette: zoom in to see tasks");
+            osm::set_status(&osm::t("status_bar.zoom_in"));
             return Ok(());
         }
         let found: Vec<TaskSummary> = osm::get_json(&box_url(&osm::viewport()))?;
+        let n = found.len().to_string();
         osm::set_status(&match found.len() {
-            0 => "MapRoulette: no tasks here".to_string(),
-            1 => "MapRoulette: 1 task".to_string(),
-            n if n >= TASK_LIMIT => format!("MapRoulette: the first {n} tasks"),
-            n => format!("MapRoulette: {n} tasks"),
+            0 => osm::t("status_bar.none"),
+            1 => osm::t("status_bar.one"),
+            c if c >= TASK_LIMIT => osm::t_args("status_bar.first", &[("count", &n)]),
+            _ => osm::t_args("status_bar.many", &[("count", &n)]),
         });
         self.tasks = found;
         self.redraw();
@@ -332,7 +338,6 @@ impl MapRoulette {
             let (lng, lat) = pts.first().copied().unwrap_or((0.0, 0.0));
             Point { lat, lng }
         });
-        self.asking_key = false;
         self.open = Some(Open {
             task,
             challenge,
@@ -347,12 +352,12 @@ impl MapRoulette {
         let Some(open) = &mut self.open else {
             return Ok(());
         };
-        let Some(key) = osm::storage_get(API_KEY) else {
-            self.asking_key = true;
-            self.redraw();
+        let Some(key) = api_key() else {
+            show_key_panel();
             return Ok(());
         };
-        let url = format!("{API}/task/{}/{}", open.task.id, status as i32);
+        let code = status as i32;
+        let url = format!("{API}/task/{}/{code}", open.task.id);
         let resp = osm::http_fetch(&HttpRequest {
             method: HttpMethod::Put,
             url,
@@ -360,20 +365,20 @@ impl MapRoulette {
             body: None,
         })?;
         if (200..300).contains(&resp.status) {
-            open.task.status = status as i32;
-            open.note = Some(format!("Marked {}.", status.label().to_lowercase()));
+            open.task.status = code;
+            let label = status_label(code);
+            open.note = Some(osm::t_args("panel.marked", &[("status", &label)]));
             if let Some(t) = self.tasks.iter_mut().find(|t| t.id == open.task.id) {
-                t.status = status as i32;
+                t.status = code;
             }
-            osm::set_status(&format!(
-                "MapRoulette: task {} marked {}",
-                open.task.id,
-                status.label().to_lowercase()
+            osm::set_status(&osm::t_args(
+                "status_bar.marked",
+                &[("id", &open.task.id.to_string()), ("status", &label)],
             ));
         } else {
             let why = match resp.status {
-                401 | 403 => "MapRoulette refused the API key".to_string(),
-                s => format!("MapRoulette answered HTTP {s}"),
+                401 | 403 => osm::t("status_bar.key_refused"),
+                s => osm::t_args("status_bar.http", &[("status", &s.to_string())]),
             };
             open.note = Some(why.clone());
             osm::set_status(&why);
@@ -383,42 +388,41 @@ impl MapRoulette {
     }
 }
 
-fn key_panel() -> Panel {
-    let has_key = osm::storage_get(API_KEY).is_some();
+/// The API-key panel, a section of its own beside the task.
+fn show_key_panel() {
+    let has_key = api_key().is_some();
     let mut buttons = vec![
-        button("save-key", "Save", ButtonStyle::Primary),
-        button("cancel-key", "Cancel", ButtonStyle::Ghost),
+        button("save-key", &osm::t("key.save"), ButtonStyle::Primary),
+        button("cancel-key", &osm::t("key.cancel"), ButtonStyle::Ghost),
     ];
     if has_key {
-        buttons.insert(1, button("forget-key", "Forget Key", ButtonStyle::Danger));
+        buttons.insert(
+            1,
+            button("forget-key", &osm::t("key.forget"), ButtonStyle::Danger),
+        );
     }
-    Panel {
-        title: "MapRoulette".into(),
-        elements: vec![
-            Element::Heading("API key".into()),
-            Element::Text(
-                "Marking tasks needs your MapRoulette API key. It is kept on this computer \
-                 and sent only to maproulette.org."
-                    .into(),
-            ),
-            Element::Link((
-                "Find your key in MapRoulette's user settings".into(),
-                format!("{SITE}/user/profile"),
-            )),
-            Element::Input(TextInput {
-                id: "key".into(),
-                label: "API key".into(),
-                placeholder: if has_key {
-                    "A key is saved; type a new one to replace it".into()
-                } else {
-                    "Paste your API key".into()
-                },
-                value: String::new(),
-                secret: true,
-            }),
-            Element::Buttons(buttons),
-        ],
-    }
+    osm::show_panel(
+        KEY_PANEL,
+        Some(&Panel {
+            title: osm::t("key.title"),
+            elements: vec![
+                Element::Text(osm::t("key.explain")),
+                Element::Link((osm::t("key.find"), format!("{SITE}/user/profile"))),
+                Element::Input(TextInput {
+                    id: "key".into(),
+                    label: osm::t("key.label"),
+                    placeholder: osm::t(if has_key {
+                        "key.placeholder_replace"
+                    } else {
+                        "key.placeholder"
+                    }),
+                    value: String::new(),
+                    secret: true,
+                }),
+                Element::Buttons(buttons),
+            ],
+        }),
+    );
 }
 
 impl Extension for MapRoulette {
@@ -432,13 +436,11 @@ impl Extension for MapRoulette {
             "hide-tasks" => {
                 self.tasks.clear();
                 self.open = None;
-                self.asking_key = false;
                 self.redraw();
                 Ok(())
             }
             "settings" => {
-                self.asking_key = true;
-                self.redraw();
+                show_key_panel();
                 Ok(())
             }
             other => Err(format!("unknown command {other}")),
@@ -450,14 +452,14 @@ impl Extension for MapRoulette {
         self.open_task(id)
     }
 
-    fn panel_button(&mut self, id: &str, inputs: &Inputs) -> osm::Result<()> {
-        match id {
-            "load" => {
+    fn panel_button(&mut self, panel: &str, id: &str, inputs: &Inputs) -> osm::Result<()> {
+        match (panel, id) {
+            (TASK_PANEL, "load") => {
                 if let Some(open) = &self.open {
                     osm::download_area(task_area(&open.task.geometries, open.at));
                 }
             }
-            "zoom" => {
+            (TASK_PANEL, "zoom") => {
                 if let Some(open) = &self.open {
                     osm::fly_to(
                         LatLon {
@@ -468,30 +470,26 @@ impl Extension for MapRoulette {
                     );
                 }
             }
-            "ask-key" => {
-                self.asking_key = true;
-                self.redraw();
-            }
-            "save-key" => {
+            (TASK_PANEL, "ask-key") => show_key_panel(),
+            (KEY_PANEL, "save-key") => {
                 let key = inputs.get("key").unwrap_or("").trim();
                 if !key.is_empty() {
-                    osm::storage_set(API_KEY, Some(key));
-                    osm::set_status("MapRoulette: API key saved");
+                    osm::secret_set(API_KEY, Some(key));
+                    osm::set_status(&osm::t("status_bar.key_saved"));
                 }
-                self.asking_key = false;
+                osm::show_panel(KEY_PANEL, None);
+                // The status buttons need the key.
                 self.redraw();
             }
-            "forget-key" => {
+            (KEY_PANEL, "forget-key") => {
+                osm::secret_set(API_KEY, None);
                 osm::storage_set(API_KEY, None);
-                osm::set_status("MapRoulette: API key forgotten");
-                self.asking_key = false;
+                osm::set_status(&osm::t("status_bar.key_forgotten"));
+                osm::show_panel(KEY_PANEL, None);
                 self.redraw();
             }
-            "cancel-key" => {
-                self.asking_key = false;
-                self.redraw();
-            }
-            other => {
+            (KEY_PANEL, "cancel-key") => osm::show_panel(KEY_PANEL, None),
+            (TASK_PANEL, other) => {
                 if let Some(code) = other.strip_prefix("status-") {
                     let status = code
                         .parse()
@@ -501,8 +499,17 @@ impl Extension for MapRoulette {
                     return self.set_task_status(status);
                 }
             }
+            _ => {}
         }
         Ok(())
+    }
+
+    fn panel_closed(&mut self, panel: &str) {
+        if panel == TASK_PANEL {
+            // Closing the task deselects its pin.
+            self.open = None;
+            osm::set_markers(&self.markers());
+        }
     }
 
     fn changeset_tags(&mut self) -> Vec<(String, String)> {
@@ -514,17 +521,13 @@ impl Extension for MapRoulette {
         if !comment.is_empty() {
             tags.push(("comment".to_string(), comment.to_string()));
         }
-        tags.push((
-            "mr:taskId".to_string(),
-            open.task.id.to_string(),
-        ));
         tags
     }
 
     fn upload_finished(&mut self, _changesets: &[i64]) {
         if let Some(open) = &mut self.open {
             if open.task.status == Status::Created as i32 {
-                open.note = Some("Uploaded. Mark the task when it is done.".into());
+                open.note = Some(osm::t("panel.uploaded"));
                 self.redraw();
             }
         }

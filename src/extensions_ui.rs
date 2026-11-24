@@ -1,34 +1,43 @@
 //! Extensions in the window: loading the installed ones, the Extensions
 //! menu, running their calls off the UI thread, applying what they ask for
-//! (markers, the side-panel section, map moves, downloads), and Install Dev
+//! (markers, side-panel sections, map moves, downloads), and Install Dev
 //! Extension.
 //!
-//! The extension host itself (manifest, sandbox, WIT bindings) is
+//! The extension host itself (manifest, sandbox, WIT bindings, locales) is
 //! `osm_gpui::extensions`. Every call into an extension runs on the
 //! background executor; one extension runs one call at a time, and a click
 //! that arrives while it is busy is dropped with a status message rather
 //! than queued.
+//!
+//! An extension may show several panels at once, and several extensions may
+//! each show theirs. Every panel is a collapsible section of its own at the
+//! end of the side panel's middle zone, keyed by (extension, panel id), in
+//! the order they were first shown.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use gpui::{actions, div, prelude::*, AnyElement, Context, Entity, SharedString, Window};
+use gpui::{actions, div, prelude::*, px, AnyElement, Context, Entity, SharedString, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     input::{Input, InputState},
     label::Label,
-    v_flex, ActiveTheme as _, Disableable as _, IconName, Sizable as _,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
 };
 use osm_gpui::coordinates::{GeoBounds, LatLon};
 use osm_gpui::extensions::manifest::CommandDef;
 use osm_gpui::extensions::runtime::{
-    Bounds, ButtonStyle, Element, FeatureKind as ExtFeatureKind, FeatureRef as ExtFeatureRef, Panel,
+    Bounds, ButtonStyle, Element, FeatureKind as ExtFeatureKind, FeatureRef as ExtFeatureRef,
+    KeychainSecrets, Panel,
 };
-use osm_gpui::extensions::{self, CallContext, Effect, LoadedExtension, Outcome};
+use osm_gpui::extensions::{
+    self, CallContext, Effect, LoadedExtension, Locales, Outcome, Services,
+};
 use osm_gpui::layers::extension_layer::{ExtensionLayer, MarkerStore};
 use osm_gpui::layers::LayerId;
 use osm_gpui::selection::FeatureKind;
+use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
 
 use crate::MapViewer;
@@ -56,9 +65,28 @@ pub(crate) struct UninstallExtension {
 #[derive(Clone, Debug)]
 pub(crate) struct MenuEntry {
     pub id: String,
-    pub name: String,
+    name: String,
     pub version: String,
     pub commands: Vec<CommandDef>,
+    locales: Arc<Locales>,
+}
+
+impl MenuEntry {
+    /// The extension's name in `locale`.
+    pub(crate) fn name_in(&self, locale: &str) -> String {
+        self.locales
+            .lookup(locale, "name")
+            .unwrap_or(&self.name)
+            .to_string()
+    }
+
+    /// Command `c`'s label in `locale` (`commands.<id>`, else the manifest's).
+    pub(crate) fn command_label(&self, c: &CommandDef, locale: &str) -> String {
+        self.locales
+            .lookup(locale, &format!("commands.{}", c.id))
+            .unwrap_or(&c.label)
+            .to_string()
+    }
 }
 
 /// What the menus show, kept here because they are built without the window
@@ -72,12 +100,15 @@ pub(crate) fn menu_snapshot() -> Vec<MenuEntry> {
     menu_store().lock().unwrap().clone()
 }
 
-/// The section an extension shows in the side panel, with the inputs its
+/// One section an extension shows in the side panel, with the inputs its
 /// text boxes need (made on the next frame, which has the window).
 struct OpenPanel {
     extension: String,
+    id: String,
     panel: Panel,
     inputs: HashMap<String, Entity<InputState>>,
+    /// Expanded (the header's chevron).
+    expanded: bool,
 }
 
 #[derive(Default)]
@@ -86,7 +117,8 @@ pub(crate) struct ExtensionsState {
     loaded: Vec<Arc<LoadedExtension>>,
     /// Each extension's marker layer, made when it first sets markers.
     layers: HashMap<String, (LayerId, MarkerStore)>,
-    panel: Option<OpenPanel>,
+    /// Open panels, in the order they were first shown.
+    panels: Vec<OpenPanel>,
     /// Extensions with a call in flight.
     busy: HashSet<String>,
     /// The changeset tags each extension last asked for, read when the
@@ -118,10 +150,49 @@ fn from_ext_bounds(b: &Bounds) -> Option<GeoBounds> {
     ok.then(|| GeoBounds::new(b.min_lat, b.max_lat, b.min_lon, b.max_lon))
 }
 
+/// Show, replace or close panel `id` of `extension` in `panels`. A shown
+/// panel keeps its place, expansion and typed text when it is replaced.
+fn apply_show_panel(
+    panels: &mut Vec<OpenPanel>,
+    extension: &str,
+    id: String,
+    panel: Option<Panel>,
+) {
+    let at = panels
+        .iter()
+        .position(|p| p.extension == extension && p.id == id);
+    match (panel, at) {
+        (Some(panel), Some(i)) => {
+            // Inputs no longer in the panel are dropped.
+            let keep: HashSet<&str> = panel
+                .elements
+                .iter()
+                .filter_map(|e| match e {
+                    Element::Input(i) => Some(i.id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            panels[i].inputs.retain(|k, _| keep.contains(k.as_str()));
+            panels[i].panel = panel;
+        }
+        (Some(panel), None) => panels.push(OpenPanel {
+            extension: extension.to_string(),
+            id,
+            panel,
+            inputs: HashMap::new(),
+            expanded: true,
+        }),
+        (None, Some(i)) => {
+            panels.remove(i);
+        }
+        (None, None) => {}
+    }
+}
+
 impl MapViewer {
     /// Per-frame upkeep, called from `render`: loads the installed
     /// extensions once, follows a marker layer deleted from the Layers list,
-    /// and makes the open panel's text boxes.
+    /// and makes the open panels' text boxes.
     pub(crate) fn extensions_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.extensions.started {
             self.extensions.started = true;
@@ -132,25 +203,35 @@ impl MapViewer {
         self.extensions
             .layers
             .retain(|_, (id, _)| present.contains(id));
-        if let Some(open) = &mut self.extensions.panel {
+        for open in &mut self.extensions.panels {
             for el in &open.panel.elements {
-                if let Element::Input(input) = el {
-                    if !open.inputs.contains_key(&input.id) {
-                        let (placeholder, value, secret) =
-                            (input.placeholder.clone(), input.value.clone(), input.secret);
-                        let state = cx.new(|cx| {
-                            let mut s = InputState::new(window, cx)
-                                .placeholder(placeholder)
-                                .masked(secret);
-                            if !value.is_empty() {
-                                s.set_value(value, window, cx);
-                            }
-                            s
-                        });
-                        open.inputs.insert(input.id.clone(), state);
-                    }
+                let Element::Input(input) = el else {
+                    continue;
+                };
+                if open.inputs.contains_key(&input.id) {
+                    continue;
                 }
+                let (placeholder, value, secret) =
+                    (input.placeholder.clone(), input.value.clone(), input.secret);
+                let state = cx.new(|cx| {
+                    let mut s = InputState::new(window, cx)
+                        .placeholder(placeholder)
+                        .masked(secret);
+                    if !value.is_empty() {
+                        s.set_value(value, window, cx);
+                    }
+                    s
+                });
+                open.inputs.insert(input.id.clone(), state);
             }
+        }
+    }
+
+    fn extension_services(&self, root: &std::path::Path, id: &str) -> Services {
+        Services {
+            http: self.http.clone(),
+            secrets: Arc::new(KeychainSecrets),
+            storage: Some(extensions::storage_path(root, id)),
         }
     }
 
@@ -159,20 +240,25 @@ impl MapViewer {
         let Some(root) = extensions::root_dir() else {
             return;
         };
-        let http = self.http.clone();
+        let dirs = extensions::installed(&root);
+        let jobs: Vec<(PathBuf, Services)> = dirs
+            .into_iter()
+            .map(|dir| {
+                let id = dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let services = self.extension_services(&root, &id);
+                (dir, services)
+            })
+            .collect();
         cx.spawn(async move |this, cx| {
             let results = cx
                 .background_executor()
                 .spawn(async move {
-                    extensions::installed(&root)
-                        .into_iter()
-                        .map(|dir| {
-                            let id = dir
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default();
-                            let storage = Some(extensions::storage_path(&root, &id));
-                            LoadedExtension::load(&dir, http.clone(), storage)
+                    jobs.into_iter()
+                        .map(|(dir, services)| {
+                            LoadedExtension::load(&dir, services)
                                 .map_err(|e| format!("{}: {e}", dir.display()))
                         })
                         .collect::<Vec<_>>()
@@ -184,7 +270,7 @@ impl MapViewer {
                         Ok(ext) => this.add_loaded_extension(ext),
                         Err(e) => {
                             eprintln!("extension failed to load: {e}");
-                            this.set_status(format!("An extension failed to load: {e}"));
+                            this.set_status(tr!("extensions.load_failed", detail = e));
                         }
                     }
                 }
@@ -214,10 +300,22 @@ impl MapViewer {
                 name: e.manifest.name.clone(),
                 version: e.manifest.version.clone(),
                 commands: e.manifest.commands.clone(),
+                locales: e.locales.clone(),
             })
             .collect();
         let (center, state) = self.imagery_menu_context();
         crate::menu::rebuild_menus(&mut *cx, center, state, self.menu_toggles());
+    }
+
+    fn find_extension(&self, id: &str) -> Option<&Arc<LoadedExtension>> {
+        self.extensions.loaded.iter().find(|e| e.manifest.id == id)
+    }
+
+    /// Extension `id`'s name in the app's language.
+    fn extension_name(&self, id: &str) -> String {
+        self.find_extension(id)
+            .map(|e| e.display_name(&osm_gpui::i18n::current_locale()))
+            .unwrap_or_else(|| id.to_string())
     }
 
     /// The app's state for an extension call.
@@ -237,6 +335,7 @@ impl MapViewer {
                     id: f.id,
                 })
                 .collect(),
+            locale: osm_gpui::i18n::current_locale(),
         }
     }
 
@@ -248,19 +347,13 @@ impl MapViewer {
         call: impl FnOnce(&LoadedExtension, CallContext) -> Outcome<()> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
-        let Some(ext) = self
-            .extensions
-            .loaded
-            .iter()
-            .find(|e| e.manifest.id == id)
-            .cloned()
-        else {
-            self.set_status(format!("Extension {id} is not installed"));
+        let Some(ext) = self.find_extension(id).cloned() else {
+            self.set_status(tr!("extensions.not_installed", id = id));
             cx.notify();
             return;
         };
         if !self.extensions.busy.insert(id.to_string()) {
-            self.set_status(format!("{} is still working…", ext.manifest.name));
+            self.set_status(tr!("extensions.busy", name = self.extension_name(id)));
             cx.notify();
             return;
         }
@@ -299,15 +392,24 @@ impl MapViewer {
                 }
                 Effect::DownloadArea(area) => match from_ext_bounds(&area) {
                     Some(bounds) => self.request_download_of(bounds, cx),
-                    None => self.set_status(format!("{id} asked to download a bad area")),
+                    None => {
+                        self.set_status(tr!("extensions.bad_area", name = self.extension_name(id)))
+                    }
                 },
                 Effect::OpenUrl(url) => {
                     if let Err(e) = open::that(&url) {
-                        self.set_status(format!("Could not open {url}: {e}"));
+                        self.set_status(tr!(
+                            "extensions.open_url_failed",
+                            url = url,
+                            detail = e.to_string()
+                        ));
                     }
                 }
                 Effect::SetMarkers(markers) => self.set_extension_markers(id, markers),
-                Effect::ShowPanel(panel) => self.show_extension_panel(id, panel),
+                Effect::ShowPanel {
+                    id: panel_id,
+                    panel,
+                } => apply_show_panel(&mut self.extensions.panels, id, panel_id, panel),
             }
         }
     }
@@ -324,13 +426,7 @@ impl MapViewer {
         if markers.is_empty() {
             return;
         }
-        let name = self
-            .extensions
-            .loaded
-            .iter()
-            .find(|e| e.manifest.id == id)
-            .map(|e| e.manifest.name.clone())
-            .unwrap_or_else(|| id.to_string());
+        let name = self.extension_name(id);
         let store = MarkerStore::default();
         store.replace(markers);
         let layer_id = self.layer_manager.alloc_id();
@@ -343,36 +439,6 @@ impl MapViewer {
         self.extensions
             .layers
             .insert(id.to_string(), (layer_id, store));
-    }
-
-    fn show_extension_panel(&mut self, id: &str, panel: Option<Panel>) {
-        match panel {
-            Some(panel) => {
-                // The same extension's inputs are kept when the panel is
-                // redrawn with the same input ids, so typed text survives.
-                let inputs = match self.extensions.panel.take() {
-                    Some(old) if old.extension == id => old.inputs,
-                    _ => HashMap::new(),
-                };
-                self.close_note_panel();
-                self.close_photo_panel();
-                self.extensions.panel = Some(OpenPanel {
-                    extension: id.to_string(),
-                    panel,
-                    inputs,
-                });
-            }
-            None => {
-                if self
-                    .extensions
-                    .panel
-                    .as_ref()
-                    .is_some_and(|p| p.extension == id)
-                {
-                    self.extensions.panel = None;
-                }
-            }
-        }
     }
 
     pub(crate) fn on_run_extension_command(
@@ -396,7 +462,6 @@ impl MapViewer {
         cx: &mut Context<Self>,
     ) {
         let marker = marker.to_string();
-        self.set_selection(Vec::new());
         self.call_extension(
             extension,
             move |ext, context| ext.marker_clicked(context, &marker),
@@ -404,11 +469,11 @@ impl MapViewer {
         );
     }
 
-    fn extension_panel_button(&mut self, button: String, cx: &mut Context<Self>) {
-        let Some(open) = &self.extensions.panel else {
+    fn extension_panel_button(&mut self, index: usize, button: String, cx: &mut Context<Self>) {
+        let Some(open) = self.extensions.panels.get(index) else {
             return;
         };
-        let extension = open.extension.clone();
+        let (extension, panel) = (open.extension.clone(), open.id.clone());
         let inputs: Vec<(String, String)> = open
             .inputs
             .iter()
@@ -416,7 +481,21 @@ impl MapViewer {
             .collect();
         self.call_extension(
             &extension,
-            move |ext, context| ext.panel_button(context, &button, &inputs),
+            move |ext, context| ext.panel_button(context, &panel, &button, &inputs),
+            cx,
+        );
+    }
+
+    /// The close button of panel `index`: remove it and tell its extension.
+    fn close_extension_panel(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.extensions.panels.len() {
+            return;
+        }
+        let open = self.extensions.panels.remove(index);
+        let panel = open.id;
+        self.call_extension(
+            &open.extension,
+            move |ext, context| ext.panel_closed(context, &panel),
             cx,
         );
     }
@@ -477,7 +556,7 @@ impl MapViewer {
             return;
         };
         let picked = rfd::AsyncFileDialog::new()
-            .set_title("Choose an extension folder (with extension.toml)")
+            .set_title(tr!("extensions.pick_folder").to_string())
             .pick_folder();
         let http = self.http.clone();
         cx.spawn(async move |this, cx| {
@@ -487,7 +566,7 @@ impl MapViewer {
             let src: PathBuf = folder.path().to_path_buf();
             let _ = this.update(cx, |this, cx| {
                 this.extensions.installing = true;
-                this.set_status(format!("Building the extension in {}…", src.display()));
+                this.set_status(tr!("extensions.building", path = src.display().to_string()));
                 cx.notify();
             });
             let result = cx
@@ -503,26 +582,39 @@ impl MapViewer {
                         extensions::build_dev_extension(&src)?
                     };
                     let dir = extensions::install(&root, &src, &wasm)?;
-                    let storage = Some(extensions::storage_path(&root, &manifest.id));
-                    LoadedExtension::load(&dir, http, storage)
+                    LoadedExtension::load(
+                        &dir,
+                        Services {
+                            http,
+                            secrets: Arc::new(KeychainSecrets),
+                            storage: Some(extensions::storage_path(&root, &manifest.id)),
+                        },
+                    )
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.extensions.installing = false;
                 match result {
                     Ok(ext) => {
-                        let msg =
-                            format!("Installed {} {}", ext.manifest.name, ext.manifest.version);
-                        this.drop_extension_ui(&ext.manifest.id.clone());
+                        let id = ext.manifest.id.clone();
+                        let (name, version) = (
+                            ext.display_name(&osm_gpui::i18n::current_locale()),
+                            ext.manifest.version.clone(),
+                        );
+                        this.drop_extension_ui(&id);
                         this.add_loaded_extension(ext);
                         this.refresh_extension_menu(cx);
-                        this.set_status(msg);
+                        this.set_status(tr!(
+                            "extensions.installed",
+                            name = name,
+                            version = version
+                        ));
                     }
                     Err(e) => {
                         eprintln!("{e}");
-                        this.set_status(format!(
-                            "Installing the extension failed: {}",
-                            e.lines().next().unwrap_or("")
+                        this.set_status(tr!(
+                            "extensions.install_failed",
+                            detail = e.lines().next().unwrap_or("")
                         ));
                     }
                 }
@@ -542,19 +634,20 @@ impl MapViewer {
             return;
         };
         let id = action.extension.clone();
+        let name = self.extension_name(&id);
         match extensions::uninstall(&root, &id) {
             Ok(()) => {
                 self.drop_extension_ui(&id);
                 self.extensions.loaded.retain(|e| e.manifest.id != id);
                 self.refresh_extension_menu(cx);
-                self.set_status(format!("Uninstalled {id}"));
+                self.set_status(tr!("extensions.uninstalled", name = name));
             }
-            Err(e) => self.set_status(format!("Could not uninstall {id}: {e}")),
+            Err(e) => self.set_status(tr!("extensions.uninstall_failed", name = name, detail = e)),
         }
         cx.notify();
     }
 
-    /// Remove extension `id`'s markers and panel (it is being replaced or
+    /// Remove extension `id`'s markers and panels (it is being replaced or
     /// uninstalled).
     fn drop_extension_ui(&mut self, id: &str) {
         if let Some((layer, _)) = self.extensions.layers.remove(id) {
@@ -567,173 +660,187 @@ impl MapViewer {
                 self.layer_manager.remove_at(i);
             }
         }
-        if self
-            .extensions
-            .panel
-            .as_ref()
-            .is_some_and(|p| p.extension == id)
-        {
-            self.extensions.panel = None;
-        }
+        self.extensions.panels.retain(|p| p.extension != id);
         self.extensions.changeset_tags.remove(id);
     }
 
-    pub(crate) fn close_extension_panel(&mut self) {
-        self.extensions.panel = None;
-    }
-
-    /// The open extension panel for the side panel's middle zone, while no
-    /// feature is selected: its title, its pinned header and its body.
-    pub(crate) fn render_extension_section(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Option<(SharedString, AnyElement, AnyElement)> {
-        if !self.selected.is_empty() {
-            return None;
-        }
-        let open = self.extensions.panel.as_ref()?;
-        let busy = self.extensions.busy.contains(&open.extension);
+    /// Every open extension panel, each a collapsible section for the side
+    /// panel's middle zone.
+    pub(crate) fn render_extension_panels(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = cx.theme();
-        let (muted, border, foreground) = (theme.muted_foreground, theme.border, theme.foreground);
-        let name = self
-            .extensions
-            .loaded
-            .iter()
-            .find(|e| e.manifest.id == open.extension)
-            .map(|e| e.manifest.name.clone())
-            .unwrap_or_else(|| open.extension.clone());
+        let (muted, border, foreground, hover, link) = (
+            theme.muted_foreground,
+            theme.border,
+            theme.foreground,
+            theme.accent,
+            theme.link,
+        );
+        let mut sections = Vec::new();
+        for (index, open) in self.extensions.panels.iter().enumerate() {
+            let busy = self.extensions.busy.contains(&open.extension);
+            let name = self.extension_name(&open.extension);
+            let expanded = open.expanded;
 
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .child(
-                div().flex_1().child(
-                    Label::new(format!("Extension · {name}"))
-                        .text_size(muted_text_size())
-                        .text_color(muted),
-                ),
-            )
-            .children(busy.then(|| {
-                Label::new("Working…")
-                    .text_size(muted_text_size())
-                    .text_color(muted)
-            }))
-            .child(
-                Button::new("extension-close-panel")
-                    .ghost()
+            let header = div()
+                .id(("extension-panel-header", index))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px_3()
+                .h(px(32.))
+                .cursor_pointer()
+                .hover(move |this| this.bg(hover))
+                .child(
+                    Icon::new(if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
                     .xsmall()
-                    .icon(IconName::Close)
-                    .tooltip("Close")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.close_extension_panel();
-                        cx.notify();
-                    })),
-            );
-
-        let mut body = v_flex().flex_shrink_0().gap_2().px_2().py_2();
-        for (i, el) in open.panel.elements.iter().enumerate() {
-            let row: AnyElement = match el {
-                Element::Heading(text) => Label::new(text.clone())
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(foreground)
-                    .into_any_element(),
-                Element::Text(text) => div()
-                    .text_color(foreground)
-                    .child(SharedString::from(text.clone()))
-                    .into_any_element(),
-                Element::Muted(text) => div()
-                    .text_size(muted_text_size())
-                    .text_color(muted)
-                    .child(SharedString::from(text.clone()))
-                    .into_any_element(),
-                Element::Property((label, value)) => div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(gpui::px(64.0))
-                            .flex_shrink_0()
-                            .text_color(muted)
-                            .child(SharedString::from(label.clone())),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_color(foreground)
-                            .child(SharedString::from(value.clone())),
-                    )
-                    .into_any_element(),
-                Element::Buttons(buttons) => div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .gap_2()
-                    .children(buttons.iter().enumerate().map(|(j, b)| {
-                        let id = b.id.clone();
-                        let button = Button::new(("extension-button", i * 100 + j))
-                            .small()
-                            .label(b.label.clone())
-                            .disabled(busy || !b.enabled)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.extension_panel_button(id.clone(), cx);
-                            }));
-                        match b.style {
-                            ButtonStyle::Primary => button.primary(),
-                            ButtonStyle::Danger => button.danger(),
-                            ButtonStyle::Ghost => button.ghost(),
-                            ButtonStyle::Secondary => button,
-                        }
-                    }))
-                    .into_any_element(),
-                Element::Input(input) => {
-                    let label = (!input.label.is_empty()).then(|| {
-                        div()
-                            .text_size(muted_text_size())
-                            .text_color(muted)
-                            .child(SharedString::from(input.label.clone()))
-                    });
-                    match open.inputs.get(&input.id) {
-                        Some(state) => v_flex()
-                            .gap_1()
-                            .children(label)
-                            .child(Input::new(state).disabled(busy))
-                            .into_any_element(),
-                        // Made on the next frame.
-                        None => v_flex().children(label).into_any_element(),
-                    }
-                }
-                Element::Link((label, url)) => {
-                    let url = url.clone();
-                    let link = cx.theme().link;
+                    .text_color(muted),
+                )
+                .child(Label::new(open.panel.title.clone()).font_weight(gpui::FontWeight::SEMIBOLD))
+                .child(
                     div()
-                        .id(("extension-link", i))
-                        .text_color(link)
-                        .underline()
-                        .cursor_pointer()
-                        .child(SharedString::from(label.clone()))
-                        .on_click(move |_, _, _| {
-                            if url.starts_with("https://") || url.starts_with("http://") {
-                                let _ = open::that(&url);
-                            }
-                        })
-                        .into_any_element()
-                }
-                Element::Divider => div().h(gpui::px(1.0)).bg(border).into_any_element(),
-            };
-            body = body.child(row);
-        }
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(muted_text_size())
+                        .text_color(muted)
+                        .child(if busy {
+                            tr!("extensions.panel.working")
+                        } else {
+                            SharedString::from(name)
+                        }),
+                )
+                .child(
+                    Button::new(("extension-close-panel", index))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip(tr!("extensions.panel.close"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.close_extension_panel(index, cx);
+                            cx.notify();
+                        })),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(p) = this.extensions.panels.get_mut(index) {
+                        p.expanded = !p.expanded;
+                    }
+                    cx.notify();
+                }));
 
-        Some((
-            SharedString::from(open.panel.title.clone()),
-            header.into_any_element(),
-            body.into_any_element(),
-        ))
+            let mut body = v_flex().flex_shrink_0().gap_2().px_3().pt_0p5().pb_2();
+            for (i, el) in open.panel.elements.iter().enumerate() {
+                let key = index * 1000 + i;
+                let row: AnyElement = match el {
+                    Element::Heading(text) => Label::new(text.clone())
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(foreground)
+                        .into_any_element(),
+                    Element::Text(text) => div()
+                        .text_color(foreground)
+                        .child(SharedString::from(text.clone()))
+                        .into_any_element(),
+                    Element::Muted(text) => div()
+                        .text_size(muted_text_size())
+                        .text_color(muted)
+                        .child(SharedString::from(text.clone()))
+                        .into_any_element(),
+                    Element::Property((label, value)) => div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(64.0))
+                                .flex_shrink_0()
+                                .text_color(muted)
+                                .child(SharedString::from(label.clone())),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_color(foreground)
+                                .child(SharedString::from(value.clone())),
+                        )
+                        .into_any_element(),
+                    Element::Buttons(buttons) => div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_2()
+                        .children(buttons.iter().enumerate().map(|(j, b)| {
+                            let id = b.id.clone();
+                            let button = Button::new(("extension-button", key * 100 + j))
+                                .small()
+                                .label(b.label.clone())
+                                .disabled(busy || !b.enabled)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.extension_panel_button(index, id.clone(), cx);
+                                }));
+                            match b.style {
+                                ButtonStyle::Primary => button.primary(),
+                                ButtonStyle::Danger => button.danger(),
+                                ButtonStyle::Ghost => button.ghost(),
+                                ButtonStyle::Secondary => button,
+                            }
+                        }))
+                        .into_any_element(),
+                    Element::Input(input) => {
+                        let label = (!input.label.is_empty()).then(|| {
+                            div()
+                                .text_size(muted_text_size())
+                                .text_color(muted)
+                                .child(SharedString::from(input.label.clone()))
+                        });
+                        match open.inputs.get(&input.id) {
+                            Some(state) => v_flex()
+                                .gap_1()
+                                .children(label)
+                                .child(Input::new(state).disabled(busy))
+                                .into_any_element(),
+                            // Made on the next frame.
+                            None => v_flex().children(label).into_any_element(),
+                        }
+                    }
+                    Element::Link((label, url)) => {
+                        let url = url.clone();
+                        div()
+                            .id(("extension-link", key))
+                            .text_color(link)
+                            .underline()
+                            .cursor_pointer()
+                            .child(SharedString::from(label.clone()))
+                            .on_click(move |_, _, _| {
+                                if url.starts_with("https://") || url.starts_with("http://") {
+                                    let _ = open::that(&url);
+                                }
+                            })
+                            .into_any_element()
+                    }
+                    Element::Divider => div().h(px(1.0)).bg(border).into_any_element(),
+                };
+                body = body.child(row);
+            }
+
+            sections.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(header)
+                    .when(expanded, |this| this.child(body))
+                    .into_any_element(),
+            );
+        }
+        sections
     }
 }
 
@@ -765,5 +872,37 @@ mod tests {
             ..ok
         })
         .is_none());
+    }
+
+    fn panel(title: &str) -> Panel {
+        Panel {
+            title: title.into(),
+            elements: vec![],
+        }
+    }
+
+    #[test]
+    fn panels_are_kept_per_extension_and_id_in_the_order_first_shown() {
+        let mut panels = Vec::new();
+        apply_show_panel(&mut panels, "a", "task".into(), Some(panel("A task")));
+        apply_show_panel(&mut panels, "b", "task".into(), Some(panel("B task")));
+        apply_show_panel(&mut panels, "a", "key".into(), Some(panel("A key")));
+        let titles = |p: &Vec<OpenPanel>| -> Vec<String> {
+            p.iter().map(|p| p.panel.title.clone()).collect()
+        };
+        assert_eq!(titles(&panels), vec!["A task", "B task", "A key"]);
+
+        // Replacing keeps the place and the expansion.
+        panels[0].expanded = false;
+        apply_show_panel(&mut panels, "a", "task".into(), Some(panel("A task 2")));
+        assert_eq!(titles(&panels), vec!["A task 2", "B task", "A key"]);
+        assert!(!panels[0].expanded);
+
+        // Closing one leaves the others, including another extension's
+        // panel with the same id.
+        apply_show_panel(&mut panels, "a", "task".into(), None);
+        assert_eq!(titles(&panels), vec!["B task", "A key"]);
+        apply_show_panel(&mut panels, "a", "nothing".into(), None);
+        assert_eq!(panels.len(), 2);
     }
 }

@@ -1,0 +1,59 @@
+name = "MapRoulette"
+
+[commands]
+show-tasks = "Aufgaben hier zeigen"
+hide-tasks = "Aufgaben ausblenden"
+settings = "API-Schlüssel…"
+
+[status]
+0 = "Offen"
+1 = "Behoben"
+2 = "Kein Problem"
+3 = "Übersprungen"
+5 = "Bereits behoben"
+6 = "Zu schwierig"
+other = "Status %{code}"
+
+[button.status]
+1 = "Behoben"
+2 = "Kein Problem"
+3 = "Überspringen"
+5 = "Bereits behoben"
+6 = "Zu schwierig"
+
+[panel]
+title = "MapRoulette-Aufgabe"
+task = "Aufgabe"
+status = "Status"
+features = "Objekte: %{ids}"
+load = "Daten laden"
+zoom = "Zur Aufgabe"
+mark_hint = "Wenn du fertig bist, markiere die Aufgabe:"
+need_key = "Füge deinen MapRoulette-API-Schlüssel hinzu, um Aufgaben zu markieren."
+marked = "Markiert: %{status}."
+open_site = "In MapRoulette öffnen"
+add_key = "API-Schlüssel hinzufügen…"
+uploaded = "Hochgeladen. Markiere die Aufgabe, wenn sie erledigt ist."
+
+[key]
+title = "MapRoulette-API-Schlüssel"
+explain = "Zum Markieren von Aufgaben wird dein MapRoulette-API-Schlüssel gebraucht. Er liegt im Schlüsselbund deines Systems und wird nur an maproulette.org gesendet."
+find = "Deinen Schlüssel findest du in den MapRoulette-Benutzereinstellungen"
+label = "API-Schlüssel"
+placeholder = "API-Schlüssel einfügen"
+placeholder_replace = "Ein Schlüssel ist gespeichert; gib einen neuen ein, um ihn zu ersetzen"
+save = "Speichern"
+forget = "Schlüssel vergessen"
+cancel = "Abbrechen"
+
+[status_bar]
+zoom_in = "MapRoulette: hineinzoomen, um Aufgaben zu sehen"
+none = "MapRoulette: keine Aufgaben hier"
+one = "MapRoulette: 1 Aufgabe"
+many = "MapRoulette: %{count} Aufgaben"
+first = "MapRoulette: die ersten %{count} Aufgaben"
+marked = "MapRoulette: Aufgabe %{id} markiert: %{status}"
+key_refused = "MapRoulette hat den API-Schlüssel abgelehnt"
+http = "MapRoulette antwortete mit HTTP %{status}"
+key_saved = "MapRoulette: API-Schlüssel gespeichert"
+key_forgotten = "MapRoulette: API-Schlüssel vergessen"
