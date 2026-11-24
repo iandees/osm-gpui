@@ -433,6 +433,12 @@ fn union_tags<'a>(sets: impl Iterator<Item = &'a Tags>) -> Result<Tags, String> 
     }
 }
 
+/// The union of the ways' tags, or the error naming a key two of them give
+/// different values.
+pub fn merge_way_tags(ways: &[JoinWay]) -> Result<Tags, JoinError> {
+    union_tags(ways.iter().map(|w| &w.tags)).map_err(JoinError::TagConflict)
+}
+
 /// A node as the merge planner sees it.
 #[derive(Clone, Debug)]
 pub struct MergeNode {

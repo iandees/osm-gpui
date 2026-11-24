@@ -694,7 +694,7 @@ action:
       tag_too_long: "Umkehren nicht möglich: Das Vertauschen der Tags von Weg %{way} ergäbe einen Schlüssel oder Wert mit mehr als 255 Zeichen"
   join:
     label: "Wege verbinden"
-    hint: "Zwei oder mehr Wege wählen, die Ende an Ende anschließen"
+    hint: "Zwei oder mehr Wege wählen, die Ende an Ende anschließen, oder zwei sich überlappende geschlossene Wege"
     done:
       one: "%{count} Weg verbunden"
       other: "%{count} Wege verbunden"
