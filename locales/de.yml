@@ -69,6 +69,10 @@ menu:
     show_street_names: "Straßennamen anzeigen"
     show_area_labels: "Flächenbeschriftungen anzeigen"
     toggle_debug_overlay: "Debug-Overlay ein-/ausblenden"
+  extensions:
+    title: "Erweiterungen"
+    install_dev: "Entwicklungs-Erweiterung installieren…"
+    uninstall: "Deinstallieren (Version %{version})"
   window:
     title: "Fenster"
     minimize: "Im Dock ablegen"

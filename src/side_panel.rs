@@ -150,6 +150,7 @@ impl MapViewer {
         // An open note takes the Selection zone's place.
         let note_section = self
             .render_note_section(cx)
+            .or_else(|| self.render_extension_section(cx))
             .or_else(|| self.render_photo_section(cx))
             .or_else(|| self.render_vector_feature_section(cx));
         let note_open = note_section.is_some();

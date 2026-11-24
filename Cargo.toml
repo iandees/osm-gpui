@@ -45,6 +45,10 @@ sys-locale = "0.3.2"
 mvt-reader = "2.5.0"
 geo-types = "0.7"
 flate2 = "1"
+# Extensions: WebAssembly components run in wasmtime (see `src/extensions`).
+wasmtime = { version = "51", default-features = false, features = ["component-model", "cranelift", "runtime", "std", "parallel-compilation"] }
+wasmtime-wasi = { version = "51", default-features = false, features = ["p2"] }
+toml = "1"
 
 # gpui_linux is pulled in with default-features = false, so without these two
 # features no windowing backend is compiled in and gpui panics at startup

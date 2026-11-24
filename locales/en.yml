@@ -71,6 +71,10 @@ menu:
     show_street_names: "Show Street Names"
     show_area_labels: "Show Area Labels"
     toggle_debug_overlay: "Toggle Debug Overlay"
+  extensions:
+    title: "Extensions"
+    install_dev: "Install Dev Extension…"
+    uninstall: "Uninstall (version %{version})"
   window:
     title: "Window"
     minimize: "Minimize"

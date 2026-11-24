@@ -745,6 +745,52 @@ pub(crate) fn in_window_menu_bar(cx: &App) -> Option<gpui::Entity<AppMenuBar>> {
 /// off macOS, and the rest moves to where Windows and Linux users look for it:
 /// Quit at the end of File, Settings at the end of Edit, About at the end of
 /// Help.
+/// The Extensions menu: a submenu per installed extension with its commands,
+/// then Install Dev Extension.
+fn extension_items() -> Vec<MenuItem> {
+    use crate::extensions_ui::{InstallDevExtension, RunExtensionCommand, UninstallExtension};
+    let mut items: Vec<MenuItem> = crate::extensions_ui::menu_snapshot()
+        .into_iter()
+        .map(|ext| {
+            let mut sub: Vec<MenuItem> = ext
+                .commands
+                .iter()
+                .map(|c| {
+                    MenuItem::action(
+                        c.label.clone(),
+                        RunExtensionCommand {
+                            extension: ext.id.clone(),
+                            command: c.id.clone(),
+                        },
+                    )
+                })
+                .collect();
+            if !sub.is_empty() {
+                sub.push(MenuItem::separator());
+            }
+            sub.push(MenuItem::action(
+                tr!("menu.extensions.uninstall", version = ext.version),
+                UninstallExtension {
+                    extension: ext.id.clone(),
+                },
+            ));
+            MenuItem::submenu(Menu {
+                name: ext.name.into(),
+                items: sub,
+                disabled: false,
+            })
+        })
+        .collect();
+    if !items.is_empty() {
+        items.push(MenuItem::separator());
+    }
+    items.push(MenuItem::action(
+        tr!("menu.extensions.install_dev"),
+        InstallDevExtension,
+    ));
+    items
+}
+
 fn build_menus(
     is_macos: bool,
     center: LatLon,
@@ -982,6 +1028,11 @@ fn build_menus(
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
             ],
+            disabled: false,
+        },
+        Menu {
+            name: tr!("menu.extensions.title"),
+            items: extension_items(),
             disabled: false,
         },
         Menu {
@@ -1538,7 +1589,7 @@ mod tests {
     fn menus_convert_to_owned_with_every_top_level_menu_and_the_file_items() {
         let menus = menus_for(true);
         let names: Vec<String> = menus.iter().map(|m| m.name.to_string()).collect();
-        assert_eq!(names.len(), 9, "{names:?}");
+        assert_eq!(names.len(), 10, "{names:?}");
         assert_eq!(names[0], APP_NAME);
         let file = menus
             .iter()

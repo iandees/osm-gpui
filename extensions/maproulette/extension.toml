@@ -1,0 +1,22 @@
+id = "maproulette"
+name = "MapRoulette"
+version = "0.1.0"
+schema_version = 1
+authors = ["Ian Dees"]
+description = "Find MapRoulette tasks on the map, read their instructions, load their data and mark them done."
+repository = "https://github.com/iandees/osm-gpui"
+
+[capabilities]
+http = ["maproulette.org"]
+
+[[commands]]
+id = "show-tasks"
+label = "Show Tasks Here"
+
+[[commands]]
+id = "hide-tasks"
+label = "Hide Tasks"
+
+[[commands]]
+id = "settings"
+label = "API Key…"

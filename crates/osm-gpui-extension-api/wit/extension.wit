@@ -1,0 +1,181 @@
+// The interface between osm-gpui and its extensions.
+//
+// An extension is a WebAssembly component (built for `wasm32-wasip2`) next to
+// an `extension.toml` manifest. It runs sandboxed: it gets no filesystem,
+// sockets, environment or clock beyond what WASI's defaults give, and reaches
+// the network only through `host.http-fetch`, limited to the hosts its
+// manifest lists under `[capabilities] http`.
+//
+// Calls are one-way and short: the app calls an export (a menu command, a
+// click on one of the extension's markers, a button in its panel), the
+// extension does its work (HTTP included) and returns. What it wants the app
+// to do (show markers or a panel, move the map, download data) it asks for
+// through `host` while it runs; the app applies those requests, in order,
+// once the call returns.
+//
+// The package version is the API version. A breaking change bumps it, and the
+// app refuses extensions built against a version it does not provide.
+
+package osm-gpui:extension@0.1.0;
+
+interface types {
+    record lat-lon {
+        lat: f64,
+        lon: f64,
+    }
+
+    record bounds {
+        min-lat: f64,
+        min-lon: f64,
+        max-lat: f64,
+        max-lon: f64,
+    }
+
+    enum http-method {
+        get,
+        post,
+        put,
+        delete,
+    }
+
+    record http-request {
+        method: http-method,
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+    }
+
+    record http-response {
+        status: u16,
+        body: list<u8>,
+    }
+
+    enum feature-kind {
+        node,
+        way,
+        relation,
+    }
+
+    record feature-ref {
+        kind: feature-kind,
+        id: s64,
+    }
+
+    /// A pin the extension draws on the map. Clicking it calls
+    /// `marker-clicked` with its id.
+    record marker {
+        id: string,
+        at: lat-lon,
+        /// 0xRRGGBB.
+        color: u32,
+        /// Drawn larger, with a highlighted halo.
+        selected: bool,
+    }
+
+    enum button-style {
+        primary,
+        secondary,
+        danger,
+        ghost,
+    }
+
+    record button {
+        id: string,
+        label: string,
+        style: button-style,
+        enabled: bool,
+    }
+
+    record text-input {
+        id: string,
+        label: string,
+        placeholder: string,
+        /// The text the box starts with (when it first appears).
+        value: string,
+        /// Masked, for keys and passwords.
+        secret: bool,
+    }
+
+    /// One row of an extension's side-panel section, top to bottom.
+    variant element {
+        heading(string),
+        text(string),
+        /// Smaller, de-emphasised text.
+        muted(string),
+        /// A label and its value on one line.
+        property(tuple<string, string>),
+        /// A row of buttons; a click calls `panel-button` with the button's id.
+        buttons(list<button>),
+        input(text-input),
+        /// A label and the URL it opens in the browser.
+        link(tuple<string, string>),
+        divider,
+    }
+
+    record panel {
+        title: string,
+        elements: list<element>,
+    }
+}
+
+interface host {
+    use types.{lat-lon, bounds, http-request, http-response, feature-ref, marker, panel};
+
+    /// Send an HTTP request. Refused unless the URL's host is listed in the
+    /// manifest's `[capabilities] http`. Non-2xx answers are `ok` too: look
+    /// at `status`. `err` is a transport failure or a refusal.
+    http-fetch: func(request: http-request) -> result<http-response, string>;
+
+    /// The map's visible area and zoom when this call started.
+    viewport: func() -> bounds;
+    zoom: func() -> f64;
+    /// The selected OSM features when this call started.
+    selection: func() -> list<feature-ref>;
+
+    /// Centre the map on `at` at `zoom`.
+    fly-to: func(at: lat-lon, zoom: f64);
+    /// Download OSM data for `area` into the editing layer, as File >
+    /// Download from OSM does for the visible map.
+    download-area: func(area: bounds);
+    /// Show a message in the status bar.
+    set-status: func(message: string);
+    /// Open a URL in the browser (http and https only).
+    open-url: func(url: string);
+
+    /// Replace every marker this extension draws.
+    set-markers: func(markers: list<marker>);
+    /// Show this extension's section in the side panel, or close it.
+    show-panel: func(panel: option<panel>);
+
+    /// Small persistent key-value storage, private to this extension.
+    storage-get: func(key: string) -> option<string>;
+    storage-set: func(key: string, value: option<string>);
+
+    /// Write a line to the app's log.
+    log: func(message: string);
+}
+
+world extension {
+    import host;
+
+    /// Called once, after loading.
+    export init: func() -> result<_, string>;
+
+    /// A menu command the manifest declares under `[[commands]]` was chosen.
+    export run-command: func(id: string) -> result<_, string>;
+
+    /// One of this extension's markers was clicked.
+    export marker-clicked: func(id: string) -> result<_, string>;
+
+    /// A button in this extension's panel was clicked. `inputs` holds the
+    /// current text of every input in the panel, by id.
+    export panel-button: func(id: string, inputs: list<tuple<string, string>>) -> result<_, string>;
+
+    /// Tags this extension wants on the next changeset (asked when the
+    /// upload dialog opens). `comment` and `hashtags` fill the dialog's
+    /// fields; others are added as changeset tags.
+    export changeset-tags: func() -> list<tuple<string, string>>;
+
+    /// An upload succeeded, in these changesets.
+    export upload-finished: func(changesets: list<s64>);
+}

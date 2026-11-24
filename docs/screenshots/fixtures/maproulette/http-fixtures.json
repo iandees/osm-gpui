@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"match": {"prefix": "https://maproulette.org/api/v2/tasks/box/"}, "file": "tasks.json"},
+    {"match": {"prefix": "https://maproulette.org/api/v2/task/900001"}, "file": "task-900001.json"},
+    {"match": {"prefix": "https://maproulette.org/api/v2/challenge/7001"}, "file": "challenge-7001.json"}
+  ]
+}

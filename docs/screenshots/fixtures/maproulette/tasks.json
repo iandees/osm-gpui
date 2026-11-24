@@ -1,0 +1,7 @@
+[
+  {"id": 900001, "parentId": 7001, "parentName": "Buildings Missing Addresses", "point": {"lat": 40.714147, "lng": -74.006000}, "status": 0},
+  {"id": 900002, "parentId": 7001, "parentName": "Buildings Missing Addresses", "point": {"lat": 40.715300, "lng": -74.007600}, "status": 0},
+  {"id": 900003, "parentId": 7001, "parentName": "Buildings Missing Addresses", "point": {"lat": 40.713100, "lng": -74.004300}, "status": 1},
+  {"id": 900004, "parentId": 7002, "parentName": "Parks Without Names", "point": {"lat": 40.712700, "lng": -74.007900}, "status": 0},
+  {"id": 900005, "parentId": 7002, "parentName": "Parks Without Names", "point": {"lat": 40.715800, "lng": -74.004700}, "status": 6}
+]
