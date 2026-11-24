@@ -495,6 +495,22 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
         run: Run::Apply(apply_extract),
     },
     SelectionAction {
+        id: "replace_geometry",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: true,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
+        is_applicable: |env| {
+            let (Some(layer_id), Some(editable)) = (env.active_layer, env.active_editable()) else {
+                return false;
+            };
+            replace_geometry_pair(editable, layer_id, env.selection).is_some()
+        },
+        run: Run::Apply(apply_replace_geometry),
+    },
+    SelectionAction {
         id: "copy_features",
         shortcut_id: Some("copy_features"),
         fixed_shortcut: None,
@@ -1358,12 +1374,6 @@ fn apply_reverse(
     })
 }
 
-/// Join the selected ways into one (JOSM "Combine Way"). See
-/// `topology::plan_join` for the chaining, survivor and tag rules. A removed
-/// way that is a relation member is folded into the survivor's membership (see
-/// `relations::join_members`; roles that differ, and turn restrictions, refuse
-/// the join). One undo step: the survivor's new nodes and tags, the relations'
-/// new member lists, then the deletion of the rest.
 /// Two closed ways, the outline positions of each (the closing node not
 /// repeated) and their union, when the selection is exactly two closed ways
 /// whose areas overlap in a single outline.
@@ -1535,6 +1545,132 @@ fn ids_of_ring(ways: &[JoinWay], which: usize) -> &[i64] {
     &ways[which].nodes[..ways[which].nodes.len() - 1]
 }
 
+/// The way that keeps its identity and the way whose shape it takes, when the
+/// selection is exactly two ways that are both open or both closed. The way
+/// from the server (positive id) is kept when only one is; otherwise the
+/// first selected.
+fn replace_geometry_pair(
+    editable: &dyn EditableLayer,
+    layer_id: LayerId,
+    selection: &[FeatureRef],
+) -> Option<(JoinWay, JoinWay)> {
+    let mut ways = join_ways_in(editable, layer_id, selection);
+    let closed = |w: &JoinWay| w.nodes.len() >= 4 && w.nodes.first() == w.nodes.last();
+    if ways.len() != 2
+        || ways.iter().any(|w| w.nodes.len() < 2)
+        || closed(&ways[0]) != closed(&ways[1])
+        || ways[0].nodes == ways[1].nodes
+    {
+        return None;
+    }
+    if ways[0].id < 0 && ways[1].id > 0 {
+        ways.swap(0, 1);
+    }
+    let source = ways.pop()?;
+    let target = ways.pop()?;
+    Some((target, source))
+}
+
+/// Give one way the other's node list: the target keeps its id, tags and
+/// history, gains the source's tags it lacks and takes its place in the
+/// source's relations. The source way goes, and so do the target's old nodes
+/// that nothing else needs. One undo step.
+fn apply_replace_geometry(
+    layers: &mut LayerManager,
+    selection: &[FeatureRef],
+    active: Option<LayerId>,
+) -> Result<ActionOutcome, String> {
+    let (layer_id, editable) = active_editable_mut(layers, active)?;
+    let (target, source) = replace_geometry_pair(editable, layer_id, selection)
+        .ok_or_else(|| tr!("action.replace_geometry.hint").to_string())?;
+    if let Some(m) =
+        osm_gpui::limits::way_over_limit(source.nodes.len(), osm_gpui::limits::join_message)
+    {
+        return Err(m);
+    }
+    let (target_way, source_way) = (WayId(target.id), WayId(source.id));
+    let mut relation_ids = editable.relations_containing_way(source_way);
+    relation_ids.sort_unstable();
+    relation_ids.dedup();
+    let mut relation_edits = Vec::new();
+    for relation_id in relation_ids {
+        let Some(relation) = editable.relation(relation_id) else {
+            continue;
+        };
+        let after = osm_gpui::relations::join_members(&relation, target_way, &[source_way])
+            .map_err(|e| e.message())?;
+        if let Some(after) = after {
+            relation_edits.push((relation_id, after));
+        }
+    }
+    let mut orphans: Vec<i64> = Vec::new();
+    for &id in &target.nodes {
+        let node_ref = FeatureRef {
+            layer_id,
+            kind: FeatureKind::Node,
+            id,
+        };
+        let unused = !source.nodes.contains(&id)
+            && !orphans.contains(&id)
+            && editable
+                .ways_using_node(NodeId(id))
+                .iter()
+                .all(|w| w.get() == target.id || w.get() == source.id)
+            && editable.relations_containing_node(NodeId(id)).is_empty()
+            && editable
+                .feature_tags(&node_ref)
+                .is_none_or(|t| t.is_empty());
+        if unused {
+            orphans.push(id);
+        }
+    }
+
+    let ((), ops) = record_edit(layer_id, editable, |rec| {
+        rec.set_way_nodes(target_way, NodeId::from_raw_vec(&source.nodes))
+            .map_err(refused)?;
+        for (key, value) in source.tags.sorted() {
+            if !target.tags.contains_key(key) {
+                rec.set_tag(FeatureKind::Way, target.id, key, value)
+                    .map_err(refused)?;
+            }
+        }
+        for (relation_id, after) in relation_edits {
+            rec.set_relation_members(relation_id, after)
+                .map_err(refused)?;
+        }
+        rec.delete_feature(FeatureKind::Way, source.id)
+            .map_err(refused)?;
+        for id in &orphans {
+            rec.delete_feature(FeatureKind::Node, *id)
+                .map_err(refused)?;
+        }
+        Ok(())
+    })?;
+
+    let label = tr!("action.replace_geometry.done").to_string();
+    Ok(ActionOutcome {
+        undo: Some(UndoableAction::edit(
+            layer_id,
+            EditLabel::Text(label.clone()),
+            ops,
+        )),
+        status: label,
+        clear_selection: false,
+        select: Some(vec![FeatureRef {
+            layer_id,
+            kind: FeatureKind::Way,
+            id: target.id,
+        }]),
+        continue_way: None,
+    })
+}
+
+/// Join the selected ways into one (JOSM "Combine Way"). See
+/// `topology::plan_join` for the chaining, survivor and tag rules. A removed
+/// way that is a relation member is folded into the survivor's membership (see
+/// `relations::join_members`; roles that differ, and turn restrictions, refuse
+/// the join). One undo step: the survivor's new nodes and tags, the relations'
+/// new member lists, then the deletion of the rest.
 fn apply_join(
     layers: &mut LayerManager,
     selection: &[FeatureRef],
@@ -4695,6 +4831,38 @@ mod tests {
     }
 
     #[test]
+    fn replace_geometry_gives_the_server_way_the_new_ways_shape() {
+        let mut n = overlapping_squares();
+        // Both are server ways, so the first selected keeps its identity.
+        let both = n.ways(&[200, 201]);
+        assert!(n.applicable(&both).contains(&"replace_geometry"));
+        let out = n.run("replace_geometry", &both).unwrap();
+        assert_eq!(out.select, Some(n.ways(&[200])));
+        // 200 (server id) keeps its id and takes 201's nodes and tags it lacked.
+        assert_eq!(
+            n.editable().way_node_ids(WayId(200)),
+            Some(NodeId::from_raw_vec(&[31, 32, 33, 34, 31]))
+        );
+        assert!(n.editable().way_node_ids(WayId(201)).is_none());
+        assert_eq!(
+            n.tags_of(FeatureKind::Way, 200),
+            pairs(&[("building", "yes"), ("name", "Annex")])
+        );
+        // 200's old corners are gone, except the tagged one.
+        assert!(n.editable().node_lat_lon(NodeId(21)).is_none());
+        assert!(n.editable().node_lat_lon(NodeId(23)).is_some());
+
+        let ops = edit_of(&out).1.to_vec();
+        let mut failures = Vec::new();
+        let layer_id = n.layer_id;
+        let layer = n.layers.find_layer_mut(layer_id).unwrap();
+        osm_gpui::edit_ops::replay(&ops, false, layer.as_editable_mut().unwrap(), &mut failures);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(n.editable().way_node_ids(WayId(200)).unwrap().len(), 5);
+        assert!(n.editable().way_node_ids(WayId(201)).is_some());
+    }
+
+    #[test]
     fn join_of_overlapping_ways_with_conflicting_tags_changes_nothing() {
         let mut n = overlapping_squares();
         n.tag(FeatureKind::Way, 200, "name", "Main");
@@ -4704,6 +4872,19 @@ mod tests {
         assert!(err.contains("name"), "{err}");
         assert_eq!(n.editable().way_node_ids(WayId(200)).unwrap().len(), 5);
         assert!(n.editable().way_node_ids(WayId(201)).is_some());
+    }
+
+    #[test]
+    fn replace_geometry_needs_two_ways_of_the_same_kind() {
+        let n = net();
+        // An open and a closed way, and a single way, are not offered.
+        assert!(!n
+            .applicable(&n.ways(&[100, 108]))
+            .contains(&"replace_geometry"));
+        assert!(!n.applicable(&n.ways(&[100])).contains(&"replace_geometry"));
+        assert!(n
+            .applicable(&n.ways(&[100, 102]))
+            .contains(&"replace_geometry"));
     }
 
     #[test]

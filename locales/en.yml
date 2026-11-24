@@ -748,6 +748,10 @@ action:
     done:
       one: "Extracted %{count} point from a way"
       other: "Extracted %{count} points from ways"
+  replace_geometry:
+    label: "Replace Geometry"
+    hint: "Select two open ways, or two closed ways, to give one the other's shape"
+    done: "Replaced the geometry of a way"
   delete_segment:
     label: "Delete Way Segment"
     hint: "Select two nodes that are next to each other in a way to delete the segment between them"
