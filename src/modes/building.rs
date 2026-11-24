@@ -71,7 +71,14 @@ impl BuildingState {
 /// press.
 pub(super) fn press(view: &mut MapViewer, position: Point<Pixels>) -> bool {
     if view.building_reference().is_none() {
-        return false;
+        // Unoriented: the press still owns the button, so a drag draws the
+        // first side instead of box-selecting; the release decides.
+        view.set_building_press(Some(BuildingPress {
+            down: position,
+            placed_first_corner: false,
+        }));
+        view.pointer.interaction = Interaction::Idle;
+        return true;
     }
     let placed_first_corner = view.building_progress().is_none();
     if placed_first_corner {
@@ -98,6 +105,21 @@ pub(super) fn release(view: &mut MapViewer, up_pos: Point<Pixels>) -> bool {
     let Some(press) = view.take_building_press() else {
         return false;
     };
+    if view.building_reference().is_none() {
+        let moved = (up_pos - press.down).magnitude() >= interaction::DRAG_THRESHOLD as f64;
+        if moved && view.building_progress().is_none() {
+            // A drag draws the first side: press is corner A, release corner B.
+            let a = view.viewport.screen_to_geo(press.down);
+            let b = view.viewport.screen_to_geo(up_pos);
+            view.set_building_progress(Some(BuildingProgress {
+                corner_a: a,
+                corner_b: Some(b),
+            }));
+        } else {
+            click(view, up_pos);
+        }
+        return true;
+    }
     let (Some(reference), Some(layer_id), Some(progress)) = (
         view.building_reference().copied(),
         view.active_layer,
@@ -197,6 +219,16 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
         );
     }
     let Some(progress) = view.building_progress().copied() else {
+        // Unoriented drag in flight: preview the first side.
+        if view.building_reference().is_none() {
+            if let (Some(press), Some(mouse_pos)) =
+                (view.building_press().copied(), view.pointer.last_mouse_pos)
+            {
+                let a = frame.local(press.down);
+                fill_square(window, a, gpui::px(4.0), blue());
+                stroke_polyline(window, [a, frame.local(mouse_pos)], line_width(), blue());
+            }
+        }
         return;
     };
     let a = frame.geo(progress.corner_a);

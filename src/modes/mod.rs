@@ -194,6 +194,7 @@ mode_slot!(building, building_mut, progress, BuildingProgress, take take_buildin
 mode_slot!(building, building_mut, progress, BuildingProgress, set set_building_progress);
 mode_slot!(building, building_mut, reference, BuildingReference, get building_reference);
 mode_slot!(building, building_mut, reference, BuildingReference, set set_building_reference);
+mode_slot!(building, building_mut, press, BuildingPress, get building_press);
 mode_slot!(building, building_mut, press, BuildingPress, take take_building_press);
 mode_slot!(building, building_mut, press, BuildingPress, set set_building_press);
 mode_slot!(arc, arc_mut, progress, ArcProgress, get arc_progress);
