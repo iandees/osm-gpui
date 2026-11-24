@@ -213,6 +213,43 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
     } else {
         blue()
     };
+    // Moving or deleting a shared node changes the other ways through it too.
+    let shared = match ip.plan {
+        Plan::Move { node, .. } | Plan::Delete { node } => Some(node),
+        Plan::Insert { .. } => None,
+    };
+    if let (Some(node), Some(editable)) = (
+        shared,
+        view.layer_manager
+            .find_layer(ip.layer_id)
+            .and_then(|l| l.as_editable()),
+    ) {
+        for other in editable.ways_using_node(NodeId(node)) {
+            if other == ip.way_id {
+                continue;
+            }
+            let Some(node_ids) = editable.way_node_ids(other) else {
+                continue;
+            };
+            let points: Option<Vec<osm_gpui::improve_way::Pt>> = node_ids
+                .iter()
+                .map(|&id| {
+                    let p = view.viewport.geo_to_screen(editable.node_lat_lon(id)?);
+                    Some((p.x.to_f64(), p.y.to_f64()))
+                })
+                .collect();
+            let Some(points) = points else { continue };
+            let ids = NodeId::to_raw_vec(&node_ids);
+            stroke_polyline(
+                window,
+                preview(&points, &ids, ip.plan)
+                    .iter()
+                    .map(|p| frame.pixels(*p)),
+                line_width(),
+                color,
+            );
+        }
+    }
     let outline = preview(&ip.points, &ip.ids, ip.plan);
     stroke_polyline(
         window,
