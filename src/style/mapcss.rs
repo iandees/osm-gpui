@@ -135,6 +135,9 @@ pub struct NodeStyle {
     /// from MapCSS; it rides along here so every code path that keeps the
     /// per-node style cache fresh keeps this fresh too.
     pub tagged: bool,
+    /// Index into [`Stylesheet::zoom_node_styles`] for a style from
+    /// [`Stylesheet::node_style_cached`]; `NO_SIG` otherwise.
+    pub sig: u32,
 }
 
 impl Default for NodeStyle {
@@ -151,11 +154,24 @@ impl Default for NodeStyle {
             junction: visual,
             unconnected: visual,
             tagged: false,
+            sig: NO_SIG,
         }
     }
 }
 
 impl NodeStyle {
+    /// This cached style as it looks at the zoom `table` was built for
+    /// (from [`Stylesheet::zoom_node_styles`]); unchanged without a table.
+    pub fn at_zoom(self, table: Option<&[NodeStyle]>) -> NodeStyle {
+        match table.and_then(|t| t.get(self.sig as usize)) {
+            Some(z) => NodeStyle {
+                tagged: self.tagged,
+                ..*z
+            },
+            None => self,
+        }
+    }
+
     /// Whether the node's look is a hollow square or cross in any context.
     pub fn has_custom_marker(&self) -> bool {
         self.shape.is_custom()
@@ -572,6 +588,18 @@ impl Rule {
 /// bitmask of matching selectors)`.
 type Matches = Vec<(u32, u64)>;
 
+/// Which rules matched a node's tags in each way-count context
+/// (unconnected, one way, junction), ignoring zoom.
+type NodeMatches = [Matches; 3];
+
+#[derive(Debug, Default)]
+struct NodeSigCache {
+    ids: HashMap<NodeMatches, u32>,
+    sigs: Vec<NodeMatches>,
+    bucket: i32,
+    table: Option<Arc<Vec<NodeStyle>>>,
+}
+
 #[derive(Debug, Default)]
 struct SigCache {
     ids: HashMap<(bool, Matches), u32>,
@@ -596,6 +624,7 @@ pub struct Stylesheet {
     /// Whether any way rule tests relation membership.
     uses_membership: bool,
     sigs: Mutex<SigCache>,
+    node_sigs: Mutex<NodeSigCache>,
 }
 
 fn label_rule_indices(rules: &[Rule]) -> Vec<u32> {
@@ -621,6 +650,7 @@ impl Clone for Stylesheet {
             node_context: self.node_context,
             uses_membership: self.uses_membership,
             sigs: Mutex::default(),
+            node_sigs: Mutex::default(),
         }
     }
 }
@@ -681,6 +711,7 @@ impl Stylesheet {
             node_context,
             uses_membership,
             sigs: Mutex::default(),
+            node_sigs: Mutex::default(),
         })
     }
 
@@ -701,39 +732,118 @@ impl Stylesheet {
 
     /// Resolve a style for a node given its OSM tags at `zoom`.
     pub fn node_style(&self, tags: &Tags, zoom: f64) -> NodeStyle {
+        let matches = self.match_node(tags);
+        self.resolve_node(&matches, Some(zoom_bucket(zoom)), !tags.is_empty(), NO_SIG)
+    }
+
+    /// The style for caching per node: zoom ranges ignored (every rule
+    /// that matches the tags applies), with [`NodeStyle::sig`] set so the
+    /// renderer can fetch the real per-zoom style from
+    /// [`Stylesheet::zoom_node_styles`] and [`NodeStyle::at_zoom`].
+    pub fn node_style_cached(&self, tags: &Tags) -> NodeStyle {
+        let matches = self.match_node(tags);
+        let sig = self.intern_node(matches.clone());
+        self.resolve_node(&matches, None, !tags.is_empty(), sig)
+    }
+
+    /// Every interned node signature resolved at `zoom`, indexed by
+    /// [`NodeStyle::sig`]. Rebuilt only when the zoom bucket changes or new
+    /// signatures appeared. `tagged` of these entries is meaningless; keep
+    /// the cached style's (`at_zoom` does).
+    pub fn zoom_node_styles(&self, zoom: f64) -> Arc<Vec<NodeStyle>> {
         let bucket = zoom_bucket(zoom);
-        let one = self.node_visual(tags, bucket, 1);
-        let (junction, unconnected) = if self.node_context {
-            (
-                self.node_visual(tags, bucket, 2),
-                self.node_visual(tags, bucket, 0),
-            )
+        let mut cache = self.node_sigs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = &cache.table {
+            if cache.bucket == bucket && t.len() == cache.sigs.len() {
+                return t.clone();
+            }
+        }
+        let table: Vec<NodeStyle> = cache
+            .sigs
+            .iter()
+            .enumerate()
+            .map(|(i, m)| self.resolve_node(m, Some(bucket), false, i as u32))
+            .collect();
+        let table = Arc::new(table);
+        cache.bucket = bucket;
+        cache.table = Some(table.clone());
+        table
+    }
+
+    fn intern_node(&self, matches: NodeMatches) -> u32 {
+        let mut cache = self.node_sigs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&id) = cache.ids.get(&matches) {
+            return id;
+        }
+        let id = cache.sigs.len() as u32;
+        cache.sigs.push(matches.clone());
+        cache.ids.insert(matches, id);
+        id
+    }
+
+    /// The rules matching a node's tags in each way-count context. Without
+    /// way-count pseudo-classes the contexts agree, so one pass serves all.
+    fn match_node(&self, tags: &Tags) -> NodeMatches {
+        let one = self.match_node_in(tags, 1);
+        if self.node_context {
+            [
+                self.match_node_in(tags, 0),
+                one.clone(),
+                self.match_node_in(tags, 2),
+            ]
         } else {
-            (one, one)
+            [one.clone(), one.clone(), one]
+        }
+    }
+
+    fn match_node_in(&self, tags: &Tags, ways: usize) -> Matches {
+        let ctx = Context {
+            node_ways: ways,
+            in_relation: false,
         };
+        let mut out = Vec::new();
+        for (i, rule) in self.rules.iter().enumerate() {
+            let mask = rule.tag_mask(TargetKind::Node, false, tags, ctx);
+            if mask != 0 {
+                out.push((i as u32, mask));
+            }
+        }
+        out
+    }
+
+    /// Apply the matched rules in order. `bucket` of `None` ignores ranges.
+    fn resolve_node(
+        &self,
+        matches: &NodeMatches,
+        bucket: Option<i32>,
+        tagged: bool,
+        sig: u32,
+    ) -> NodeStyle {
+        let [unconnected, one, junction] = [
+            self.node_visual(&matches[0], bucket),
+            self.node_visual(&matches[1], bucket),
+            self.node_visual(&matches[2], bucket),
+        ];
         NodeStyle {
             color: one.color,
             size: one.size,
             shape: one.shape,
             junction,
             unconnected,
-            tagged: !tags.is_empty(),
+            tagged,
+            sig,
         }
     }
 
-    fn node_visual(&self, tags: &Tags, bucket: i32, ways: usize) -> NodeVisual {
-        let ctx = Context {
-            node_ways: ways,
-            in_relation: false,
-        };
+    fn node_visual(&self, matches: &Matches, bucket: Option<i32>) -> NodeVisual {
         let mut v = NodeVisual {
             color: DEFAULT_NODE_COLOR,
             size: DEFAULT_NODE_SIZE,
             shape: NodeShape::Circle,
         };
-        for rule in &self.rules {
-            let mask = rule.tag_mask(TargetKind::Node, false, tags, ctx);
-            if mask == 0 || !rule.applies(mask, Some(bucket)) {
+        for &(ri, mask) in matches {
+            let rule = &self.rules[ri as usize];
+            if !rule.applies(mask, bucket) {
                 continue;
             }
             for d in &rule.declarations {
@@ -2278,6 +2388,63 @@ mod tests {
         let s = Stylesheet::parse("node|z17- { symbol-size: 12; }").unwrap();
         assert_eq!(s.node_style(&tags(&[]), 16.0).size, DEFAULT_NODE_SIZE);
         assert_eq!(s.node_style(&tags(&[]), 17.0).size, 12.0);
+    }
+
+    #[test]
+    fn cached_node_style_resolves_per_zoom_through_its_table() {
+        let s = Stylesheet::parse(
+            "node { symbol-size: 4; } node|z16- { symbol-size: 9; } node|z-15[amenity] { symbol-size: 2; }",
+        )
+        .unwrap();
+        let plain = s.node_style_cached(&tags(&[("name", "x")]));
+        let cafe = s.node_style_cached(&tags(&[("amenity", "cafe")]));
+        assert!(plain.tagged);
+        assert_ne!(plain.sig, cafe.sig);
+        assert_eq!(s.node_style_cached(&tags(&[("name", "y")])).sig, plain.sig);
+        let low = s.zoom_node_styles(14.0);
+        let high = s.zoom_node_styles(17.0);
+        assert_eq!(plain.at_zoom(Some(&low)).size, 4.0);
+        assert_eq!(plain.at_zoom(Some(&high)).size, 9.0);
+        assert_eq!(cafe.at_zoom(Some(&low)).size, 2.0);
+        assert_eq!(cafe.at_zoom(Some(&high)).size, 9.0);
+        // `tagged` rides on the cached style, not the table.
+        assert!(plain.at_zoom(Some(&high)).tagged);
+        // Agrees with resolving directly at that zoom.
+        assert_eq!(
+            cafe.at_zoom(Some(&low)).size,
+            s.node_style(&tags(&[("amenity", "cafe")]), 14.0).size
+        );
+        // Back to the first bucket: rebuilt, not stale.
+        assert_eq!(plain.at_zoom(Some(&s.zoom_node_styles(14.5))).size, 4.0);
+    }
+
+    #[test]
+    fn node_zoom_table_grows_with_new_signatures() {
+        let s = Stylesheet::parse("node|z16-[amenity] { symbol-size: 9; }").unwrap();
+        let a = s.node_style_cached(&tags(&[("amenity", "x")]));
+        assert_eq!(s.zoom_node_styles(17.0)[a.sig as usize].size, 9.0);
+        let b = s.node_style_cached(&tags(&[("shop", "x")]));
+        assert_eq!(
+            s.zoom_node_styles(17.0)[b.sig as usize].size,
+            DEFAULT_NODE_SIZE
+        );
+    }
+
+    #[test]
+    fn cached_node_style_keeps_connection_contexts() {
+        let s = Stylesheet::parse(
+            "node:connection { symbol-size: 8; } node|z17-:connection { symbol-size: 12; }",
+        )
+        .unwrap();
+        let n = s.node_style_cached(&tags(&[]));
+        assert_eq!(
+            n.at_zoom(Some(&s.zoom_node_styles(16.0))).junction.size,
+            8.0
+        );
+        assert_eq!(
+            n.at_zoom(Some(&s.zoom_node_styles(17.0))).junction.size,
+            12.0
+        );
     }
 
     #[test]
