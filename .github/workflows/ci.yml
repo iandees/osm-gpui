@@ -74,7 +74,10 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
             libssl-dev libzstd-dev libvulkan1 libdrm-dev libgbm-dev
 
+      # The extension host's tests build extensions/maproulette for wasm.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
 
       # Restores from this ref, else from main; saves when nothing matched.
       - uses: Swatinem/rust-cache@v2
@@ -92,6 +95,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
 
       - uses: Swatinem/rust-cache@v2
         with:

@@ -69,6 +69,10 @@ menu:
     show_street_names: "Straßennamen anzeigen"
     show_area_labels: "Flächenbeschriftungen anzeigen"
     toggle_debug_overlay: "Debug-Overlay ein-/ausblenden"
+  extensions:
+    title: "Erweiterungen"
+    manage: "Erweiterungen verwalten…"
+    install_dev: "Entwicklungs-Erweiterung installieren…"
   window:
     title: "Fenster"
     minimize: "Im Dock ablegen"
@@ -276,6 +280,8 @@ limits:
 # Abschnitte der Seitenleiste. Vorlagen- und Feldbezeichnungen darin stammen
 # aus dem mitgelieferten iD-Tagging-Schema und werden hier nicht übersetzt.
 panel:
+  extensions:
+    title: "Erweiterungen"
   layers:
     title: "Ebenen"
     empty: "Noch keine Ebenen"
@@ -926,6 +932,37 @@ shortcut_category:
   actions: "Auswahlaktionen"
 
 dialog:
+  extensions:
+    title: "Erweiterungen"
+    search: "Erweiterungen suchen"
+    tab_installed: "Installiert (%{count})"
+    tab_installed_updates: "Installiert (%{count}) · %{updates} Update(s)"
+    tab_available: "Verfügbar"
+    install: "Installieren"
+    install_confirm: "%{name} installieren"
+    cancel: "Abbrechen"
+    uninstall: "Deinstallieren"
+    uninstall_question: "%{name} deinstallieren? Seine Einstellungen und gespeicherten Geheimnisse bleiben auf diesem Computer; eine erneute Installation stellt sie wieder her."
+    uninstall_confirm: "%{name} deinstallieren"
+    update_to: "Auf %{version} aktualisieren"
+    rebuild: "Neu bauen"
+    enable: "Einschalten"
+    disable: "Ausschalten"
+    dev: "Entw."
+    "off": "aus"
+    by: "Von %{authors}"
+    working: "Arbeitet…"
+    incompatible: "Braucht eine neuere osm-gpui-Version"
+    loading: "Erweiterungsverzeichnis wird geladen…"
+    index_failed: "Das Erweiterungsverzeichnis konnte nicht gelesen werden: %{detail}"
+    none_available: "Alle Erweiterungen des Verzeichnisses sind installiert."
+    none_installed: "Keine Erweiterungen installiert. Siehe „Verfügbar“."
+    install_dev: "Entwicklungs-Erweiterung installieren…"
+    refresh: "Aktualisieren"
+    close: "Schließen"
+    can_reach: "Darf %{hosts} über HTTPS erreichen"
+    no_network: "Kein Netzzugriff"
+    can_store_secrets: "Darf Geheimnisse im Schlüsselbund ablegen"
   cancel: "Abbrechen"
   no_matches: "Keine Treffer."
   upload:
@@ -1564,3 +1601,19 @@ revert:
     unavailable: "%{kind} %{id}: beim Server nicht verfügbar"
     edited_locally: "%{kind} %{id}: hat noch nicht hochgeladene Änderungen"
     refused: "%{kind} %{id}: %{detail}"
+extensions:
+  updates_available: "Erweiterungs-Updates verfügbar: %{count}. Siehe Erweiterungen > Erweiterungen verwalten…"
+  load_failed: "Eine Erweiterung konnte nicht geladen werden: %{detail}"
+  not_installed: "Die Erweiterung %{id} ist nicht installiert"
+  busy: "%{name} arbeitet noch…"
+  bad_area: "%{name} wollte einen ungültigen Bereich herunterladen"
+  open_url_failed: "%{url} konnte nicht geöffnet werden: %{detail}"
+  pick_folder: "Erweiterungsordner wählen (mit extension.toml)"
+  building: "Die Erweiterung in %{path} wird gebaut…"
+  installed: "%{name} %{version} installiert"
+  install_failed: "Installieren der Erweiterung fehlgeschlagen: %{detail}"
+  uninstalled: "%{name} deinstalliert"
+  uninstall_failed: "%{name} konnte nicht deinstalliert werden: %{detail}"
+  panel:
+    working: "Arbeitet…"
+    close: "Schließen"

@@ -10,6 +10,7 @@ use reference_layer::ReferenceLayer;
 
 pub mod area_labels;
 pub mod diff;
+pub mod extension_layer;
 pub mod labels;
 pub mod line_labels;
 pub mod merge;
@@ -154,6 +155,8 @@ pub enum LayerKind {
     StreetImagery,
     /// Tiles of a vector-tile archive (PMTiles).
     VectorTile,
+    /// An extension's markers.
+    Extension,
 }
 
 /// What a layer found under a click, in the layer's own terms.
@@ -171,6 +174,8 @@ pub enum LayerHit {
     ReferenceFeature(usize),
     /// A feature of a vector-tile layer.
     VectorFeature(std::sync::Arc<crate::layers::vector_tile_layer::VectorFeatureInfo>),
+    /// One of an extension's markers: the extension's id and the marker's.
+    ExtensionMarker { extension: String, marker: String },
 }
 
 impl LayerHit {
@@ -179,7 +184,7 @@ impl LayerHit {
     /// features, whatever order the layers are stacked in.
     fn rank(&self) -> u8 {
         match self {
-            LayerHit::Note(_) => 0,
+            LayerHit::Note(_) | LayerHit::ExtensionMarker { .. } => 0,
             LayerHit::Photo { .. } => 1,
             LayerHit::ReferenceFeature(_) => 2,
             LayerHit::VectorFeature(_) => 3,
@@ -190,7 +195,10 @@ impl LayerHit {
     fn distance_px(&self) -> f32 {
         match self {
             LayerHit::Photo { distance_px, .. } => *distance_px,
-            LayerHit::Note(_) | LayerHit::ReferenceFeature(_) | LayerHit::VectorFeature(_) => 0.0,
+            LayerHit::Note(_)
+            | LayerHit::ReferenceFeature(_)
+            | LayerHit::VectorFeature(_)
+            | LayerHit::ExtensionMarker { .. } => 0.0,
         }
     }
 }

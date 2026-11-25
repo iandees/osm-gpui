@@ -4,6 +4,7 @@ pub mod about_dialog;
 pub mod custom_imagery_dialog;
 pub mod delete_layer_dialog;
 pub mod esri_layer_dialog;
+pub mod extensions_dialog;
 pub mod find_dialog;
 pub mod modal;
 pub mod note_dialog;

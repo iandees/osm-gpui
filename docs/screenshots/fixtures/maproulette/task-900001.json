@@ -1,0 +1,19 @@
+{
+  "id": 900001,
+  "name": "way/1001",
+  "parent": 7001,
+  "instruction": "",
+  "status": 0,
+  "location": {"type": "Point", "coordinates": [-74.006000, 40.714147]},
+  "geometries": {
+    "type": "FeatureCollection",
+    "features": [
+      {
+        "id": "way/1001",
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [-74.006000, 40.714147]},
+        "properties": {"@id": "way/1001", "building": "yes"}
+      }
+    ]
+  }
+}

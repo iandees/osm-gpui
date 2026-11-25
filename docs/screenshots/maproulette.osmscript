@@ -1,0 +1,47 @@
+# The MapRoulette extension (extensions/maproulette), run from an installed
+# copy with its HTTP answered from fixtures:
+#
+#   OSM_GPUI_EXTENSIONS_DIR=<dir with installed/maproulette/{extension.toml,extension.wasm,locales/}> \
+#   cargo run --release -- --script docs/screenshots/maproulette.osmscript \
+#     --offline --http-fixtures docs/screenshots/fixtures/maproulette/http-fixtures.json
+#
+# Add `--language de` to see the extension's own German catalog.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. Task 900001 sits there.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/areas.osm
+viewport 40.714147 -74.006000 17
+# Extensions load (compile) in the background after the first frame.
+wait_idle 5s
+
+# Extensions > MapRoulette > Show Tasks Here: the tasks in view as pins,
+# coloured by status.
+action RunExtensionCommand {"extension":"maproulette","command":"show-tasks"}
+wait_idle 3s
+capture out/maproulette-01-tasks.png
+
+# A click on a pin opens the task: its challenge and instructions in a
+# side-panel section of its own.
+click 488,388
+wait_idle 3s
+capture out/maproulette-02-task.png
+
+# Extensions > MapRoulette > API Key… opens a second panel beside the task.
+action RunExtensionCommand {"extension":"maproulette","command":"settings"}
+wait_idle 2s
+capture out/maproulette-03-two-panels.png
+
+# Each panel collapses on its own: fold the task to see the key panel.
+click 960,171
+wait_idle 1s
+capture out/maproulette-04-task-collapsed.png
+
+# Selecting a building (by its outline): its fields and tags come first,
+# the extension's panels stay below them.
+click 267,322
+wait_idle 2s
+capture out/maproulette-05-with-selection.png
+
+log done

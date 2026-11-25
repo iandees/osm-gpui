@@ -50,6 +50,8 @@ mod road_paint;
 use modes::AddProgress;
 #[cfg(test)]
 use modes::{BuildingReference, ExtrudeDrag, ExtrudeStyle};
+mod extensions_manage;
+mod extensions_ui;
 mod notes_ui;
 mod pmtiles_ui;
 mod pointer_state;
@@ -873,6 +875,8 @@ struct MapViewer {
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
     /// OSM notes: the Notes layer, the open note, writes (see `notes_ui`).
     notes: notes_ui::NotesState,
+    /// Installed extensions, their markers and panel (see `extensions_ui`).
+    extensions: extensions_ui::ExtensionsState,
     /// Downloaded OSM GPS traces (see `gps_traces_ui`).
     gps_traces: gps_traces_ui::GpsTracesState,
     /// Street-level photos from Mapillary and Fotoshi (see `street_imagery_ui`).
@@ -1086,6 +1090,7 @@ impl MapViewer {
             last_modal_focus: Vec::new(),
             offset_adjust: None,
             notes: Default::default(),
+            extensions: Default::default(),
             gps_traces: Default::default(),
             imagery: Default::default(),
             pmtiles: Default::default(),
@@ -3317,6 +3322,7 @@ impl MapViewer {
             open_modal(&self.dialogs.restore_dialog, cx),
             open_modal(&self.dialogs.find_dialog, cx),
             open_modal(&self.dialogs.about_dialog, cx),
+            open_modal(&self.extensions.dialog, cx),
             open_modal(&self.dialogs.nsi_dialog, cx),
             open_modal(&self.dialogs.preset_picker_dialog, cx),
             open_modal(&self.dialogs.opening_hours_dialog, cx),
@@ -3840,7 +3846,7 @@ impl MapViewer {
         ctrl_held: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.place_armed_note(screen_pt) || self.open_layer_hit(screen_pt) {
+        if self.place_armed_note(screen_pt) || self.open_layer_hit(screen_pt, cx) {
             return;
         }
         self.mode_click(screen_pt, shift_held, click_count, ctrl_held, cx);
@@ -3850,7 +3856,11 @@ impl MapViewer {
     /// note, a photo); the click is used then. A click on anything else
     /// closes the open photo and goes on to the mode. OSM features are not
     /// layer hits: `select::click` resolves those.
-    fn open_layer_hit(&mut self, screen_pt: gpui::Point<gpui::Pixels>) -> bool {
+    fn open_layer_hit(
+        &mut self,
+        screen_pt: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         use osm_gpui::layers::LayerHit;
         if self.mode() != EditMode::Select {
             self.close_photo_panel();
@@ -3869,6 +3879,12 @@ impl MapViewer {
             }
             Some((layer, LayerHit::VectorFeature(info))) => {
                 self.select_vector_feature(layer, info);
+                true
+            }
+            Some((_, LayerHit::ExtensionMarker { extension, marker })) => {
+                self.close_photo_panel();
+                self.close_vector_feature();
+                self.extension_marker_clicked(&extension, &marker, cx);
                 true
             }
             // Reference features only describe themselves when no OSM
@@ -4994,8 +5010,14 @@ impl MapViewer {
         // Validated once, before the first changeset is opened.
         let report = self.validation_report();
         dialog.update(cx, |dialog, cx| dialog.set_validation(report, cx));
-        if !self.upload_comment_draft.is_empty() {
-            let draft = self.upload_comment_draft.clone();
+        // A draft typed earlier wins over what an extension suggests (a
+        // MapRoulette challenge's check-in comment).
+        let draft = if self.upload_comment_draft.is_empty() {
+            self.extension_changeset_comment()
+        } else {
+            Some(self.upload_comment_draft.clone())
+        };
+        if let Some(draft) = draft {
             dialog.update(cx, |dialog, cx| dialog.set_draft_comment(draft, window, cx));
         }
         // The sources: what was typed before the dialog was closed, else the
@@ -5350,6 +5372,9 @@ impl MapViewer {
                         this.dialogs.upload_dialog = None;
                         this.upload_comment_draft.clear();
                         this.last_uploaded_changeset = Some(last_changeset).filter(|&c| c > 0);
+                        if last_changeset > 0 {
+                            this.extensions_upload_finished(vec![last_changeset as i64], cx);
+                        }
                         this.upload_source_draft = None;
                         // Remember the source and comment for next time. Never
                         // written to disk from a script run or a test.
@@ -5887,7 +5912,11 @@ impl MapViewer {
     /// `with_map_viewer`).
     pub(crate) fn request_download(&mut self, cx: &mut Context<Self>) {
         let bounds = self.viewport.visible_bounds();
+        self.request_download_of(bounds, cx);
+    }
 
+    /// Download the OSM data in `bounds` into the editing layer.
+    pub(crate) fn request_download_of(&mut self, bounds: GeoBounds, cx: &mut Context<Self>) {
         let base_url = settings_store::api_base_url();
         // Lazily (re)fetch the server's capabilities if there are none or the
         // server last reported itself offline; never blocks.
@@ -6259,6 +6288,7 @@ impl Render for MapViewer {
         self.check_for_pending_notice(window, cx);
         self.check_for_pending_restore(window, cx);
         self.notes_frame(window, cx);
+        self.extensions_frame(window, cx);
         self.imagery_frame(cx);
         self.pmtiles_frame(cx);
         self.maybe_rebuild_imagery_menu(cx);
@@ -6737,6 +6767,9 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_toggle_downloaded_area))
             .on_action(cx.listener(Self::on_download_gps_traces))
             .on_action(cx.listener(Self::on_toggle_notes))
+            .on_action(cx.listener(Self::on_run_extension_command))
+            .on_action(cx.listener(Self::on_install_dev_extension))
+            .on_action(cx.listener(Self::on_manage_extensions))
             .on_action(cx.listener(Self::on_refresh_notes))
             .on_action(cx.listener(Self::on_toggle_mapillary))
             .on_action(cx.listener(Self::on_toggle_fotoshi))

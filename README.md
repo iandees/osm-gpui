@@ -36,6 +36,8 @@ The first build takes several minutes because GPUI is built from the Zed reposit
 
 Before opening a pull request, run the checks CI runs: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build` and `cargo test`. See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions, and [docs/osmscript.md](docs/osmscript.md) for the scripted UI harness.
 
+To add a feature without changing the app, write an extension: see [docs/extensions.md](docs/extensions.md).
+
 ## License
 
 Licensed under the [MIT license](LICENSE). The bundled iD tagging schema data and preset icons have their own licenses; see `assets/presets/LICENSE` and `assets/presets/icons/LICENSES.md`.

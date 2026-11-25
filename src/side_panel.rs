@@ -153,6 +153,9 @@ impl MapViewer {
             .or_else(|| self.render_photo_section(cx))
             .or_else(|| self.render_vector_feature_section(cx));
         let note_open = note_section.is_some();
+        // Extension panels: sections of their own after the selection's.
+        let extension_panels = self.render_extension_panels(cx);
+        let extensions_shown = !extension_panels.is_empty();
         let object_photos = self.render_object_photos_section(cx);
         let (note_title, note_status, note_body) = match note_section {
             Some((title, status, body)) => (Some(title), Some(status), Some(body)),
@@ -160,6 +163,7 @@ impl MapViewer {
         };
         let selection_title = match (note_title, self.selected.len()) {
             (Some(title), _) => title,
+            (None, 0) if extensions_shown => tr!("panel.extensions.title"),
             (None, 0 | 1) => tr!("panel.selection.title"),
             (None, n) => tr_count!("panel.selection.title_count", n),
         };
@@ -261,28 +265,33 @@ impl MapViewer {
                                     // of empty Fields and Tags sections.
                                     .children(scrolled_header)
                                     .children(note_body)
-                                    .when(selected_count == 0 && !note_open, |group| {
-                                        group.child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .items_center()
-                                                .gap_1()
-                                                .px_4()
-                                                .py_6()
-                                                .child(
-                                                    Label::new(tr!("panel.selection.nothing"))
-                                                        .text_color(muted),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(muted_text_size())
-                                                        .text_color(muted)
-                                                        .text_center()
-                                                        .child(tr!("panel.selection.nothing_hint")),
-                                                ),
-                                        )
-                                    })
+                                    .when(
+                                        selected_count == 0 && !note_open && !extensions_shown,
+                                        |group| {
+                                            group.child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .px_4()
+                                                    .py_6()
+                                                    .child(
+                                                        Label::new(tr!("panel.selection.nothing"))
+                                                            .text_color(muted),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(muted_text_size())
+                                                            .text_color(muted)
+                                                            .text_center()
+                                                            .child(tr!(
+                                                                "panel.selection.nothing_hint"
+                                                            )),
+                                                    ),
+                                            )
+                                        },
+                                    )
                                     .when(selected_count > 0 && !note_open, |group| {
                                         group
                                             .when(selected_count > 1, |group| {
@@ -345,7 +354,8 @@ impl MapViewer {
                                                     cx,
                                                 )
                                             }))
-                                    }),
+                                    })
+                                    .children(extension_panels),
                             ),
                     ),
             )
