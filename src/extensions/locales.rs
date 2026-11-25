@@ -5,13 +5,13 @@
 //! # locales/de.toml
 //! name = "MapRoulette"
 //! [commands]
-//! show-tasks = "Aufgaben hier zeigen"
+//! tasks = "MapRoulette-Aufgaben"
 //! [panel]
 //! load = "Daten laden"
 //! tasks = "%{count} Aufgaben"
 //! ```
 //!
-//! The app reads `name` and `commands.<id>` itself (for the Extensions menu);
+//! The app reads `name` and `commands.<id>` itself (for the menus);
 //! every other key is the extension's, looked up through `translate`. A
 //! lookup tries the app's language (`de-AT`), then its base language (`de`),
 //! then `en`.

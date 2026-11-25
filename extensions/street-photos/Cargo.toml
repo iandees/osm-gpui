@@ -1,6 +1,6 @@
 [package]
 name = "street-photos"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 publish = false
 description = "What the Mapillary, Fotoshi and Panoramax extensions share: photos by map tile, their markers and the photo panel"

@@ -38,7 +38,7 @@ use osm_gpui::ui::style::muted_text_size;
 
 use crate::MapViewer;
 
-/// Extensions > <extension> > <command>.
+/// An extension's menu command.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
 #[action(namespace = osm_gpui)]
 #[serde(deny_unknown_fields)]
@@ -47,24 +47,17 @@ pub(crate) struct RunExtensionCommand {
     pub command: String,
 }
 
-/// One extension as the Extensions menu lists it.
+/// One running extension's menu commands, for building the menus.
 #[derive(Clone, Debug)]
 pub(crate) struct MenuEntry {
     pub id: String,
-    name: String,
     pub commands: Vec<CommandDef>,
+    /// Its toggle commands that are checked.
+    pub checked: HashSet<String>,
     locales: Arc<Locales>,
 }
 
 impl MenuEntry {
-    /// The extension's name in `locale`.
-    pub(crate) fn name_in(&self, locale: &str) -> String {
-        self.locales
-            .lookup(locale, "name")
-            .unwrap_or(&self.name)
-            .to_string()
-    }
-
     /// Command `c`'s label in `locale` (`commands.<id>`, else the manifest's).
     pub(crate) fn command_label(&self, c: &CommandDef, locale: &str) -> String {
         self.locales
@@ -107,9 +100,12 @@ pub(crate) struct ExtensionsState {
     pub(crate) disabled: std::collections::BTreeSet<String>,
     /// The extension index, once fetched.
     pub(crate) index: Option<osm_gpui::extensions::registry::Index>,
-    pub(crate) index_state: osm_gpui::ui::extensions_dialog::IndexState,
-    /// Extensions > Manage Extensions…, while open.
-    pub(crate) dialog: Option<Entity<osm_gpui::ui::extensions_dialog::ExtensionsDialog>>,
+    pub(crate) index_state: osm_gpui::ui::extensions_page::IndexState,
+    /// Settings > Extensions, while Settings is open.
+    pub(crate) page: Option<Entity<osm_gpui::ui::extensions_page::ExtensionsPage>>,
+    /// Each running extension's section of Settings (its `settings`), asked
+    /// for after each of its calls while Settings is open.
+    pub(crate) settings: HashMap<String, Panel>,
     /// Extensions being installed, updated or rebuilt, and the last failure
     /// of each, for the manager.
     pub(crate) row_busy: HashSet<String>,
@@ -134,6 +130,8 @@ pub(crate) struct ExtensionsState {
     /// upload dialog opens (asking then could wait on a busy extension).
     changeset_tags: HashMap<String, Vec<(String, String)>>,
     pub(crate) installing_dev: bool,
+    /// Each extension's checked toggle commands (`set-command-checked`).
+    checked: HashMap<String, HashSet<String>>,
 }
 
 /// One call into an extension, made when its turn comes (with the app's
@@ -287,8 +285,13 @@ impl MapViewer {
             .iter()
             .map(|e| MenuEntry {
                 id: e.manifest.id.clone(),
-                name: e.manifest.name.clone(),
                 commands: e.manifest.commands.clone(),
+                checked: self
+                    .extensions
+                    .checked
+                    .get(&e.manifest.id)
+                    .cloned()
+                    .unwrap_or_default(),
                 locales: e.locales.clone(),
             })
             .collect();
@@ -330,7 +333,7 @@ impl MapViewer {
 
     /// Run `call` on extension `id` in the background, then apply what it
     /// asked for.
-    fn call_extension(
+    pub(crate) fn call_extension(
         &mut self,
         id: &str,
         call: impl FnOnce(&LoadedExtension, CallContext) -> Outcome<()> + Send + 'static,
@@ -387,19 +390,30 @@ impl MapViewer {
         };
         self.extensions.busy.insert(id.to_string());
         let context = self.extension_context();
+        let want_settings = self.extensions.page.is_some();
         let id = id.to_string();
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let (outcome, tags) = cx
+            let (outcome, settings, tags) = cx
                 .background_executor()
                 .spawn(async move {
                     let outcome = (next.call)(&ext, context.clone());
+                    // Settings shows the state the call left behind.
+                    let settings =
+                        want_settings.then(|| ext.settings(context.clone()).result.ok().flatten());
                     let tags = ext.changeset_tags(context).result.unwrap_or_default();
-                    (outcome, tags)
+                    (outcome, settings, tags)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.extensions.busy.remove(&id);
+                if let Some(settings) = settings {
+                    match settings {
+                        Some(panel) => this.extensions.settings.insert(id.clone(), panel),
+                        None => this.extensions.settings.remove(&id),
+                    };
+                    this.refresh_extensions_page(cx);
+                }
                 this.extensions.changeset_tags.insert(id.clone(), tags);
                 this.apply_extension_effects(&id, outcome.effects, cx);
                 if let Err(e) = outcome.result {
@@ -575,6 +589,17 @@ impl MapViewer {
                     id: panel_id,
                     panel,
                 } => apply_show_panel(&mut self.extensions.panels, id, panel_id, panel),
+                Effect::CommandChecked { command, checked } => {
+                    let set = self.extensions.checked.entry(id.to_string()).or_default();
+                    let changed = if checked {
+                        set.insert(command)
+                    } else {
+                        set.remove(&command)
+                    };
+                    if changed {
+                        self.refresh_extension_menu(cx);
+                    }
+                }
             }
         }
     }
@@ -724,6 +749,8 @@ impl MapViewer {
         self.extensions.panels.retain(|p| p.extension != id);
         self.drop_extension_queue(id);
         self.extensions.changeset_tags.remove(id);
+        self.extensions.checked.remove(id);
+        self.extensions.settings.remove(id);
     }
 
     /// Every open extension panel, each a collapsible section for the side

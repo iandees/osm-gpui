@@ -2,17 +2,14 @@ name = "Mapillary"
 description = "Straßenfotos von Mapillary auf der Karte, mit dem Foto und seinen Angaben in der Seitenleiste. Braucht ein Mapillary-Zugriffstoken."
 
 [commands]
-show-photos = "Fotos anzeigen"
-hide-photos = "Fotos ausblenden"
-refresh-photos = "Fotos aktualisieren"
-settings = "Zugriffstoken…"
+photos = "Mapillary-Fotos"
 
 [photos]
 zoom_in = "Zum Anzeigen der Mapillary-Fotos hineinzoomen"
 loaded_one = "Mapillary: 1 Foto"
 loaded = "Mapillary: %{count} Fotos"
-no_token = "Trage ein Mapillary-Zugriffstoken ein, um Mapillary-Fotos zu sehen"
-unauthorized = "Mapillary hat das Zugriffstoken abgelehnt; prüfe es unter Erweiterungen > Mapillary > Zugriffstoken…"
+no_token = "Trage unter Einstellungen > Erweiterungen > Mapillary ein Zugriffstoken ein, um Mapillary-Fotos zu sehen"
+unauthorized = "Mapillary hat das Zugriffstoken abgelehnt; prüfe es unter Einstellungen > Erweiterungen > Mapillary"
 rate_limited = "Anfragelimit von Mapillary erreicht; versuche es später erneut"
 failed = "Mapillary-Fotos konnten nicht geladen werden: %{detail}"
 
@@ -34,6 +31,5 @@ placeholder = "Client-Token einfügen (MLY|…)"
 placeholder_replace = "Ein Token ist gespeichert; füge ein neues ein, um es zu ersetzen"
 save = "Speichern"
 forget = "Token vergessen"
-cancel = "Abbrechen"
 saved = "Mapillary: Zugriffstoken gespeichert"
 forgotten = "Mapillary: Zugriffstoken vergessen"

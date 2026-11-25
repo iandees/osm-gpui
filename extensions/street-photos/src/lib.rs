@@ -32,6 +32,9 @@ const RETRY_AFTER: Duration = Duration::from_secs(30);
 pub const PHOTO_PANEL: &str = "photo";
 /// Storage key: the photos were shown when the app last ran.
 const SHOWN_KEY: &str = "shown";
+/// The menu command that shows and hides the photos, with a checkmark
+/// (`menu = "overlays"`, `toggle = true` in the manifest).
+pub const TOGGLE_COMMAND: &str = "photos";
 
 /// One street-level photo.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -234,9 +237,11 @@ pub struct Photos<S: Source> {
 impl<S: Source> Photos<S> {
     /// The photos are shown again if they were when the app last ran.
     pub fn new(source: S) -> Self {
+        let shown = osm::storage_get(SHOWN_KEY).is_some();
+        osm::set_command_checked(TOGGLE_COMMAND, shown);
         Photos {
             source,
-            shown: osm::storage_get(SHOWN_KEY).is_some(),
+            shown,
             tiles: HashMap::new(),
             failed: HashMap::new(),
             blocked: false,
@@ -252,6 +257,7 @@ impl<S: Source> Photos<S> {
     /// Show Photos.
     pub fn show(&mut self) -> osm::Result<()> {
         self.shown = true;
+        osm::set_command_checked(TOGGLE_COMMAND, true);
         osm::storage_set(SHOWN_KEY, Some("1"));
         self.blocked = false;
         self.zoomed_out = false;
@@ -261,6 +267,7 @@ impl<S: Source> Photos<S> {
     /// Hide Photos: no markers, no photo panel, nothing cached.
     pub fn hide(&mut self) {
         self.shown = false;
+        osm::set_command_checked(TOGGLE_COMMAND, false);
         osm::storage_set(SHOWN_KEY, None);
         self.tiles.clear();
         self.failed.clear();

@@ -1,6 +1,6 @@
 id = "fotoshi"
 name = "Fotoshi"
-version = "0.1.0"
+version = "0.2.0"
 schema_version = 1
 authors = ["Ian Dees"]
 description = "Street-level photos from Fotoshi on the map, with the photo and its details in the side panel; with an API key, also the photos of the selected feature."
@@ -14,17 +14,7 @@ http = ["fotoshi.com"]
 secrets = true
 
 [[commands]]
-id = "show-photos"
-label = "Show Photos"
-
-[[commands]]
-id = "hide-photos"
-label = "Hide Photos"
-
-[[commands]]
-id = "refresh-photos"
-label = "Refresh Photos"
-
-[[commands]]
-id = "settings"
-label = "API Key and Lookup…"
+id = "photos"
+label = "Fotoshi Photos"
+menu = "overlays"
+toggle = true

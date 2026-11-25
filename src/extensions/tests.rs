@@ -149,8 +149,8 @@ fn messages_come_from_the_extensions_own_catalog_in_the_apps_language() {
     assert_eq!(statuses(&out.effects), vec!["MapRoulette: 2 Aufgaben"]);
     // The menu labels come from the same catalogs.
     assert_eq!(
-        ext.locales.lookup("de", "commands.show-tasks"),
-        Some("Aufgaben hier zeigen")
+        ext.locales.lookup("de", "commands.tasks"),
+        Some("MapRoulette-Aufgaben")
     );
     assert_eq!(ext.display_name("fr"), "MapRoulette");
 }
@@ -276,9 +276,7 @@ fn secrets_are_namespaced_per_extension() {
     let secrets = Arc::new(MemorySecrets::default());
     secrets.set(&secret_name("other", "api-key"), Some("not yours"));
     let ext = load_with(Arc::new(FakeClient::new(vec![])), secrets.clone());
-    let out = ext.run_command(context(15.0), "settings");
-    out.result.unwrap();
-    let p = panel(&out.effects, "api-key").flatten().unwrap();
+    let p = ext.settings(context(15.0)).result.unwrap().unwrap();
     assert!(
         !p.elements
             .iter()
@@ -331,7 +329,7 @@ fn a_key_kept_in_plain_storage_moves_to_the_secret_store() {
         },
     )
     .unwrap();
-    ext.run_command(context(15.0), "settings").result.unwrap();
+    ext.settings(context(15.0)).result.unwrap();
     assert_eq!(
         secrets
             .get(&secret_name("maproulette", "api-key"))
@@ -383,8 +381,8 @@ fn install_copies_the_manifest_wasm_and_locales_and_uninstall_removes_them() {
     )
     .unwrap();
     assert_eq!(
-        ext.locales.lookup("de", "commands.hide-tasks"),
-        Some("Aufgaben ausblenden")
+        ext.locales.lookup("de", "commands.tasks"),
+        Some("MapRoulette-Aufgaben")
     );
     uninstall(&root, "maproulette").unwrap();
     assert!(installed(&root).is_empty());
@@ -462,8 +460,8 @@ mod from_the_index {
         )
         .unwrap();
         assert_eq!(
-            ext.locales.lookup("de", "commands.settings"),
-            Some("API-Schlüssel…")
+            ext.locales.lookup("de", "commands.tasks"),
+            Some("MapRoulette-Aufgaben")
         );
         let _ = std::fs::remove_dir_all(root);
     }
@@ -641,8 +639,12 @@ mod street_photos {
         ext.viewport_changed(view()).result.unwrap();
         assert!(http.seen.lock().unwrap().is_empty());
 
-        let out = ext.run_command(view(), "show-photos");
+        let out = ext.run_command(view(), "photos");
         out.result.unwrap();
+        assert!(out.effects.iter().any(|e| matches!(
+            e,
+            Effect::CommandChecked { command, checked: true } if command == "photos"
+        )));
         let tiles: Vec<String> = http.seen.lock().unwrap().clone();
         assert!(
             tiles.iter().any(|u| u.ends_with("/15/7898/11796.mvt")),
@@ -697,7 +699,7 @@ mod street_photos {
             min_lon: -100.0,
             max_lon: -90.0,
         };
-        let out = ext.run_command(wide, "show-photos");
+        let out = ext.run_command(wide, "photos");
         out.result.unwrap();
         assert!(http.seen.lock().unwrap().is_empty());
         assert_eq!(
@@ -709,13 +711,18 @@ mod street_photos {
 
 mod older_api_versions {
     //! Extensions built against an older API version keep working: the
-    //! released MapRoulette 0.1.0 (built against API 0.1.0, kept as a fixture)
-    //! loads and runs in this app.
+    //! released MapRoulette 0.1.0 and 0.2.0 (built against API 0.1.0 and
+    //! 0.2.0, kept as fixtures) load and run in this app.
 
     use super::*;
 
     fn fixture() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions/maproulette-0.1.0")
+        fixture_of("0.1.0")
+    }
+
+    fn fixture_of(version: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("tests/fixtures/extensions/maproulette-{version}"))
     }
 
     #[test]
@@ -730,12 +737,14 @@ mod older_api_versions {
             .collect();
         assert_eq!(
             older,
-            ["0.1.0"],
+            ["0.1.0", "0.2.0"],
             "add a fixture test for each older version"
         );
-        let wasm = std::fs::read(fixture().join("extension.wasm")).unwrap();
-        assert_eq!(runtime::api_version_of(&wasm).unwrap(), "0.1.0");
-        assert!(registry::api_compatible("0.1.0"));
+        for version in older {
+            let wasm = std::fs::read(fixture_of(version).join("extension.wasm")).unwrap();
+            assert_eq!(runtime::api_version_of(&wasm).unwrap(), version);
+            assert!(registry::api_compatible(version));
+        }
     }
 
     /// The released API versions' WIT, frozen. A released version never
@@ -749,6 +758,10 @@ mod older_api_versions {
         (
             "0.2.0",
             "edc90f5136925fdcee07b47bd4d54158e7b3878298f07c2946f4842c712d23e7",
+        ),
+        (
+            "0.3.0",
+            "2997644c30d8bf9412ff596267cccd6d222be4725762be9453be4f79528f7e5a",
         ),
     ];
 
@@ -835,5 +848,32 @@ mod older_api_versions {
         ext.viewport_changed(context(15.0)).result.unwrap();
         ext.selection_changed(context(15.0)).result.unwrap();
         assert_eq!(http.request_count(), 3);
+    }
+
+    #[test]
+    fn a_0_2_extension_loads_runs_and_has_no_settings_section() {
+        let http = Arc::new(FakeClient::new(vec![
+            ok(200, TASKS),
+            ok(200, TASK),
+            ok(200, CHALLENGE),
+        ]));
+        let ext = LoadedExtension::load(
+            &fixture_of("0.2.0"),
+            services(http.clone(), Arc::new(MemorySecrets::default())),
+        )
+        .unwrap();
+        assert_eq!(ext.api_version, "0.2.0");
+
+        let out = ext.run_command(context(15.0), "show-tasks");
+        out.result.unwrap();
+        assert_eq!(markers(&out.effects).len(), 2);
+        let out = ext.marker_clicked(context(15.0), "317096925");
+        out.result.unwrap();
+        assert!(panel(&out.effects, "task").flatten().is_some());
+
+        // 0.2 has viewport and selection events; it has no settings.
+        ext.viewport_changed(context(15.0)).result.unwrap();
+        ext.selection_changed(context(15.0)).result.unwrap();
+        assert!(ext.settings(context(15.0)).result.unwrap().is_none());
     }
 }

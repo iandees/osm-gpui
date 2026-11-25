@@ -2,9 +2,7 @@ name = "Panoramax"
 description = "Street-level photos from Panoramax on the map, with the photo and its details in the side panel."
 
 [commands]
-show-photos = "Show Photos"
-hide-photos = "Hide Photos"
-refresh-photos = "Refresh Photos"
+photos = "Panoramax Photos"
 
 [photos]
 zoom_in = "Zoom in to see Panoramax photos"

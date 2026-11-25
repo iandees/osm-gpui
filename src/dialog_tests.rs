@@ -69,12 +69,6 @@ fn openers() -> Vec<(&'static str, Opener)> {
             v.dialogs.settings =
                 Some(cx.new(|cx| ui::settings_window::SettingsWindow::new(None, w, cx)));
         }),
-        ("extensions", |v, w, cx| {
-            v.extensions.dialog =
-                Some(cx.new(|cx| {
-                    ui::extensions_dialog::ExtensionsDialog::new(Default::default(), w, cx)
-                }));
-        }),
         ("nsi", |v, w, cx| {
             v.dialogs.nsi_dialog = Some(cx.new(|cx| ui::nsi_dialog::NsiPresetDialog::new(w, cx)));
         }),
@@ -315,12 +309,6 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
     );
     closes_on_escape!(
         cx,
-        |w, cx| extensions_dialog::ExtensionsDialog::new(Default::default(), w, cx),
-        extensions_dialog::DialogEvent,
-        extensions_dialog::DialogEvent::Closed
-    );
-    closes_on_escape!(
-        cx,
         nsi_dialog::NsiPresetDialog::new,
         nsi_dialog::DialogEvent,
         nsi_dialog::DialogEvent::Cancelled
@@ -532,14 +520,14 @@ fn only_the_preset_picker_closes_when_the_backdrop_is_clicked(cx: &mut TestAppCo
     assert!(events.is_empty());
 }
 
-fn extensions_event(e: &ui::extensions_dialog::DialogEvent) -> String {
+fn extensions_event(e: &ui::extensions_page::PageEvent) -> String {
     format!("{e:?}")
 }
 
 #[gpui::test]
-fn uninstalling_an_extension_asks_first_and_escape_backs_out(cx: &mut TestAppContext) {
-    use ui::extensions_dialog::{Confirm, ExtensionsDialog, Model, Row};
-    let build = |w: &mut Window, cx: &mut Context<ExtensionsDialog>| {
+fn uninstalling_an_extension_asks_first_and_cancel_backs_out(cx: &mut TestAppContext) {
+    use ui::extensions_page::{Confirm, ExtensionsPage, Model, Row};
+    let build = |w: &mut Window, cx: &mut Context<ExtensionsPage>| {
         let model = Model {
             rows: vec![Row {
                 id: "maproulette".into(),
@@ -551,17 +539,17 @@ fn uninstalling_an_extension_asks_first_and_escape_backs_out(cx: &mut TestAppCon
             }],
             ..Default::default()
         };
-        ExtensionsDialog::new(model, w, cx)
+        ExtensionsPage::new(model, w, cx)
     };
 
-    // Asking, then Escape: nothing is uninstalled and the dialog stays open.
+    // Asking, then Cancel: nothing is uninstalled.
     let events = dialog_events(cx, build, extensions_event, |vcx, dialog| {
         dialog.update(vcx, |d, cx| d.ask_uninstall("maproulette", cx));
         assert_eq!(
             dialog.read_with(vcx, |d, _| d.confirming().cloned()),
             Some(Confirm::Uninstall("maproulette".into()))
         );
-        vcx.simulate_keystrokes("escape");
+        dialog.update(vcx, |d, cx| d.cancel_confirm(cx));
         assert_eq!(dialog.read_with(vcx, |d, _| d.confirming().cloned()), None);
     });
     assert!(events.is_empty(), "{events:?}");

@@ -1,6 +1,7 @@
 //! Managing extensions: what is installed (on or off), the extension index,
-//! and Extensions > Manage Extensions… (installing from the index, updating,
-//! turning off, uninstalling, Install Dev Extension and Rebuild).
+//! and Settings > Extensions (installing from the index, updating, turning
+//! off, uninstalling, Install Dev Extension and Rebuild, and each running
+//! extension's own settings).
 //!
 //! The index is fetched in the background at startup (failures are quiet
 //! until the manager is opened) and again from the manager's Refresh. Updates
@@ -18,7 +19,8 @@ use osm_gpui::extensions::registry;
 use osm_gpui::extensions::runtime::KeychainSecrets;
 use osm_gpui::extensions::{self, LoadedExtension, Locales, Manifest, Services};
 use osm_gpui::tr;
-use osm_gpui::ui::extensions_dialog::{DialogEvent, ExtensionsDialog, IndexState, Model, Row};
+use osm_gpui::ui::extensions_page::{ExtensionsPage, IndexState, Model, PageEvent, Row};
+use osm_gpui::ui::settings_window::SettingsPage;
 
 use crate::MapViewer;
 
@@ -57,6 +59,10 @@ fn capability_lines(c: &Capabilities) -> Vec<String> {
     }
     lines
 }
+
+/// The panel id an extension's buttons in Settings report (the SDK's
+/// `SETTINGS_PANEL`).
+const SETTINGS_PANEL: &str = "settings";
 
 /// What a background install, update or rebuild produced.
 type JobResult = Result<LoadedExtension, String>;
@@ -113,7 +119,7 @@ impl MapViewer {
                     }
                 }
                 this.refresh_extension_menu(cx);
-                this.refresh_extensions_dialog(cx);
+                this.refresh_extensions_page(cx);
                 cx.notify();
             });
         })
@@ -161,7 +167,7 @@ impl MapViewer {
     /// it fails (the user asked); otherwise only the manager shows it.
     pub(crate) fn fetch_extension_index(&mut self, loud: bool, cx: &mut Context<Self>) {
         self.extensions.index_state = IndexState::Loading;
-        self.refresh_extensions_dialog(cx);
+        self.refresh_extensions_page(cx);
         let http = self.http.clone();
         let url = registry::index_url();
         cx.spawn(async move |this, cx| {
@@ -193,7 +199,7 @@ impl MapViewer {
                         this.extensions.index_state = IndexState::Failed(e);
                     }
                 }
-                this.refresh_extensions_dialog(cx);
+                this.refresh_extensions_page(cx);
                 cx.notify();
             });
         })
@@ -238,6 +244,7 @@ impl MapViewer {
                     compatible: entry.is_none_or(|e| e.is_compatible()),
                     busy: self.extensions.row_busy.contains(&m.id),
                     error: self.extensions.row_errors.get(&m.id).cloned(),
+                    settings: self.extensions.settings.get(&m.id).cloned(),
                 }
             })
             .collect();
@@ -259,6 +266,7 @@ impl MapViewer {
                     compatible: e.is_compatible(),
                     busy: self.extensions.row_busy.contains(&e.id),
                     error: self.extensions.row_errors.get(&e.id).cloned(),
+                    settings: None,
                 });
             }
         }
@@ -274,30 +282,28 @@ impl MapViewer {
         }
     }
 
-    /// Hand the open manager the current state.
-    pub(crate) fn refresh_extensions_dialog(&mut self, cx: &mut Context<Self>) {
-        if let Some(dialog) = self.extensions.dialog.clone() {
+    /// Hand Settings > Extensions the current state.
+    pub(crate) fn refresh_extensions_page(&mut self, cx: &mut Context<Self>) {
+        if let Some(page) = self.extensions.page.clone() {
             let model = self.extensions_model();
-            dialog.update(cx, |d, cx| d.set_model(model, cx));
+            page.update(cx, |p, cx| p.set_model(model, cx));
         }
     }
 
-    pub(crate) fn on_manage_extensions(
+    /// Settings > Extensions, for a Settings window that is opening. Every
+    /// running extension is asked for its section.
+    pub(crate) fn new_extensions_page(
         &mut self,
-        _: &ManageExtensions,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if self.extensions.dialog.is_some() {
-            return;
-        }
+    ) -> gpui::Entity<ExtensionsPage> {
         let model = self.extensions_model();
-        let dialog = cx.new(|cx| ExtensionsDialog::new(model, window, cx));
-        cx.subscribe(&dialog, |this, _, event: &DialogEvent, cx| {
-            this.on_extensions_dialog_event(event.clone(), cx);
+        let page = cx.new(|cx| ExtensionsPage::new(model, window, cx));
+        cx.subscribe(&page, |this, _, event: &PageEvent, cx| {
+            this.on_extensions_page_event(event.clone(), cx);
         })
         .detach();
-        self.extensions.dialog = Some(dialog);
+        self.extensions.page = Some(page.clone());
         // A failed or missing index is tried again when the manager opens.
         if !matches!(
             self.extensions.index_state,
@@ -305,20 +311,61 @@ impl MapViewer {
         ) {
             self.fetch_extension_index(false, cx);
         }
-        cx.notify();
+        let ids: Vec<String> = self
+            .extensions
+            .loaded
+            .iter()
+            .map(|e| e.manifest.id.clone())
+            .collect();
+        for id in ids {
+            // Any call is followed by `settings` while the page is open.
+            self.call_extension(
+                &id,
+                |_, _| osm_gpui::extensions::runtime::Outcome {
+                    result: Ok(()),
+                    effects: Vec::new(),
+                },
+                cx,
+            );
+        }
+        page
     }
 
-    fn on_extensions_dialog_event(&mut self, event: DialogEvent, cx: &mut Context<Self>) {
+    /// Settings closed.
+    pub(crate) fn extensions_page_closed(&mut self) {
+        self.extensions.page = None;
+        self.extensions.settings.clear();
+    }
+
+    /// The old Extensions > Manage Extensions… action: Settings > Extensions.
+    pub(crate) fn on_manage_extensions(
+        &mut self,
+        _: &ManageExtensions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings(Some(SettingsPage::Extensions), window, cx);
+    }
+
+    fn on_extensions_page_event(&mut self, event: PageEvent, cx: &mut Context<Self>) {
         match event {
-            DialogEvent::Closed => self.extensions.dialog = None,
-            DialogEvent::Install(id) | DialogEvent::Update(id) => self.install_from_index(&id, cx),
-            DialogEvent::Uninstall(id) => self.uninstall_extension(&id, cx),
-            DialogEvent::SetEnabled(id, on) => self.set_extension_enabled(&id, on, cx),
-            DialogEvent::Rebuild(id) => self.rebuild_dev_extension(&id, cx),
-            DialogEvent::InstallDev => self.install_dev_extension(cx),
-            DialogEvent::Refresh => self.fetch_extension_index(true, cx),
+            PageEvent::Install(id) | PageEvent::Update(id) => self.install_from_index(&id, cx),
+            PageEvent::Uninstall(id) => self.uninstall_extension(&id, cx),
+            PageEvent::SetEnabled(id, on) => self.set_extension_enabled(&id, on, cx),
+            PageEvent::Rebuild(id) => self.rebuild_dev_extension(&id, cx),
+            PageEvent::InstallDev => self.install_dev_extension(cx),
+            PageEvent::Refresh => self.fetch_extension_index(true, cx),
+            PageEvent::Settings {
+                extension,
+                button,
+                inputs,
+            } => self.call_extension(
+                &extension,
+                move |ext, context| ext.panel_button(context, SETTINGS_PANEL, &button, &inputs),
+                cx,
+            ),
         }
-        self.refresh_extensions_dialog(cx);
+        self.refresh_extensions_page(cx);
         cx.notify();
     }
 
@@ -373,7 +420,7 @@ impl MapViewer {
                 self.extensions.row_errors.insert(id.to_string(), first);
             }
         }
-        self.refresh_extensions_dialog(cx);
+        self.refresh_extensions_page(cx);
         cx.notify();
     }
 
@@ -544,7 +591,7 @@ impl MapViewer {
                 if let Some(job) = this.dev_job(src) {
                     this.run_extension_job(&id, job, cx);
                 }
-                this.refresh_extensions_dialog(cx);
+                this.refresh_extensions_page(cx);
                 cx.notify();
             });
         })

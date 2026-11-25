@@ -167,13 +167,13 @@ impl Extension for Hello {
 osm::register_extension!(Hello);
 ```
 
-To install it, choose **Extensions > Install Dev Extension…** in osm-gpui and
-pick the crate's folder. The app runs `cargo build --release --target
-wasm32-wasip2` there, installs the result, and loads it. **Extensions >
-Hello OSM > Where Am I?** then opens the panel.
+To install it, open **Settings > Extensions**, press **Install Dev
+Extension…** and pick the crate's folder. The app runs `cargo build --release
+--target wasm32-wasip2` there, installs the result, and loads it. **Tools >
+Where Am I?** then opens the panel.
 
-After changing the code, open **Extensions > Manage Extensions…** and press
-**Rebuild** on the extension. Dev extensions remember their source folder,
+After changing the code, press **Rebuild** on the extension in **Settings >
+Extensions**. Dev extensions remember their source folder,
 and they are never replaced by updates from the index.
 
 If a folder contains a prebuilt `extension.wasm` next to its
@@ -192,7 +192,7 @@ If a folder contains a prebuilt `extension.wasm` next to its
 | `repository` | no | Where the source lives. |
 | `[capabilities]` | no | What the extension may reach (see below). |
 | `subscribe` | no | Events to hear about: `"viewport"`, `"selection"` (see [Following the map and the selection](#following-the-map-and-the-selection)). Put it before any table. |
-| `[[commands]]` | no | Menu entries: `id` and `label`. |
+| `[[commands]]` | no | Menu entries: `id`, `label`, and optionally `menu` and `toggle` (see below). |
 
 Capabilities:
 
@@ -212,8 +212,36 @@ them:
 - Without `secrets = true`, secret reads find nothing and writes are
   dropped.
 
-Commands appear in **Extensions > *your extension's name*** in the order they
-are listed. Choosing one calls `run_command` with its `id`.
+There is no menu of its own for each extension. A command goes in the app's
+menus next to the app's own items of the same kind, chosen with `menu`:
+
+| `menu` | Where | For |
+|---|---|---|
+| `overlays` | View, after Show Notes and To-do List | Things drawn over the map: photos, tasks. |
+| `imagery` | Imagery, after the ways to add imagery | Adding imagery layers. |
+| `data` | File, after Download from OSM and Download GPS Traces | Loading data layers. |
+| `tools` (the default) | Tools, after the selection actions | Anything else. |
+| `help` | Help | Help and links. |
+
+Commands appear in the order they are listed, after a separator. Choosing one
+calls `run_command` with its `id`. Name a command so it reads well among the
+app's own items, without your extension's name in front unless the label
+needs it ("Mapillary Photos", not "Mapillary: Show").
+
+A command with `toggle = true` is drawn with a checkmark, for something
+that is on or off. It starts unchecked. Call `set_command_checked(id, on)`
+whenever it changes, including in `new()` when you restore saved state.
+
+```toml
+[[commands]]
+id = "photos"
+label = "Mapillary Photos"
+menu = "overlays"
+toggle = true
+```
+
+Settings that are not actions, such as an API key, don't belong in the
+menus: return them from `settings()` (see [Settings](#settings)).
 
 ## The API
 
@@ -229,6 +257,7 @@ it as `osm`.
 | `marker_clicked(id)` | One of your markers was clicked. |
 | `panel_button(panel, button, inputs)` | A button in one of your panels was pressed. `inputs` holds the text of that panel's inputs. |
 | `panel_closed(panel)` | The user closed one of your panels. |
+| `settings()` | Your section of Settings > Extensions, or `None` (see [Settings](#settings)). |
 | `viewport_changed()` | The map moved and settled (with `subscribe = ["viewport"]`). |
 | `selection_changed()` | The selection changed (with `subscribe = ["selection"]`). |
 | `changeset_tags()` | Asked after every call. Return the tags you want on the next upload (see [Uploads](#uploads)). |
@@ -256,6 +285,7 @@ calls, but not across restarts; use [storage](#storage-and-secrets) for that.
 | `open_url(url)` | Open an `http` or `https` URL in the browser. |
 | `set_markers(&[Marker])` | Replace all of your markers. |
 | `show_panel(id, Option<&Panel>)` | Show or replace panel `id`; `None` closes it. |
+| `set_command_checked(id, on)` | Check or uncheck a `toggle = true` command. |
 | `http_fetch(&HttpRequest)` | Send an HTTP request (see [Networking](#networking)). |
 | `http_fetch_many(&[HttpRequest])` | Send several requests in parallel; each answer is at its request's position. |
 | `get(url) -> HttpRequest` | A GET request for `url`, to send with either of the above. |
@@ -303,6 +333,36 @@ is pressed: `inputs.get("input-id")` returns its current text.
 When the user closes a panel with its × button, the app calls
 `panel_closed(id)`. Update your state there if the panel stood for something,
 for example by deselecting the marker it described.
+
+## Settings
+
+Each installed extension has a row in **Settings > Extensions** that opens to
+show what it may reach and, if it has any, its own settings. Return them from
+`settings()` as a [`Panel`](#panels):
+
+```rust
+fn settings(&mut self) -> Option<Panel> {
+    Some(Panel {
+        title: osm::t("key.title"),
+        elements: vec![
+            Element::Input(TextInput {
+                id: "key".into(),
+                label: osm::t("key.label"),
+                placeholder: String::new(),
+                value: String::new(),
+                secret: true,
+            }),
+            Element::Buttons(vec![button("save", &osm::t("key.save"), ButtonStyle::Primary)]),
+        ],
+    })
+}
+```
+
+A button there calls `panel_button` with the panel id `osm::SETTINGS_PANEL`
+(`"settings"`) and the text of the section's inputs. While Settings is open,
+the app asks `settings()` again after every call to your extension, so the
+section always shows the current state: you never show or close it yourself.
+Pictures are not shown there.
 
 ## Markers
 
@@ -404,7 +464,7 @@ name = "MapRoulette"
 description = "MapRoulette-Aufgaben auf der Karte finden …"
 
 [commands]
-show-tasks = "Aufgaben hier zeigen"
+tasks = "MapRoulette-Aufgaben"
 
 [panel]
 load = "Daten laden"
@@ -469,7 +529,7 @@ app makes.
 
 ## Publishing
 
-The extensions offered in **Extensions > Manage Extensions… > Available** are
+The extensions offered in **Settings > Extensions > Available** are
 listed in [`registry/extensions.toml`](../registry/extensions.toml). To
 publish yours, open a pull request that adds an entry:
 
@@ -506,16 +566,18 @@ API version the app supports.
 
 ## API versions
 
-The WIT package version (`osm-gpui:extension@0.2.0`) is the API version. The
+The WIT package version (`osm-gpui:extension@0.3.0`) is the API version. The
 SDK's version matches it, and the index records which version each extension
 was built against.
 
 **An extension keeps working when the API moves on.** The app runs
 extensions built against every API version it lists in
-`SUPPORTED_API_VERSIONS` (today 0.1.0 and 0.2.0), not only the newest. An
+`SUPPORTED_API_VERSIONS` (today 0.1.0, 0.2.0 and 0.3.0), not only the newest. An
 extension built against an older version gets the host it was built for: it
 simply doesn't see what came later. For example, a 0.1 extension's markers
-have no heading, and it is never sent viewport or selection events. You only
+have no heading, and it is never sent viewport or selection events; an
+extension older than 0.3 has no section in Settings and can't set a
+checkmark. You only
 need to rebuild against a newer SDK to use what it adds.
 
 An extension built against a *newer* version than the app knows doesn't
@@ -542,7 +604,7 @@ one:
    current one, the old current bindings become this module.
 4. Add it to `SUPPORTED_API_VERSIONS`, and commit an extension built against
    it under `tests/fixtures/extensions/` with a test that loads and drives
-   it, as `older_api_versions` does for MapRoulette 0.1.0.
+   it, as `older_api_versions` does for MapRoulette 0.1.0 and 0.2.0.
 5. Rebuild the extensions in `extensions/` against the new SDK when they need
    what it adds, and bump their versions so installed copies are offered the
    update.

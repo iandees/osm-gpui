@@ -425,9 +425,10 @@ mod tests {
         assert!(api_compatible(API_VERSION));
         assert!(api_compatible("0.1.0"), "an older line the app still runs");
         assert!(!api_compatible("0.0.1"), "a line it never ran");
-        assert!(!api_compatible("0.3.0"));
+        assert!(api_compatible("0.2.0"));
+        assert!(!api_compatible("0.4.0"));
         assert!(!api_compatible("1.0.0"));
-        assert!(!api_compatible("0.2.99"), "newer than the app");
+        assert!(!api_compatible("0.3.99"), "newer than the app");
         assert!(!api_compatible("0.1.1"), "newer than the 0.1 it runs");
         assert!(!api_compatible("garbage"));
     }

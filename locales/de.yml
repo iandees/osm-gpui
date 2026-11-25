@@ -69,10 +69,6 @@ menu:
     show_street_names: "Straßennamen anzeigen"
     show_area_labels: "Flächenbeschriftungen anzeigen"
     toggle_debug_overlay: "Debug-Overlay ein-/ausblenden"
-  extensions:
-    title: "Erweiterungen"
-    manage: "Erweiterungen verwalten…"
-    install_dev: "Entwicklungs-Erweiterung installieren…"
   window:
     title: "Fenster"
     minimize: "Im Dock ablegen"
@@ -555,6 +551,8 @@ settings:
       not_a_number: "Eine ganze Zahl in Megabyte eingeben"
       clear_source: "%{source} konnte nicht geleert werden: %{error}"
       clear_all: "Zwischenspeicher konnte nicht geleert werden: %{error}"
+  extensions:
+    title: "Erweiterungen"
   shortcuts:
     title: "Tastaturkürzel"
     reset_all: "Alle auf Standard zurücksetzen"
@@ -958,6 +956,7 @@ dialog:
     install_dev: "Entwicklungs-Erweiterung installieren…"
     refresh: "Aktualisieren"
     close: "Schließen"
+    no_settings: "Nichts einzustellen."
     can_reach: "Darf %{hosts} über HTTPS erreichen"
     no_network: "Kein Netzzugriff"
     can_store_secrets: "Darf Geheimnisse im Schlüsselbund ablegen"

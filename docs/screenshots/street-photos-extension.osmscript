@@ -15,9 +15,9 @@ viewport 44.929808 -93.224487 17
 # Extensions load (compile) in the background after the first frame.
 wait_idle 5s
 
-# Extensions > Panoramax > Show Photos: the photos of the tiles in view, each
+# View > Panoramax Photos: the photos of the tiles in view, each
 # a dot with a wedge for the way the camera faced.
-action RunExtensionCommand {"extension":"panoramax","command":"show-photos"}
+action RunExtensionCommand {"extension":"panoramax","command":"photos"}
 wait_idle 4s
 capture out/street-photos-01-dots.png
 

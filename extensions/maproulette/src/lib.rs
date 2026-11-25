@@ -196,9 +196,13 @@ struct Open {
 /// The side-panel sections this extension shows.
 const TASK_PANEL: &str = "task";
 const KEY_PANEL: &str = "api-key";
+/// The View menu command that shows and hides the tasks, with a checkmark.
+const TOGGLE_COMMAND: &str = "tasks";
 
 #[derive(Default)]
 struct MapRoulette {
+    /// The tasks are shown (the menu command is checked).
+    shown: bool,
     tasks: Vec<TaskSummary>,
     open: Option<Open>,
 }
@@ -325,8 +329,18 @@ impl MapRoulette {
             _ => osm::t_args("status_bar.many", &[("count", &n)]),
         });
         self.tasks = found;
+        self.shown = true;
+        osm::set_command_checked(TOGGLE_COMMAND, true);
         self.redraw();
         Ok(())
+    }
+
+    fn hide_tasks(&mut self) {
+        self.tasks.clear();
+        self.open = None;
+        self.shown = false;
+        osm::set_command_checked(TOGGLE_COMMAND, false);
+        self.redraw();
     }
 
     fn open_task(&mut self, id: i64) -> osm::Result<()> {
@@ -389,41 +403,54 @@ impl MapRoulette {
     }
 }
 
-/// The API-key panel, a section of its own beside the task.
+/// The API-key panel, a section of its own beside the task (from the
+/// task's Add API Key… button).
 fn show_key_panel() {
+    osm::show_panel(KEY_PANEL, Some(&key_panel(true)));
+}
+
+/// The API key: what the side panel and Settings > Extensions show. The side
+/// panel has a Cancel button too.
+fn key_panel(cancel: bool) -> Panel {
     let has_key = api_key().is_some();
-    let mut buttons = vec![
-        button("save-key", &osm::t("key.save"), ButtonStyle::Primary),
-        button("cancel-key", &osm::t("key.cancel"), ButtonStyle::Ghost),
-    ];
+    let mut buttons = vec![button(
+        "save-key",
+        &osm::t("key.save"),
+        ButtonStyle::Primary,
+    )];
     if has_key {
-        buttons.insert(
-            1,
-            button("forget-key", &osm::t("key.forget"), ButtonStyle::Danger),
-        );
+        buttons.push(button(
+            "forget-key",
+            &osm::t("key.forget"),
+            ButtonStyle::Danger,
+        ));
     }
-    osm::show_panel(
-        KEY_PANEL,
-        Some(&Panel {
-            title: osm::t("key.title"),
-            elements: vec![
-                Element::Text(osm::t("key.explain")),
-                Element::Link((osm::t("key.find"), format!("{SITE}/user/profile"))),
-                Element::Input(TextInput {
-                    id: "key".into(),
-                    label: osm::t("key.label"),
-                    placeholder: osm::t(if has_key {
-                        "key.placeholder_replace"
-                    } else {
-                        "key.placeholder"
-                    }),
-                    value: String::new(),
-                    secret: true,
+    if cancel {
+        buttons.push(button(
+            "cancel-key",
+            &osm::t("key.cancel"),
+            ButtonStyle::Ghost,
+        ));
+    }
+    Panel {
+        title: osm::t("key.title"),
+        elements: vec![
+            Element::Text(osm::t("key.explain")),
+            Element::Link((osm::t("key.find"), format!("{SITE}/user/profile"))),
+            Element::Input(TextInput {
+                id: "key".into(),
+                label: osm::t("key.label"),
+                placeholder: osm::t(if has_key {
+                    "key.placeholder_replace"
+                } else {
+                    "key.placeholder"
                 }),
-                Element::Buttons(buttons),
-            ],
-        }),
-    );
+                value: String::new(),
+                secret: true,
+            }),
+            Element::Buttons(buttons),
+        ],
+    }
 }
 
 impl Extension for MapRoulette {
@@ -433,15 +460,14 @@ impl Extension for MapRoulette {
 
     fn run_command(&mut self, id: &str) -> osm::Result<()> {
         match id {
-            "show-tasks" => self.show_tasks(),
-            "hide-tasks" => {
-                self.tasks.clear();
-                self.open = None;
-                self.redraw();
+            TOGGLE_COMMAND if self.shown => {
+                self.hide_tasks();
                 Ok(())
             }
-            "settings" => {
-                show_key_panel();
+            // Version 0.2's Show Tasks Here, kept for scripts.
+            TOGGLE_COMMAND | "show-tasks" => self.show_tasks(),
+            "hide-tasks" => {
+                self.hide_tasks();
                 Ok(())
             }
             other => Err(format!("unknown command {other}")),
@@ -472,7 +498,7 @@ impl Extension for MapRoulette {
                 }
             }
             (TASK_PANEL, "ask-key") => show_key_panel(),
-            (KEY_PANEL, "save-key") => {
+            (KEY_PANEL | osm::SETTINGS_PANEL, "save-key") => {
                 let key = inputs.get("key").unwrap_or("").trim();
                 if !key.is_empty() {
                     osm::secret_set(API_KEY, Some(key));
@@ -482,7 +508,7 @@ impl Extension for MapRoulette {
                 // The status buttons need the key.
                 self.redraw();
             }
-            (KEY_PANEL, "forget-key") => {
+            (KEY_PANEL | osm::SETTINGS_PANEL, "forget-key") => {
                 osm::secret_set(API_KEY, None);
                 osm::storage_set(API_KEY, None);
                 osm::set_status(&osm::t("status_bar.key_forgotten"));
@@ -503,6 +529,10 @@ impl Extension for MapRoulette {
             _ => {}
         }
         Ok(())
+    }
+
+    fn settings(&mut self) -> Option<Panel> {
+        Some(key_panel(false))
     }
 
     fn panel_closed(&mut self, panel: &str) {
