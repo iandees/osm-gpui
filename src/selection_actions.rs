@@ -33,6 +33,8 @@ pub(crate) struct ActionEnv<'a> {
     pub layers: &'a LayerManager,
     /// What Copy and Copy Tags set aside; Paste and Paste Tags need it.
     pub clipboards: &'a Clipboards,
+    /// The to-do list, for Add to To-do List and Mark To-do Done.
+    pub todo: &'a osm_gpui::todo::TodoList,
 }
 
 impl<'a> ActionEnv<'a> {
@@ -270,13 +272,22 @@ pub(crate) enum Run {
     Dialog(Dialog),
     /// Runs a session that follows the pointer.
     Interactive(Interactive),
+    /// Changes the to-do list (never the layers).
+    Todo(TodoOp),
+}
+
+/// What a to-do action does with the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TodoOp {
+    Add,
+    Done,
 }
 
 impl Run {
     /// Whether running it changes the layers, and so is refused while an
     /// upload runs. Copy only reads.
     pub(crate) fn edits(self) -> bool {
-        !matches!(self, Run::Clipboard(ClipboardOp::Copy))
+        !matches!(self, Run::Clipboard(ClipboardOp::Copy) | Run::Todo(_))
     }
 }
 
@@ -745,6 +756,28 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
             })
         },
         run: Run::Apply(apply_purge),
+    },
+    SelectionAction {
+        id: "todo_add",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: false,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
+        is_applicable: |env| env.selection.iter().any(|f| !env.todo.contains(f)),
+        run: Run::Todo(TodoOp::Add),
+    },
+    SelectionAction {
+        id: "todo_done",
+        shortcut_id: None,
+        fixed_shortcut: None,
+        needs_active_layer: false,
+        menu: MenuSlot::Tools,
+        destructive: false,
+        problem: None,
+        is_applicable: |env| env.selection.iter().any(|f| env.todo.contains(f)),
+        run: Run::Todo(TodoOp::Done),
     },
     SelectionAction {
         id: "delete",
@@ -4153,6 +4186,7 @@ mod tests {
             active_layer: Some(f.layer_id),
             layers: &f.layers,
             clipboards: &NO_CLIPBOARDS,
+            todo: &osm_gpui::todo::EMPTY,
         }
     }
 
@@ -4190,6 +4224,7 @@ mod tests {
                 "new_relation",
                 "create_multipolygon",
                 "purge",
+                "todo_add",
                 "delete"
             ]
         );
@@ -4207,6 +4242,7 @@ mod tests {
                 "parallel",
                 "new_relation",
                 "purge",
+                "todo_add",
                 "delete"
             ]
         );
@@ -4300,6 +4336,7 @@ mod tests {
             active_layer: Some(LayerId(99)),
             layers: &f.layers,
             clipboards: &NO_CLIPBOARDS,
+            todo: &osm_gpui::todo::EMPTY,
         };
         assert!(!(find("square").unwrap().is_applicable)(&other));
         let none = ActionEnv {
@@ -4307,6 +4344,7 @@ mod tests {
             active_layer: None,
             layers: &f.layers,
             clipboards: &NO_CLIPBOARDS,
+            todo: &osm_gpui::todo::EMPTY,
         };
         assert_eq!(
             find("square").unwrap().why_not(&none),
@@ -4689,6 +4727,7 @@ mod tests {
                 active_layer: Some(self.layer_id),
                 layers: &self.layers,
                 clipboards: &self.clipboards,
+                todo: &osm_gpui::todo::EMPTY,
             };
             SelectionAction::applicable(&e).map(|a| a.id).collect()
         }
@@ -6098,6 +6137,7 @@ mod tests {
             active_layer: Some(n.layer_id),
             layers: &n.layers,
             clipboards: &NO_CLIPBOARDS,
+            todo: &osm_gpui::todo::EMPTY,
         };
         assert_eq!(
             find("join").unwrap().why_not(&none),
@@ -6112,6 +6152,7 @@ mod tests {
             active_layer: None,
             layers: &n.layers,
             clipboards: &NO_CLIPBOARDS,
+            todo: &osm_gpui::todo::EMPTY,
         };
         assert_eq!(
             find("join").unwrap().why_not(&no_layer),
@@ -6170,6 +6211,7 @@ mod tests {
             active_layer: Some(n.layer_id),
             layers: &n.layers,
             clipboards: &NO_CLIPBOARDS,
+            todo: &osm_gpui::todo::EMPTY,
         };
         assert_eq!(
             find("extend").unwrap().why_not(&none),

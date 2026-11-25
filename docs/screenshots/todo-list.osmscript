@@ -1,0 +1,32 @@
+# The to-do list: add selected features, work through them with Done & Next.
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation. The clicks below land on building
+# outlines in areas.osm.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/areas.osm
+viewport 40.714147 -74.006000 17
+wait_idle 5s
+
+# Select three buildings and add them (Tools > Add to To-do List): the
+# section appears above History.
+click 267,322
+click 262,392 shift=true
+click 438,317 shift=true
+wait_idle 1s
+action selection::RunSelectionAction {"id":"todo_add"}
+wait_idle 1s
+capture out/todo-01-added.png
+
+# Working through it: with the first building selected, Mark To-do Done
+# takes it off and moves on to the next entry, zooming to it.
+key escape
+click 267,322
+wait_idle 1s
+capture out/todo-02-current.png
+action selection::RunSelectionAction {"id":"todo_done"}
+wait_idle 2s
+capture out/todo-03-next.png
+
+log done

@@ -88,6 +88,17 @@ Split, Merge, Join and Delete keep relation memberships consistent for you.
 
 Selecting a road also shows a **Lanes** section for editing lane counts and turn lanes, and selecting a junction node shows a **Junction** section for turn restrictions.
 
+### To-do list
+
+To work through a set of features one at a time, select them (on the map, or with **Edit > Find**) and choose **Add to To-do List** from the Tools or right-click menu. A **To-do** section appears in the side panel, above History.
+
+- Click an entry to select it and zoom the map to it.
+- When you've finished with a feature, choose **Mark To-do Done** (or click the ✓ on its row). It comes off the list, and the next entry is selected.
+- **Done & Next** in the section's header does the same for the selected entry, or starts at the top of the list when none is selected.
+- The **+** in the header adds the current selection.
+
+The list is kept for the session and isn't an edit, so it has no undo and doesn't block uploading. Entries for features you created keep pointing at them after you upload. Closing the section hides it; **View > To-do List** brings it back with the list as it was.
+
 ## 5. Tags, presets and fields
 
 Select a feature and the side panel shows it. The sections that matter most:

@@ -908,6 +908,12 @@ action:
       relation_in_relation: "Relation %{relation} kann nicht gelöscht werden: Sie ist Mitglied der Relation %{parent}"
       relation_empty: "%{what} %{id} kann nicht gelöscht werden: Er ist das einzige Mitglied der Relation %{relation}"
       restriction_role: "%{what} %{id} kann nicht gelöscht werden: Der Abbiegebeschränkung %{relation} würde das Mitglied mit der Rolle „%{role}“ fehlen"
+  todo_add:
+    label: "Zur To-do-Liste hinzufügen"
+    hint: "Objekte auswählen, die noch nicht auf der To-do-Liste stehen"
+  todo_done:
+    label: "To-do als erledigt markieren"
+    hint: "Ein Objekt auswählen, das auf der To-do-Liste steht"
   purge:
     label: "Entfernen (Purge)"
     hint: "Etwas auswählen, das aus der Ebene entfernt werden soll"
@@ -1617,3 +1623,27 @@ extensions:
   panel:
     working: "Arbeitet…"
     close: "Schließen"
+todo:
+  title: "To-do"
+  menu:
+    show: "To-do-Liste"
+  count:
+    one: "%{count} offen"
+    other: "%{count} offen"
+  empty: "Nichts zu tun. Objekte auswählen und „Zur To-do-Liste hinzufügen“ wählen."
+  add_selected: "Die ausgewählten Objekte hinzufügen"
+  done_next: "Erledigt & weiter"
+  done: "Erledigt"
+  close: "To-do-Liste ausblenden (Ansicht > To-do-Liste zeigt sie wieder)"
+  row:
+    gone: "%{kind} %{id} (nicht mehr in den Daten)"
+  status:
+    added:
+      one: "%{count} Objekt zur To-do-Liste hinzugefügt (insgesamt %{total})"
+      other: "%{count} Objekte zur To-do-Liste hinzugefügt (insgesamt %{total})"
+    already: "Steht schon auf der To-do-Liste"
+    left:
+      one: "Noch %{count} To-do"
+      other: "Noch %{count} To-dos"
+    all_done: "To-do-Liste erledigt"
+    gone: "Dieses Objekt ist nicht mehr in den Daten; als erledigt markieren, um es zu entfernen"

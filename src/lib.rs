@@ -81,6 +81,7 @@ pub mod taginfo;
 pub mod tags;
 pub mod tile_cache;
 pub mod tiles;
+pub mod todo;
 pub mod topology;
 pub mod trace_style;
 pub mod transfer;

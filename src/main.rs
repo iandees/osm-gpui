@@ -69,6 +69,9 @@ mod street_imagery_ui;
 mod tag_suggest_ui;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod todo_tests;
+mod todo_ui;
 mod undo;
 mod validation_panel;
 #[cfg(test)]
@@ -844,7 +847,7 @@ struct MapViewer {
     /// Whether each side-panel accordion section (Layers, Selection, Fields,
     /// Tags, History, Relations, Members, Validation, Junction, Lanes, by the
     /// indices `render_side_panel` gives them) is expanded.
-    side_panel_open: [bool; 10],
+    side_panel_open: [bool; 11],
     /// The Junction inspector's chosen approach: `(junction node, arm index)`.
     junction_from: Option<(NodeId, usize)>,
     /// The Lanes editor's chosen lane: `(way, group, lane from the left)`.
@@ -875,6 +878,8 @@ struct MapViewer {
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
     /// OSM notes: the Notes layer, the open note, writes (see `notes_ui`).
     notes: notes_ui::NotesState,
+    /// The to-do list and its side-panel section (see `todo_ui`).
+    todo: todo_ui::TodoState,
     /// Installed extensions, their markers and panel (see `extensions_ui`).
     extensions: extensions_ui::ExtensionsState,
     /// Downloaded OSM GPS traces (see `gps_traces_ui`).
@@ -1073,7 +1078,7 @@ impl MapViewer {
             // Everything open except History and Validation, which keep to
             // their headers until the user opens them.
             side_panel_open: {
-                let mut open = [true; 10];
+                let mut open = [true; 11];
                 open[side_panel::HISTORY_SECTION] = false;
                 open[validation_panel::SECTION] = false;
                 open
@@ -1090,6 +1095,7 @@ impl MapViewer {
             last_modal_focus: Vec::new(),
             offset_adjust: None,
             notes: Default::default(),
+            todo: Default::default(),
             extensions: Default::default(),
             gps_traces: Default::default(),
             imagery: Default::default(),
@@ -1116,6 +1122,7 @@ impl MapViewer {
         menu::MenuToggles {
             show_downloaded_area: self.shows_downloaded_area(),
             show_notes: self.shows_notes(),
+            show_todo: self.shows_todo(),
             labels: osm_gpui::settings_store::snapshot().label_visibility(),
             show_imagery: osm_gpui::street_imagery::Provider::ALL.map(|p| self.shows_imagery(p)),
             can_upload: self.has_uploadable_changes(),
@@ -2142,6 +2149,7 @@ impl MapViewer {
             active_layer: self.active_layer,
             layers: &self.layer_manager,
             clipboards: &self.clipboards,
+            todo: &self.todo.list,
         };
         if !(action.is_applicable)(&env) {
             let why = action.why_not(&env);
@@ -2174,6 +2182,10 @@ impl MapViewer {
                 selection_actions::Dialog::ParallelOffset => {
                     self.dialogs.pending_parallel_dialog = true
                 }
+            },
+            selection_actions::Run::Todo(op) => match op {
+                selection_actions::TodoOp::Add => self.add_selection_to_todo(cx),
+                selection_actions::TodoOp::Done => self.mark_selection_todo_done(cx),
             },
             selection_actions::Run::Interactive(interactive) => {
                 self.start_transform(match interactive {
@@ -4046,6 +4058,7 @@ impl MapViewer {
             active_layer: self.active_layer,
             layers: &self.layer_manager,
             clipboards: &self.clipboards,
+            todo: &self.todo.list,
         };
         let actions: Vec<&'static selection_actions::SelectionAction> =
             selection_actions::SelectionAction::applicable(&env).collect();
@@ -5336,6 +5349,9 @@ impl MapViewer {
                                     osm_gpui::upload_chunks::apply_to_layer(layer, &done);
                                 }
                             }
+                            // To-do entries for created objects follow them
+                            // to their new ids.
+                            this.todo.list.remap_uploaded(&layer_ids, &done.result);
                             // History that names objects the server has now
                             // created or deleted can't be replayed (it holds
                             // placeholder ids or deleted objects).
@@ -6288,6 +6304,7 @@ impl Render for MapViewer {
         self.check_for_pending_notice(window, cx);
         self.check_for_pending_restore(window, cx);
         self.notes_frame(window, cx);
+        self.todo_frame();
         self.extensions_frame(window, cx);
         self.imagery_frame(cx);
         self.pmtiles_frame(cx);
@@ -6767,6 +6784,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_toggle_downloaded_area))
             .on_action(cx.listener(Self::on_download_gps_traces))
             .on_action(cx.listener(Self::on_toggle_notes))
+            .on_action(cx.listener(Self::on_toggle_todo_list))
             .on_action(cx.listener(Self::on_run_extension_command))
             .on_action(cx.listener(Self::on_install_dev_extension))
             .on_action(cx.listener(Self::on_manage_extensions))
