@@ -1,5 +1,5 @@
 //! Modal dialog shown when the user needs to be signed in (to upload, write
-//! notes or show Mapillary photos) and is not. The primary button asks the
+//! notes) and is not. The primary button asks the
 //! host to open Settings (where sign-in lives); Escape cancels.
 
 use crate::tr;
@@ -25,7 +25,6 @@ pub enum DialogEvent {
 pub enum SignInPurpose {
     Upload,
     Notes,
-    Mapillary,
 }
 
 impl SignInPurpose {
@@ -33,7 +32,6 @@ impl SignInPurpose {
         match self {
             SignInPurpose::Upload => tr!("dialog.sign_in.title").to_string(),
             SignInPurpose::Notes => tr!("dialog.sign_in.notes_title").to_string(),
-            SignInPurpose::Mapillary => tr!("dialog.sign_in.mapillary_title").to_string(),
         }
     }
 
@@ -41,7 +39,6 @@ impl SignInPurpose {
         match self {
             SignInPurpose::Upload => tr!("dialog.sign_in.body").to_string(),
             SignInPurpose::Notes => tr!("dialog.sign_in.notes_body").to_string(),
-            SignInPurpose::Mapillary => tr!("dialog.sign_in.mapillary_body").to_string(),
         }
     }
 }
@@ -133,7 +130,6 @@ mod tests {
         assert!(SignInPurpose::Notes.title().contains("notes"));
         assert!(SignInPurpose::Notes.body().contains("notes"));
         assert!(!SignInPurpose::Notes.body().contains("upload"));
-        assert!(SignInPurpose::Mapillary.body().contains("Mapillary"));
         assert!(!SignInPurpose::Notes.title().contains("upload"));
     }
 }

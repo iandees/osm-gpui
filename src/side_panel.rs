@@ -152,13 +152,11 @@ impl MapViewer {
         // An open note takes the Selection zone's place.
         let note_section = self
             .render_note_section(cx)
-            .or_else(|| self.render_photo_section(cx))
             .or_else(|| self.render_vector_feature_section(cx));
         let note_open = note_section.is_some();
         // Extension panels: sections of their own after the selection's.
         let extension_panels = self.render_extension_panels(cx);
         let extensions_shown = !extension_panels.is_empty();
-        let object_photos = self.render_object_photos_section(cx);
         let (note_title, note_status, note_body) = match note_section {
             Some((title, status, body)) => (Some(title), Some(status), Some(body)),
             None => (None, None, None),
@@ -330,7 +328,6 @@ impl MapViewer {
                                                     cx,
                                                 )
                                             }))
-                                            .children(object_photos)
                                             .child(self.collapsible_section(
                                                 tr!("panel.tags.title"),
                                                 3,

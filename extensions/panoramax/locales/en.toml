@@ -1,0 +1,24 @@
+name = "Panoramax"
+description = "Street-level photos from Panoramax on the map, with the photo and its details in the side panel."
+
+[commands]
+show-photos = "Show Photos"
+hide-photos = "Hide Photos"
+refresh-photos = "Refresh Photos"
+
+[photos]
+zoom_in = "Zoom in to see Panoramax photos"
+loaded_one = "Panoramax: 1 photo"
+loaded = "Panoramax: %{count} photos"
+unauthorized = "Panoramax refused the request"
+rate_limited = "Panoramax rate limit reached; try again later"
+failed = "Could not load Panoramax photos: %{detail}"
+
+[photo]
+title = "Panoramax Photo"
+no_picture = "This photo has no picture to show"
+captured = "Taken %{date}"
+by = "by %{creator}"
+license = "License: %{license}"
+heading = "Facing %{degrees}°"
+open_site = "Open on %{provider}"

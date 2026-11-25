@@ -415,9 +415,10 @@ mod tests {
     #[test]
     fn api_compatibility_follows_semver_with_0x_minor_lines() {
         assert!(api_compatible(API_VERSION));
-        assert!(!api_compatible("0.2.0"));
+        assert!(!api_compatible("0.1.0"), "an older 0.x line");
+        assert!(!api_compatible("0.3.0"));
         assert!(!api_compatible("1.0.0"));
-        assert!(!api_compatible("0.1.99"), "newer than the app");
+        assert!(!api_compatible("0.2.99"), "newer than the app");
         assert!(!api_compatible("garbage"));
     }
 

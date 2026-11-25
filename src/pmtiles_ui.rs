@@ -149,7 +149,6 @@ impl MapViewer {
         self.close_vector_feature();
         self.set_selection(Vec::new());
         self.close_note_panel();
-        self.close_photo_panel();
         if let Some(o) = self.pmtiles.overlays.iter().find(|o| o.layer == layer) {
             o.store.set_selected(Some((info.tile, info.index)));
         }

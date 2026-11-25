@@ -1,0 +1,47 @@
+name = "Fotoshi"
+description = "Straßenfotos von Fotoshi auf der Karte, mit dem Foto und seinen Angaben in der Seitenleiste; mit einem API-Schlüssel auch die Fotos des ausgewählten Objekts."
+
+[commands]
+show-photos = "Fotos anzeigen"
+hide-photos = "Fotos ausblenden"
+refresh-photos = "Fotos aktualisieren"
+settings = "API-Schlüssel und Abfrage…"
+
+[photos]
+zoom_in = "Zum Anzeigen der Fotoshi-Fotos hineinzoomen"
+loaded_one = "Fotoshi: 1 Foto"
+loaded = "Fotoshi: %{count} Fotos"
+unauthorized = "Fotoshi hat den API-Schlüssel abgelehnt; prüfe ihn unter Erweiterungen > Fotoshi > API-Schlüssel und Abfrage…"
+rate_limited = "Anfragelimit von Fotoshi erreicht; versuche es später erneut"
+failed = "Fotoshi-Fotos konnten nicht geladen werden: %{detail}"
+
+[photo]
+title = "Fotoshi-Foto"
+no_picture = "Zu diesem Foto gibt es kein Bild"
+captured = "Aufgenommen am %{date}"
+by = "von %{creator}"
+license = "Lizenz: %{license}"
+heading = "Blickrichtung %{degrees}°"
+open_site = "Auf %{provider} öffnen"
+
+[feature]
+title = "Fotoshi-Fotos des Objekts"
+count = "Fotoshi hat %{count} Foto(s) dieses Objekts"
+photo = "Foto %{number}"
+
+[settings]
+title = "Fotoshi-API-Schlüssel und Abfrage"
+explain = "Fotos erscheinen auch ohne Schlüssel, 20 pro Gebiet. Mit einem API-Schlüssel sind es bis zu 100, und die Fotos des ausgewählten Objekts lassen sich abfragen. Er liegt im Schlüsselbund deines Systems und wird nur an Fotoshi gesendet."
+find = "Einen API-Schlüssel bei Fotoshi holen"
+label = "API-Schlüssel"
+placeholder = "API-Schlüssel einfügen"
+placeholder_replace = "Ein Schlüssel ist gespeichert; füge einen neuen ein, um ihn zu ersetzen"
+save = "Schlüssel speichern"
+forget = "Schlüssel vergessen"
+saved = "Fotoshi: API-Schlüssel gespeichert"
+forgotten = "Fotoshi: API-Schlüssel vergessen"
+lookup_is_on = "Die Abfrage der Fotos des ausgewählten Objekts ist an. Fotoshi wird zu jedem ausgewählten Objekt gefragt."
+lookup_is_off = "Die Abfrage der Fotos des ausgewählten Objekts ist aus. Ist sie an, wird Fotoshi zu jedem ausgewählten Objekt gefragt (braucht den API-Schlüssel)."
+lookup_on = "Abfrage einschalten"
+lookup_off = "Abfrage ausschalten"
+close = "Schließen"

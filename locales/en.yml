@@ -455,14 +455,6 @@ geometry:
 
 settings:
   window_title: "Settings"
-  street_imagery:
-    group: "Street imagery"
-    mapillary_token: "Mapillary access token"
-    fotoshi_key: "Fotoshi API key"
-    fotoshi_key_description: "Optional. With a key, Fotoshi shows up to 100 photos per area instead of 20, and the lookup below becomes available. Create one at fotoshi.com/account/developer."
-    fotoshi_lookup: "Look up Fotoshi photos of the selected feature"
-    fotoshi_lookup_description: "When on, selecting an OpenStreetMap feature sends its id (such as w123) and your API key to Fotoshi to find photos of it. That tells Fotoshi what you are looking at, so it is off unless you turn it on. Needs an API key."
-    mapillary_token_description: "Mapillary needs an access token to show its photos. Create an application at mapillary.com/dashboard/developers and paste its client token here."
   save: "Save"
   language:
     group: "Language"
@@ -1055,8 +1047,6 @@ dialog:
   sign_in:
     title: "Sign in to upload"
     body: "You need to sign in to an OpenStreetMap account to upload changes. Open Settings to sign in."
-    mapillary_title: "Mapillary access token needed"
-    mapillary_body: "Mapillary only serves photos to apps with an access token. Open Settings, then paste a token in Street imagery on the Imagery page. You can create one at mapillary.com/dashboard/developers."
     notes_title: "Sign in to work with notes"
     notes_body: "You need to sign in to OpenStreetMap to create, comment on, close or reopen notes. If you signed in before notes were supported, sign in again to grant the extra permission. Open Settings to sign in."
     open_settings: "Open Settings"
@@ -1549,39 +1539,6 @@ pmtiles:
       line: "Line"
       polygon: "Area"
 
-street_imagery:
-  menu:
-    mapillary: "Show Mapillary Photos"
-    fotoshi: "Show Fotoshi Photos"
-    panoramax: "Show Panoramax Photos"
-    refresh: "Refresh Street Imagery"
-  layer_name: "%{provider} photos"
-  state:
-    loading: "Loading %{provider} photos…"
-    loaded:
-      one: "%{provider}: 1 photo"
-      other: "%{provider}: %{count} photos"
-    zoom_in: "Zoom in to see %{provider} photos"
-    no_token: "Add a Mapillary access token in Settings to see Mapillary photos"
-    unauthorized: "Mapillary refused the access token; check it in Settings"
-    rate_limited: "%{provider} rate limit reached; try again later"
-    fetch_failed: "Could not load %{provider} photos: %{detail}"
-  object:
-    title:
-      one: "Fotoshi photo"
-      other: "Fotoshi photos (%{count})"
-    checking: "Checking Fotoshi for photos…"
-    photo: "Photo %{number}"
-  panel:
-    title: "Street photo"
-    close: "Close photo"
-    loading: "Loading photo…"
-    load_failed: "Could not load the photo"
-    open_in_browser: "Open on %{provider}"
-    captured: "Taken %{date}"
-    by: "by %{creator}"
-    license: "License: %{license}"
-    heading: "Facing %{degrees}°"
 
 notes:
   layer_name: "Notes"
@@ -1673,6 +1630,9 @@ revert:
     edited_locally: "%{kind} %{id}: has edits that are not uploaded yet"
     refused: "%{kind} %{id}: %{detail}"
 extensions:
+  street_imagery_moved:
+    title: "Street-level photos are extensions now"
+    body: "Mapillary, Fotoshi and Panoramax photos are no longer built in. Install the ones you use from Extensions > Manage Extensions…. A saved Mapillary access token or Fotoshi API key does not carry over: enter it again in the extension (Extensions > Mapillary > Access Token…, Extensions > Fotoshi > API Key and Lookup…)."
   updates_available: "Extension updates available: %{count}. See Extensions > Manage Extensions…"
   load_failed: "An extension failed to load: %{detail}"
   not_installed: "Extension %{id} is not installed"
@@ -1712,3 +1672,8 @@ todo:
       other: "%{count} to-dos left"
     all_done: "To-do list done"
     gone: "That feature is no longer in the data; mark it done to remove it"
+image_viewer:
+  close: "Close"
+  loading: "Loading the picture…"
+  failed: "The picture could not be loaded"
+  open: "Double-click to see it full size"

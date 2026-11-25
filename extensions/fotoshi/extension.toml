@@ -1,0 +1,30 @@
+id = "fotoshi"
+name = "Fotoshi"
+version = "0.1.0"
+schema_version = 1
+authors = ["Ian Dees"]
+description = "Street-level photos from Fotoshi on the map, with the photo and its details in the side panel; with an API key, also the photos of the selected feature."
+repository = "https://github.com/iandees/osm-gpui"
+subscribe = ["viewport", "selection"]
+
+[capabilities]
+# The API (api.fotoshi.com) and the pictures (cdn.fotoshi.com).
+http = ["fotoshi.com"]
+# The optional API key lives in the system keychain.
+secrets = true
+
+[[commands]]
+id = "show-photos"
+label = "Show Photos"
+
+[[commands]]
+id = "hide-photos"
+label = "Hide Photos"
+
+[[commands]]
+id = "refresh-photos"
+label = "Refresh Photos"
+
+[[commands]]
+id = "settings"
+label = "API Key and Lookup…"

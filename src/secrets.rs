@@ -1,8 +1,7 @@
-//! Named secrets that are not OAuth logins: the street-imagery provider
-//! credentials (Mapillary's access token, Fotoshi's API key).
+//! Named secrets that are not OAuth logins: what extensions keep with
+//! `secret-set` (see `crate::extensions::runtime::KeychainSecrets`).
 //!
-//! They used to sit in `settings.json` beside ordinary preferences. They are
-//! stored like the OAuth tokens instead: in the platform keychain, or in an
+//! They are stored like the OAuth tokens: in the platform keychain, or in an
 //! owner-only file when the keychain refuses (`<config_dir>/osm-gpui/secrets.json`).
 //! That file also holds a non-secret index of which names live in the keychain,
 //! so a user who never set a secret never causes a keychain read, and one who did
@@ -21,6 +20,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+/// The names under which builds that had street imagery built in kept the
+/// Mapillary access token and the Fotoshi API key. Only asked about (never
+/// read) to tell such a user the photos are extensions now.
 pub const MAPILLARY_TOKEN: &str = "mapillary_token";
 pub const FOTOSHI_API_KEY: &str = "fotoshi_api_key";
 
@@ -194,34 +196,6 @@ impl Vault {
             }
         }
     }
-
-    /// Move legacy plaintext values (from `settings.json`) in, returning the names
-    /// that are now durably stored and so can be blanked at the source. A name
-    /// that already has a secret keeps it; the legacy value is just dropped.
-    pub(crate) fn migrate(
-        &self,
-        backend: &dyn SecretBackend,
-        legacy: &[(&'static str, &str)],
-    ) -> Vec<&'static str> {
-        let mut moved = Vec::new();
-        for &(name, value) in legacy {
-            let value = value.trim();
-            if value.is_empty() {
-                continue;
-            }
-            if self.is_set(name) || self.set(backend, name, value) {
-                moved.push(name);
-            } else {
-                // Not durable (read-only run or a failed write): keep serving it
-                // for this session and leave the legacy copy in place.
-                lock(&self.state)
-                    .cache
-                    .entry(name.to_string())
-                    .or_insert_with(|| Some(value.to_string()));
-            }
-        }
-        moved
-    }
 }
 
 fn vault() -> &'static Vault {
@@ -247,31 +221,6 @@ pub fn set(name: &str, value: &str) {
 
 pub fn clear(name: &str) {
     vault().clear(&SystemKeyring, name);
-}
-
-/// Move the provider secrets still in `settings.json` into secret storage and
-/// blank them there. Call once at startup, after the settings store is
-/// initialised. Writes only; it never reads the keychain.
-pub fn migrate_from_settings() {
-    let settings = crate::settings_store::snapshot();
-    let moved = vault().migrate(
-        &SystemKeyring,
-        &[
-            (MAPILLARY_TOKEN, &settings.mapillary_token),
-            (FOTOSHI_API_KEY, &settings.fotoshi_api_key),
-        ],
-    );
-    if moved.is_empty() {
-        return;
-    }
-    crate::settings_store::update(true, |s| {
-        if moved.contains(&MAPILLARY_TOKEN) {
-            s.mapillary_token.clear();
-        }
-        if moved.contains(&FOTOSHI_API_KEY) {
-            s.fotoshi_api_key.clear();
-        }
-    });
 }
 
 #[cfg(test)]
@@ -403,46 +352,16 @@ mod tests {
     }
 
     #[test]
-    fn migration_moves_values_and_is_idempotent() {
-        let backend = MemoryBackend::default();
-        let vault = Vault::new(Some(tmp_file("migrate")));
-        let legacy = [(MAPILLARY_TOKEN, "old-token"), (FOTOSHI_API_KEY, "")];
-        assert_eq!(vault.migrate(&backend, &legacy), vec![MAPILLARY_TOKEN]);
-        assert_eq!(
-            vault.get(&backend, MAPILLARY_TOKEN).as_deref(),
-            Some("old-token")
-        );
-
-        // The user changes it; a second run with the stale legacy value (the
-        // blanking never happened) must not revert it.
-        vault.set(&backend, MAPILLARY_TOKEN, "new-token");
-        assert_eq!(vault.migrate(&backend, &legacy), vec![MAPILLARY_TOKEN]);
-        assert_eq!(
-            vault.get(&backend, MAPILLARY_TOKEN).as_deref(),
-            Some("new-token")
-        );
-        // Blank legacy values are not migrated at all.
-        assert!(vault
-            .migrate(&backend, &[(MAPILLARY_TOKEN, ""), (FOTOSHI_API_KEY, " ")])
-            .is_empty());
-    }
-
-    #[test]
-    fn without_a_writable_policy_nothing_is_written_and_nothing_is_blanked() {
+    fn without_a_writable_policy_nothing_is_written() {
         // The test default: no path (`Disabled`), so the vault cannot persist.
         assert_eq!(persist::policy(), persist::Policy::Disabled);
         assert_eq!(persist::config_file("secrets.json"), None);
         let backend = MemoryBackend::default();
         let vault = Vault::new(None);
         assert!(!vault.set(&backend, MAPILLARY_TOKEN, "tok"));
-        assert_eq!(vault.get(&backend, MAPILLARY_TOKEN).as_deref(), Some("tok"));
-
-        let fresh = Vault::new(None);
-        let moved = fresh.migrate(&backend, &[(MAPILLARY_TOKEN, "legacy")]);
-        assert!(moved.is_empty(), "the legacy copy must stay");
         assert_eq!(
-            fresh.get(&backend, MAPILLARY_TOKEN).as_deref(),
-            Some("legacy"),
+            vault.get(&backend, MAPILLARY_TOKEN).as_deref(),
+            Some("tok"),
             "but it still works for the session"
         );
     }

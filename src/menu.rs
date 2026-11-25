@@ -19,9 +19,6 @@ use crate::history_actions::ShowObjectHistory;
 use crate::notes_ui::{NewNote, RefreshNotes, ToggleNotes};
 use crate::pmtiles_ui::AddPmtilesLayer;
 use crate::selection_actions;
-use crate::street_imagery_ui::{
-    RefreshStreetImagery, ToggleFotoshi, ToggleMapillary, TogglePanoramax,
-};
 use crate::{
     with_map_viewer, with_map_viewer_in, AddCustomImagery, AddEsriImagery, AddImageryLayer,
     AddOsmCarto, AddSavedCustomImagery, ApplyNsiPreset, ChangeFeatureType, DeleteSelection,
@@ -458,8 +455,6 @@ pub(crate) struct MenuToggles {
     pub(crate) show_todo: bool,
     /// The View > Show Labels / POI Icons / Street Names / Area Labels checks.
     pub(crate) labels: osm_gpui::layers::labels::LabelVisibility,
-    /// Indexed by `Provider::index`.
-    pub(crate) show_imagery: [bool; 3],
     pub(crate) can_upload: bool,
 }
 
@@ -471,7 +466,6 @@ impl Default for MenuToggles {
             show_notes: false,
             show_todo: false,
             labels: Default::default(),
-            show_imagery: [false; 3],
             can_upload: false,
         }
     }
@@ -798,7 +792,6 @@ fn build_menus(
     state: ImageryLoadState,
     toggles: MenuToggles,
 ) -> Vec<Menu> {
-    use osm_gpui::street_imagery::Provider;
     let custom = custom_imagery_snapshot();
     let mut custom_items: Vec<MenuItem> = vec![
         MenuItem::action(tr!("menu.imagery.custom_add"), AddCustomImagery),
@@ -1021,14 +1014,6 @@ fn build_menus(
                 MenuItem::action(tr!("menu.view.show_area_labels"), ToggleAreaLabels)
                     .checked(toggles.labels.area_labels),
                 MenuItem::separator(),
-                MenuItem::action(tr!("street_imagery.menu.mapillary"), ToggleMapillary)
-                    .checked(toggles.show_imagery[Provider::Mapillary.index()]),
-                MenuItem::action(tr!("street_imagery.menu.fotoshi"), ToggleFotoshi)
-                    .checked(toggles.show_imagery[Provider::Fotoshi.index()]),
-                MenuItem::action(tr!("street_imagery.menu.panoramax"), TogglePanoramax)
-                    .checked(toggles.show_imagery[Provider::Panoramax.index()]),
-                MenuItem::action(tr!("street_imagery.menu.refresh"), RefreshStreetImagery),
-                MenuItem::separator(),
                 MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
             ],
             disabled: false,
@@ -1223,8 +1208,7 @@ mod tests {
     fn the_view_menu_checkmarks_come_from_the_toggles_passed_in() {
         let on = view_checks(MenuToggles {
             show_notes: true,
-            show_todo: false,
-            show_imagery: [false, true, false],
+            show_todo: true,
             ..MenuToggles::default()
         });
         let off = view_checks(MenuToggles::default());
@@ -1236,17 +1220,10 @@ mod tests {
             checked(&off, tr!("notes.menu.show").to_string()),
             Some(false)
         );
-        assert_eq!(
-            checked(&on, tr!("street_imagery.menu.fotoshi").to_string()),
-            Some(true)
-        );
-        assert_eq!(
-            checked(&on, tr!("street_imagery.menu.mapillary").to_string()),
-            Some(false)
-        );
+        assert_eq!(checked(&on, tr!("todo.menu.show").to_string()), Some(true));
         // Building one menu leaves no state behind for the next.
         assert_eq!(
-            checked(&off, tr!("street_imagery.menu.fotoshi").to_string()),
+            checked(&off, tr!("todo.menu.show").to_string()),
             Some(false)
         );
     }

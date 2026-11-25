@@ -1,0 +1,22 @@
+[package]
+name = "fotoshi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# An extension builds on its own, for wasm32-wasip2.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+osm-gpui-extension-api = { path = "../../crates/osm-gpui-extension-api" }
+street-photos = { path = "../street-photos" }
+serde_json = "1"
+urlencoding = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

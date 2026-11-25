@@ -15,6 +15,7 @@ offers, and publishing it.
 - [The API](#the-api)
 - [Panels](#panels)
 - [Markers](#markers)
+- [Following the map and the selection](#following-the-map-and-the-selection)
 - [Networking](#networking)
 - [Storage and secrets](#storage-and-secrets)
 - [Translations](#translations)
@@ -53,9 +54,10 @@ Sandboxing rules:
   secrets.
 - Each call has a cap on how much computation it may do, so a runaway loop
   ends the call instead of hanging the extension.
-- Calls run off the UI thread, one at a time per extension. A click that
-  arrives while the extension is still busy is dropped, and the status bar
-  says so.
+- Calls run off the UI thread, one at a time per extension. Anything that
+  happens while the extension is busy (a click, a menu command) waits its
+  turn. Of several waiting viewport or selection events, only the latest is
+  delivered.
 
 The interface is defined in WIT at
 [`crates/osm-gpui-extension-api/wit/extension.wit`](../crates/osm-gpui-extension-api/wit/extension.wit).
@@ -189,6 +191,7 @@ If a folder contains a prebuilt `extension.wasm` next to its
 | `description` | no | One sentence, shown in the manager. |
 | `repository` | no | Where the source lives. |
 | `[capabilities]` | no | What the extension may reach (see below). |
+| `subscribe` | no | Events to hear about: `"viewport"`, `"selection"` (see [Following the map and the selection](#following-the-map-and-the-selection)). Put it before any table. |
 | `[[commands]]` | no | Menu entries: `id` and `label`. |
 
 Capabilities:
@@ -226,6 +229,8 @@ it as `osm`.
 | `marker_clicked(id)` | One of your markers was clicked. |
 | `panel_button(panel, button, inputs)` | A button in one of your panels was pressed. `inputs` holds the text of that panel's inputs. |
 | `panel_closed(panel)` | The user closed one of your panels. |
+| `viewport_changed()` | The map moved and settled (with `subscribe = ["viewport"]`). |
+| `selection_changed()` | The selection changed (with `subscribe = ["selection"]`). |
 | `changeset_tags()` | Asked after every call. Return the tags you want on the next upload (see [Uploads](#uploads)). |
 | `upload_finished(changesets)` | An upload succeeded, in these changesets. |
 
@@ -252,6 +257,8 @@ calls, but not across restarts; use [storage](#storage-and-secrets) for that.
 | `set_markers(&[Marker])` | Replace all of your markers. |
 | `show_panel(id, Option<&Panel>)` | Show or replace panel `id`; `None` closes it. |
 | `http_fetch(&HttpRequest)` | Send an HTTP request (see [Networking](#networking)). |
+| `http_fetch_many(&[HttpRequest])` | Send several requests in parallel; each answer is at its request's position. |
+| `get(url) -> HttpRequest` | A GET request for `url`, to send with either of the above. |
 | `get_json::<T>(url)` | GET a URL and parse a 2xx JSON answer into `T`. |
 | `storage_get(key)`, `storage_set(key, Option<&str>)` | Small persistent key-value storage. |
 | `secret_get(key)`, `secret_set(key, Option<&str>)` | Keychain secrets (needs `secrets = true`). |
@@ -282,11 +289,13 @@ A `Panel` is a title and a list of elements, laid out top to bottom:
 | `Buttons(Vec<Button>)` | A row of buttons. Pressing one calls `panel_button` with the panel's id and the button's `id`. |
 | `Input(TextInput)` | A text box with an optional label. `value` is only its starting text. Set `secret: true` to mask it. |
 | `Link((label, url))` | A link that opens `url` in the browser. |
+| `Picture(Image { url, alt })` | A picture the app downloads (from a host your manifest allows) and shows at the panel's width, letterboxed; a double-click opens it full size over the window, with zoom and pan. `alt` is shown if it can't be loaded. |
 | `Divider` | A thin rule. |
 
 `button(id, label, style)` builds a `Button`. Its styles are `Primary`,
 `Secondary`, `Danger` and `Ghost`. Set `enabled: false` to grey a button out.
-All buttons are disabled while the extension is busy with a call.
+A button pressed while the extension is busy is handled when it is free; the
+panel's header says "Working…" meanwhile.
 
 You only find out what was typed in an input when a button in the same panel
 is pressed: `inputs.get("input-id")` returns its current text.
@@ -303,12 +312,43 @@ osm::set_markers(&[Marker {
     at: LatLon { lat: 40.7141, lon: -74.006 },
     color: 0x7c3aed,                           // 0xRRGGBB
     selected: false,                           // drawn larger, with a blue halo
+    heading: None,                             // or Some(degrees) for a camera
 }]);
 ```
 
 Markers go in a layer of their own, named after the extension, in the Layers
 list. The user can hide it there. Each call to `set_markers` replaces all of
 the extension's markers; an empty list removes them.
+
+A marker with a `heading` (degrees clockwise from north) is drawn as a
+smaller dot with a wedge pointing that way, as for a photo and the direction
+the camera faced. With more than 1,500 markers, all but the selected ones are
+drawn as small plain dots to keep the map fast. A click goes to the nearest
+marker within reach.
+
+## Following the map and the selection
+
+An extension that shows things for the visible area (photos, tasks) can be
+told when the view changes instead of waiting for a command. List the events
+in the manifest, before any table:
+
+```toml
+subscribe = ["viewport", "selection"]
+```
+
+- `viewport_changed` is called once the map has stopped moving for a
+  moment, not during a drag or a zoom. Read the new view with `viewport()`
+  and `zoom()`. A typical extension fetches what it is missing for the view
+  with `http_fetch_many`, caches it, and calls `set_markers`.
+- `selection_changed` is called when the selected features change. Read
+  them with `selection()`. Only send a selected feature's id to a service
+  when the user has turned that on: it tells the service what they are
+  looking at.
+
+Extensions that don't subscribe are never called for these. The
+[street-photos](../extensions/street-photos) crate (shared by the Mapillary,
+Fotoshi and Panoramax extensions) is a complete example of following the
+view by map tile.
 
 ## Networking
 
@@ -328,6 +368,9 @@ if (200..300).contains(&resp.status) { /* ... */ }
   back as `Ok`, so check `status`.
 - Methods are `Get`, `Post` and `Put`. `Delete` is not supported yet.
 - A request body must be UTF-8. Set `Content-Type` yourself in `headers`.
+- `http_fetch_many` sends a batch a few at a time in parallel. Use it to
+  fetch several map tiles at once; one `http_fetch` after another would wait
+  for each in turn.
 - Requests go through the app's own HTTP client, with its timeouts and its
   User-Agent.
 
@@ -463,14 +506,14 @@ API version the app supports.
 
 ## API versions
 
-The WIT package version (`osm-gpui:extension@0.1.0`) is the API version. The
+The WIT package version (`osm-gpui:extension@0.2.0`) is the API version. The
 SDK version matches it, and the index records which version each extension
 was built against.
 
 For an extension to run, it must have been built against the same API line
 as the app, and against a version no newer than the app's. While the API is
-0.x, "the same line" means the same minor version, so 0.1.x extensions run in
-apps providing 0.1.x. The manager shows an extension that needs a newer app
+0.x, "the same line" means the same minor version, so 0.2.x extensions run in
+apps providing 0.2.x. The manager shows an extension that needs a newer app
 as unavailable rather than offering to install it.
 
 The API will change while it is 0.x. A breaking change bumps the minor
@@ -497,9 +540,10 @@ URL isn't `https://`.
 `[capabilities]`. If the extension is installed, reinstall or rebuild it so
 the new manifest takes effect.
 
-**"… is still working…"**: a previous call hasn't returned yet, usually
-because it's waiting on a slow HTTP request. The click is dropped rather than
-queued.
+**A click seems to do nothing for a while**: the extension is still busy
+with an earlier call, usually waiting on a slow HTTP request. The click is
+handled when that call returns. Keep calls short, and fetch in parallel with
+`http_fetch_many`.
 
 **Where things are on disk**: installed extensions are in
 `<config dir>/osm-gpui/extensions/installed/<id>/`, and storage is in

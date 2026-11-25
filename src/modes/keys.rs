@@ -139,7 +139,7 @@ impl MapViewer {
     /// New Note waiting for its click, then the current mode's gesture and
     /// finally the mode itself.
     pub(crate) fn escape(&mut self, cx: &mut Context<Self>) {
-        if self.close_photo_fullscreen() || self.cancel_transform() || self.cancel_armed_note() {
+        if self.close_image_viewer() || self.cancel_transform() || self.cancel_armed_note() {
             cx.notify();
             return;
         }

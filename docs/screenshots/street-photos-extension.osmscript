@@ -1,0 +1,36 @@
+# Street-level photos as an extension: Panoramax's photo points for the view,
+# and a photo in the side panel. Run with the Panoramax extension installed in
+# a scratch folder and its API answered from fixtures (a real tile of south
+# Minneapolis is in extensions/street-photos/fixtures/):
+#
+#   OSM_GPUI_EXTENSIONS_DIR=<dir with installed/panoramax/...> \
+#   cargo run --release -- --script docs/screenshots/street-photos-extension.osmscript \
+#     --offline --http-fixtures <fixtures answering api.panoramax.xyz and the picture>
+#
+# Coordinate model: the viewport center is at window (488, 388) — see
+# select.osmscript for the derivation.
+
+window 1200 800
+viewport 44.929808 -93.224487 17
+# Extensions load (compile) in the background after the first frame.
+wait_idle 5s
+
+# Extensions > Panoramax > Show Photos: the photos of the tiles in view, each
+# a dot with a wedge for the way the camera faced.
+action RunExtensionCommand {"extension":"panoramax","command":"show-photos"}
+wait_idle 4s
+capture out/street-photos-01-dots.png
+
+# A click on a dot: the photo's details are fetched and it opens in a
+# side-panel section with its picture.
+click 788,297
+wait_idle 4s
+capture out/street-photos-02-photo.png
+
+# A double-click on the picture shows it full size (wheel or pinch zooms,
+# drag pans, Escape closes).
+click 1062,258 count=2
+wait_idle 1s
+capture out/street-photos-03-full-size.png
+
+log done

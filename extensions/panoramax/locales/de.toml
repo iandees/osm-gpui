@@ -1,0 +1,24 @@
+name = "Panoramax"
+description = "Straßenfotos von Panoramax auf der Karte, mit dem Foto und seinen Angaben in der Seitenleiste."
+
+[commands]
+show-photos = "Fotos anzeigen"
+hide-photos = "Fotos ausblenden"
+refresh-photos = "Fotos aktualisieren"
+
+[photos]
+zoom_in = "Zum Anzeigen der Panoramax-Fotos hineinzoomen"
+loaded_one = "Panoramax: 1 Foto"
+loaded = "Panoramax: %{count} Fotos"
+unauthorized = "Panoramax hat die Anfrage abgelehnt"
+rate_limited = "Anfragelimit von Panoramax erreicht; versuche es später erneut"
+failed = "Panoramax-Fotos konnten nicht geladen werden: %{detail}"
+
+[photo]
+title = "Panoramax-Foto"
+no_picture = "Zu diesem Foto gibt es kein Bild"
+captured = "Aufgenommen am %{date}"
+by = "von %{creator}"
+license = "Lizenz: %{license}"
+heading = "Blickrichtung %{degrees}°"
+open_site = "Auf %{provider} öffnen"

@@ -7,6 +7,9 @@ use std::sync::Arc;
 pub struct IdleTracker {
     pending_tile_fetches: AtomicUsize,
     pending_image_decodes: AtomicUsize,
+    /// Other background work a script should wait for (extension calls,
+    /// picture downloads).
+    pending_tasks: AtomicUsize,
 }
 
 impl IdleTracker {
@@ -30,9 +33,18 @@ impl IdleTracker {
         saturating_decrement(&self.pending_image_decodes, "image_decode_finished");
     }
 
+    pub fn task_started(&self) {
+        self.pending_tasks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn task_finished(&self) {
+        saturating_decrement(&self.pending_tasks, "task_finished");
+    }
+
     pub fn is_idle(&self) -> bool {
         self.pending_tile_fetches.load(Ordering::SeqCst) == 0
             && self.pending_image_decodes.load(Ordering::SeqCst) == 0
+            && self.pending_tasks.load(Ordering::SeqCst) == 0
     }
 }
 

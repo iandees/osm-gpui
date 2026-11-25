@@ -26,7 +26,7 @@ mod bindings {
 }
 
 pub use bindings::osm_gpui::extension::types::{
-    Bounds, Button, ButtonStyle, Element, FeatureKind, FeatureRef, HttpMethod, HttpResponse,
+    Bounds, Button, ButtonStyle, Element, FeatureKind, FeatureRef, HttpMethod, HttpResponse, Image,
     LatLon, Marker, Panel, TextInput,
 };
 use bindings::osm_gpui::extension::{host, types};
@@ -196,6 +196,55 @@ impl Storage {
     }
 }
 
+/// Send one extension request: refused unless the manifest allows its URL;
+/// any server answer (2xx or not) is `Ok`.
+fn send(
+    manifest: &Manifest,
+    http: &dyn HttpClient,
+    request: types::HttpRequest,
+) -> Result<HttpResponse, String> {
+    if !manifest.allows_url(&request.url) {
+        return Err(format!(
+            "{} may not reach {} (not in its manifest's http capabilities)",
+            manifest.id, request.url
+        ));
+    }
+    let method = match request.method {
+        HttpMethod::Get => Method::Get,
+        HttpMethod::Post => Method::Post,
+        HttpMethod::Put => Method::Put,
+        HttpMethod::Delete => return Err("DELETE is not supported yet".into()),
+    };
+    let body = match request.body {
+        Some(bytes) => Some(String::from_utf8(bytes).map_err(|_| "body must be UTF-8")?),
+        None => None,
+    };
+    let mut req = HttpRequest::with_text(method, request.url, body);
+    for (name, value) in request.headers {
+        req = req.header(&name, value);
+    }
+    // An empty PUT/POST still needs a body for some servers.
+    if req.body.is_none() && method != Method::Get {
+        req.body = Some(Body::Text(String::new()));
+    }
+    let answer =
+        http.request_with_progress(req, &mut |read, _| read as usize <= MAX_RESPONSE_BYTES);
+    match answer {
+        Ok(resp) => Ok(HttpResponse {
+            status: resp.status,
+            body: resp.body,
+        }),
+        Err(crate::http::HttpError::Status { status, body }) => Ok(HttpResponse { status, body }),
+        Err(crate::http::HttpError::Cancelled) => {
+            Err(format!("response larger than {MAX_RESPONSE_BYTES} bytes"))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Requests `http-fetch-many` sends at once.
+const PARALLEL_REQUESTS: usize = 6;
+
 /// The store's data: WASI's (empty) context and everything the host
 /// functions need.
 struct HostState {
@@ -223,48 +272,47 @@ impl types::Host for HostState {}
 
 impl host::Host for HostState {
     fn http_fetch(&mut self, request: types::HttpRequest) -> Result<types::HttpResponse, String> {
-        if !self.manifest.allows_url(&request.url) {
-            return Err(format!(
-                "{} may not reach {} (not in its manifest's http capabilities)",
-                self.manifest.id, request.url
-            ));
-        }
-        let method = match request.method {
-            HttpMethod::Get => Method::Get,
-            HttpMethod::Post => Method::Post,
-            HttpMethod::Put => Method::Put,
-            HttpMethod::Delete => return Err("DELETE is not supported yet".into()),
-        };
-        let body = match request.body {
-            Some(bytes) => Some(String::from_utf8(bytes).map_err(|_| "body must be UTF-8")?),
-            None => None,
-        };
-        let mut req = HttpRequest::with_text(method, request.url, body);
-        for (name, value) in request.headers {
-            req = req.header(&name, value);
-        }
-        // An empty PUT/POST still needs a body for some servers.
-        if req.body.is_none() && method != Method::Get {
-            req.body = Some(Body::Text(String::new()));
-        }
-        let mut len = 0usize;
-        let answer = self.http.request_with_progress(req, &mut |read, _| {
-            len = read as usize;
-            len <= MAX_RESPONSE_BYTES
-        });
-        match answer {
-            Ok(resp) => Ok(HttpResponse {
-                status: resp.status,
-                body: resp.body,
-            }),
-            Err(crate::http::HttpError::Status { status, body }) => {
-                Ok(HttpResponse { status, body })
+        send(&self.manifest, self.http.as_ref(), request)
+    }
+
+    fn http_fetch_many(
+        &mut self,
+        requests: Vec<types::HttpRequest>,
+    ) -> Vec<Result<types::HttpResponse, String>> {
+        let (manifest, http) = (&self.manifest, self.http.as_ref());
+        let mut answers: Vec<Option<Result<HttpResponse, String>>> =
+            (0..requests.len()).map(|_| None).collect();
+        let mut queue: Vec<(usize, types::HttpRequest)> =
+            requests.into_iter().enumerate().collect();
+        queue.reverse();
+        // A few at a time, so one extension cannot open a flood of
+        // connections.
+        while !queue.is_empty() {
+            let batch: Vec<(usize, types::HttpRequest)> =
+                (0..PARALLEL_REQUESTS).filter_map(|_| queue.pop()).collect();
+            let done: Vec<(usize, Result<HttpResponse, String>)> = std::thread::scope(|scope| {
+                let handles: Vec<_> = batch
+                    .into_iter()
+                    .map(|(i, req)| scope.spawn(move || (i, send(manifest, http, req))))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join()
+                            .unwrap_or_else(|_| (usize::MAX, Err("request panicked".into())))
+                    })
+                    .collect()
+            });
+            for (i, answer) in done {
+                if let Some(slot) = answers.get_mut(i) {
+                    *slot = Some(answer);
+                }
             }
-            Err(crate::http::HttpError::Cancelled) => {
-                Err(format!("response larger than {MAX_RESPONSE_BYTES} bytes"))
-            }
-            Err(e) => Err(e.to_string()),
         }
+        answers
+            .into_iter()
+            .map(|a| a.unwrap_or_else(|| Err("request lost".into())))
+            .collect()
     }
 
     fn viewport(&mut self) -> Bounds {
@@ -366,7 +414,7 @@ impl host::Host for HostState {
 
 /// The extension API version this app provides: the WIT package version of
 /// `crates/osm-gpui-extension-api/wit`.
-pub const API_VERSION: &str = "0.1.0";
+pub const API_VERSION: &str = "0.2.0";
 
 /// The extension API version `wasm` was built against, read from its import
 /// of `osm-gpui:extension/host@<version>`. `Err` when it is not a component
@@ -542,6 +590,14 @@ impl LoadedExtension {
         self.call(context, |b, s| {
             b.call_panel_button(s, panel, button, inputs)
         })
+    }
+
+    pub fn viewport_changed(&self, context: CallContext) -> Outcome<()> {
+        self.call(context, |b, s| b.call_viewport_changed(s))
+    }
+
+    pub fn selection_changed(&self, context: CallContext) -> Outcome<()> {
+        self.call(context, |b, s| b.call_selection_changed(s))
     }
 
     pub fn panel_closed(&self, context: CallContext, panel: &str) -> Outcome<()> {

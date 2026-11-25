@@ -538,3 +538,171 @@ mod from_the_index {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+mod street_photos {
+    //! The Panoramax extension against the host: tiles fetched in parallel
+    //! when the view settles, markers with headings, and a photo's details
+    //! and picture when one is clicked.
+
+    use super::*;
+    use crate::http::{HttpError, HttpRequest, HttpResponse};
+    use std::sync::Mutex;
+
+    fn panoramax_src() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("extensions/panoramax")
+    }
+
+    fn panoramax_wasm() -> Vec<u8> {
+        static WASM: OnceLock<Result<Vec<u8>, String>> = OnceLock::new();
+        WASM.get_or_init(|| {
+            let target = std::env::temp_dir().join("osm-gpui-extension-test-build");
+            let path = build_dev_extension_in(&panoramax_src(), Some(&target))?;
+            std::fs::read(path).map_err(|e| e.to_string())
+        })
+        .clone()
+        .unwrap_or_else(|e| panic!("building the Panoramax extension failed: {e}"))
+    }
+
+    /// Answers by URL (requests arrive in any order when sent in parallel).
+    struct Routes {
+        routes: Vec<(&'static str, u16, Vec<u8>)>,
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl HttpClient for Routes {
+        fn request(&self, req: HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.seen.lock().unwrap().push(req.url.clone());
+            let (status, body) = self
+                .routes
+                .iter()
+                .find(|(part, _, _)| req.url.contains(part))
+                .map(|(_, status, body)| (*status, body.clone()))
+                .unwrap_or((204, Vec::new()));
+            if (200..300).contains(&status) {
+                Ok(HttpResponse { status, body })
+            } else {
+                Err(HttpError::Status { status, body })
+            }
+        }
+    }
+
+    const SEARCH: &str = r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","id":"ID","geometry":{"type":"Point","coordinates":[-93.2234,44.926]},
+         "properties":{"datetime":"2025-09-16T18:02:01Z","view:azimuth":334,"license":"CC-BY-SA-4.0"},
+         "providers":[{"name":"someone","roles":["producer"]}],
+         "assets":{"sd":{"href":"https://panoramax.openstreetmap.fr/sd.jpg"}}}]}"#;
+
+    /// The view: the middle of the fixture tile (z15 7898/11796).
+    fn view() -> CallContext {
+        let n = 2f64.powi(15);
+        let lon = |x: f64| x / n * 360.0 - 180.0;
+        let lat = |y: f64| {
+            (std::f64::consts::PI * (1.0 - 2.0 * y / n))
+                .sinh()
+                .atan()
+                .to_degrees()
+        };
+        CallContext {
+            viewport: Bounds {
+                min_lat: lat(11796.7),
+                max_lat: lat(11796.3),
+                min_lon: lon(7898.3),
+                max_lon: lon(7898.7),
+            },
+            zoom: 17.0,
+            selection: Vec::new(),
+            locale: "en".into(),
+        }
+    }
+
+    #[test]
+    fn a_settled_view_fetches_its_tiles_and_a_click_opens_the_photo() {
+        let tile =
+            include_bytes!("../../extensions/street-photos/fixtures/panoramax_15_7898_11796.mvt");
+        let http = Arc::new(Routes {
+            routes: vec![
+                ("/api/map/2/15/7898/11796.mvt", 200, tile.to_vec()),
+                ("/api/search?ids=", 200, SEARCH.as_bytes().to_vec()),
+            ],
+            seen: Mutex::new(Vec::new()),
+        });
+        let manifest = Arc::new(read_manifest(&panoramax_src()).unwrap());
+        assert!(manifest.subscribes("viewport"));
+        let ext = LoadedExtension::from_parts(
+            manifest,
+            panoramax_src(),
+            &panoramax_wasm(),
+            Arc::new(Locales::load(&panoramax_src())),
+            services(http.clone(), Arc::new(MemorySecrets::default())),
+        )
+        .unwrap();
+
+        // Hidden: a settled view fetches nothing.
+        ext.viewport_changed(view()).result.unwrap();
+        assert!(http.seen.lock().unwrap().is_empty());
+
+        let out = ext.run_command(view(), "show-photos");
+        out.result.unwrap();
+        let tiles: Vec<String> = http.seen.lock().unwrap().clone();
+        assert!(
+            tiles.iter().any(|u| u.ends_with("/15/7898/11796.mvt")),
+            "{tiles:?}"
+        );
+        let m = markers(&out.effects);
+        assert!(!m.is_empty());
+        assert!(m.iter().any(|m| m.heading.is_some()));
+        assert_eq!(m[0].color, 0x9333ea);
+
+        // The same view again: everything is cached.
+        let before = http.seen.lock().unwrap().len();
+        ext.viewport_changed(view()).result.unwrap();
+        assert_eq!(http.seen.lock().unwrap().len(), before);
+
+        let out = ext.marker_clicked(view(), &m[0].id);
+        out.result.unwrap();
+        assert!(http
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|u| u.contains("/api/search?ids=")));
+        let p = panel(&out.effects, "photo").flatten().expect("photo panel");
+        assert!(p.elements.iter().any(|e| matches!(
+            e,
+            Element::Picture(i) if i.url == "https://panoramax.openstreetmap.fr/sd.jpg"
+        )));
+        assert!(markers(&out.effects).iter().any(|m| m.selected));
+    }
+
+    #[test]
+    fn zoomed_out_too_far_it_asks_to_zoom_in_and_fetches_nothing() {
+        let http = Arc::new(Routes {
+            routes: vec![("/api/map/2/15/7898/11796.mvt", 200, b"x".to_vec())],
+            seen: Mutex::new(Vec::new()),
+        });
+        let manifest = Arc::new(read_manifest(&panoramax_src()).unwrap());
+        let ext = LoadedExtension::from_parts(
+            manifest,
+            panoramax_src(),
+            &panoramax_wasm(),
+            Arc::new(Locales::load(&panoramax_src())),
+            services(http.clone(), Arc::new(MemorySecrets::default())),
+        )
+        .unwrap();
+        // Too far out: more tiles than are fetched, so nothing is asked.
+        let mut wide = view();
+        wide.viewport = Bounds {
+            min_lat: 40.0,
+            max_lat: 50.0,
+            min_lon: -100.0,
+            max_lon: -90.0,
+        };
+        let out = ext.run_command(wide, "show-photos");
+        out.result.unwrap();
+        assert!(http.seen.lock().unwrap().is_empty());
+        assert_eq!(
+            statuses(&out.effects),
+            vec!["Zoom in to see Panoramax photos"]
+        );
+    }
+}

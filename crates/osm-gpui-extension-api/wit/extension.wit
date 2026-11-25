@@ -16,7 +16,7 @@
 // The package version is the API version. A breaking change bumps it, and the
 // app refuses extensions built against a version it does not provide.
 
-package osm-gpui:extension@0.1.0;
+package osm-gpui:extension@0.2.0;
 
 interface types {
     record lat-lon {
@@ -70,6 +70,17 @@ interface types {
         color: u32,
         /// Drawn larger, with a highlighted halo.
         selected: bool,
+        /// Which way the marker faces, degrees clockwise from north (a
+        /// camera's view direction): drawn as a wedge from the dot.
+        heading: option<f32>,
+    }
+
+    /// A picture the app downloads and shows. The URL must be one the
+    /// extension's manifest allows (`[capabilities] http`).
+    record image {
+        url: string,
+        /// Said when the image cannot be shown.
+        alt: string,
     }
 
     enum button-style {
@@ -109,6 +120,9 @@ interface types {
         input(text-input),
         /// A label and the URL it opens in the browser.
         link(tuple<string, string>),
+        /// A picture, fitted to the panel's width; a double-click shows it
+        /// full size over the window, with zoom and pan.
+        picture(image),
         divider,
     }
 
@@ -125,6 +139,10 @@ interface host {
     /// manifest's `[capabilities] http`. Non-2xx answers are `ok` too: look
     /// at `status`. `err` is a transport failure or a refusal.
     http-fetch: func(request: http-request) -> result<http-response, string>;
+    /// Several requests at once, sent in parallel (a few at a time). Each
+    /// answer is in the same place as its request, as `http-fetch` would give
+    /// it.
+    http-fetch-many: func(requests: list<http-request>) -> list<result<http-response, string>>;
 
     /// The map's visible area and zoom when this call started.
     viewport: func() -> bounds;
@@ -192,6 +210,15 @@ world extension {
 
     /// The user closed panel `panel`.
     export panel-closed: func(panel: string);
+
+    /// The map moved or zoomed and has settled (only for an extension whose
+    /// manifest has `subscribe = ["viewport"]`). `host.viewport` and
+    /// `host.zoom` give the new view.
+    export viewport-changed: func() -> result<_, string>;
+
+    /// The selection changed (only for an extension whose manifest has
+    /// `subscribe = ["selection"]`). `host.selection` gives it.
+    export selection-changed: func() -> result<_, string>;
 
     /// Tags this extension wants on the next changeset (asked when the
     /// upload dialog opens). `comment` and `hashtags` fill the dialog's

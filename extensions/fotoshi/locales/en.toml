@@ -1,0 +1,47 @@
+name = "Fotoshi"
+description = "Street-level photos from Fotoshi on the map, with the photo and its details in the side panel; with an API key, also the photos of the selected feature."
+
+[commands]
+show-photos = "Show Photos"
+hide-photos = "Hide Photos"
+refresh-photos = "Refresh Photos"
+settings = "API Key and Lookup…"
+
+[photos]
+zoom_in = "Zoom in to see Fotoshi photos"
+loaded_one = "Fotoshi: 1 photo"
+loaded = "Fotoshi: %{count} photos"
+unauthorized = "Fotoshi refused the API key; check it in Extensions > Fotoshi > API Key and Lookup…"
+rate_limited = "Fotoshi rate limit reached; try again later"
+failed = "Could not load Fotoshi photos: %{detail}"
+
+[photo]
+title = "Fotoshi Photo"
+no_picture = "This photo has no picture to show"
+captured = "Taken %{date}"
+by = "by %{creator}"
+license = "License: %{license}"
+heading = "Facing %{degrees}°"
+open_site = "Open on %{provider}"
+
+[feature]
+title = "Fotoshi Photos of the Feature"
+count = "Fotoshi has %{count} photo(s) of this feature"
+photo = "Photo %{number}"
+
+[settings]
+title = "Fotoshi API Key and Lookup"
+explain = "Photos show without a key, 20 per area. An API key shows up to 100 per area and lets you look up the photos of the selected feature. It is kept in your system keychain and sent only to Fotoshi."
+find = "Get an API key from Fotoshi"
+label = "API key"
+placeholder = "Paste your API key"
+placeholder_replace = "A key is saved; paste a new one to replace it"
+save = "Save Key"
+forget = "Forget Key"
+saved = "Fotoshi: API key saved"
+forgotten = "Fotoshi: API key forgotten"
+lookup_is_on = "Looking up the selected feature's photos is on. Fotoshi is asked about each feature you select."
+lookup_is_off = "Looking up the selected feature's photos is off. When it is on, Fotoshi is asked about each feature you select (needs the API key)."
+lookup_on = "Turn Lookup On"
+lookup_off = "Turn Lookup Off"
+close = "Close"

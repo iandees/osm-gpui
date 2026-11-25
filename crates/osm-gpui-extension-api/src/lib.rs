@@ -36,7 +36,7 @@ use std::cell::RefCell;
 
 pub use bindings::osm_gpui::extension::types::{
     Bounds, Button, ButtonStyle, Element, FeatureKind, FeatureRef, HttpMethod, HttpRequest,
-    HttpResponse, LatLon, Marker, Panel, TextInput,
+    HttpResponse, Image, LatLon, Marker, Panel, TextInput,
 };
 
 use bindings::osm_gpui::extension::host;
@@ -70,6 +70,18 @@ pub trait Extension: 'static {
     /// The user closed panel `panel`.
     fn panel_closed(&mut self, _panel: &str) {}
 
+    /// The map moved and settled. Only called when the manifest has
+    /// `subscribe = ["viewport"]`.
+    fn viewport_changed(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// The selection changed. Only called when the manifest has
+    /// `subscribe = ["selection"]`.
+    fn selection_changed(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Tags for the next changeset: `comment` and `hashtags` fill the upload
     /// dialog, anything else is added as a changeset tag.
     fn changeset_tags(&mut self) -> Vec<(String, String)> {
@@ -97,6 +109,22 @@ impl Inputs {
 /// Send an HTTP request (to a host the manifest allows).
 pub fn http_fetch(request: &HttpRequest) -> Result<HttpResponse> {
     host::http_fetch(request)
+}
+
+/// Send several requests in parallel; each answer is at its request's
+/// position.
+pub fn http_fetch_many(requests: &[HttpRequest]) -> Vec<Result<HttpResponse>> {
+    host::http_fetch_many(requests)
+}
+
+/// A GET request for `url`.
+pub fn get(url: &str) -> HttpRequest {
+    HttpRequest {
+        method: HttpMethod::Get,
+        url: url.to_string(),
+        headers: Vec::new(),
+        body: None,
+    }
 }
 
 /// GET `url` and parse the 2xx answer as JSON.
@@ -257,6 +285,14 @@ impl bindings::Guest for Component {
 
     fn panel_closed(panel: String) {
         with_extension(|e| e.panel_closed(&panel))
+    }
+
+    fn viewport_changed() -> Result<(), String> {
+        with_extension(|e| e.viewport_changed())
+    }
+
+    fn selection_changed() -> Result<(), String> {
+        with_extension(|e| e.selection_changed())
     }
 
     fn changeset_tags() -> Vec<(String, String)> {

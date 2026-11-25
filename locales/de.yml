@@ -435,14 +435,6 @@ geometry:
 
 settings:
   window_title: "Einstellungen"
-  street_imagery:
-    group: "Straßenfotos"
-    mapillary_token: "Mapillary-Zugriffstoken"
-    fotoshi_key: "Fotoshi-API-Schlüssel"
-    fotoshi_key_description: "Optional. Mit Schlüssel zeigt Fotoshi bis zu 100 statt 20 Fotos pro Gebiet, und die Suche unten wird verfügbar. Einen Schlüssel erstellst du unter fotoshi.com/account/developer."
-    fotoshi_lookup: "Fotoshi-Fotos des ausgewählten Objekts suchen"
-    fotoshi_lookup_description: "Wenn aktiviert, sendet die Auswahl eines OpenStreetMap-Objekts dessen ID (z. B. w123) und deinen API-Schlüssel an Fotoshi, um Fotos davon zu finden. Fotoshi erfährt dadurch, was du dir ansiehst; deshalb ist die Funktion standardmäßig aus. Benötigt einen API-Schlüssel."
-    mapillary_token_description: "Mapillary benötigt ein Zugriffstoken, um seine Fotos anzuzeigen. Lege unter mapillary.com/dashboard/developers eine Anwendung an und füge ihr Client-Token hier ein."
   save: "Sichern"
   language:
     group: "Sprache"
@@ -1021,8 +1013,6 @@ dialog:
   sign_in:
     title: "Zum Hochladen anmelden"
     body: "Zum Hochladen von Änderungen ist die Anmeldung mit einem OpenStreetMap-Konto nötig. Die Einstellungen öffnen, um sich anzumelden."
-    mapillary_title: "Mapillary-Zugriffstoken nötig"
-    mapillary_body: "Mapillary liefert Fotos nur an Anwendungen mit Zugriffstoken. Öffne die Einstellungen und füge unter Straßenfotos auf der Seite Hintergrundbild ein Token ein. Du kannst eines unter mapillary.com/dashboard/developers anlegen."
     notes_title: "Für Hinweise anmelden"
     notes_body: "Zum Erstellen, Kommentieren, Schließen oder Wiedereröffnen von Hinweisen ist die Anmeldung bei OpenStreetMap nötig. Wenn du dich angemeldet hast, bevor Hinweise unterstützt wurden, melde dich erneut an, um die zusätzliche Berechtigung zu erteilen. Die Einstellungen öffnen, um sich anzumelden."
     open_settings: "Einstellungen öffnen"
@@ -1484,39 +1474,6 @@ pmtiles:
       line: "Linie"
       polygon: "Fläche"
 
-street_imagery:
-  menu:
-    mapillary: "Mapillary-Fotos anzeigen"
-    fotoshi: "Fotoshi-Fotos anzeigen"
-    panoramax: "Panoramax-Fotos anzeigen"
-    refresh: "Straßenfotos aktualisieren"
-  layer_name: "%{provider}-Fotos"
-  state:
-    loading: "%{provider}-Fotos werden geladen …"
-    loaded:
-      one: "%{provider}: 1 Foto"
-      other: "%{provider}: %{count} Fotos"
-    zoom_in: "Zum Anzeigen der %{provider}-Fotos hineinzoomen"
-    no_token: "Trage in den Einstellungen ein Mapillary-Zugriffstoken ein, um Mapillary-Fotos zu sehen"
-    unauthorized: "Mapillary hat das Zugriffstoken abgelehnt; prüfe es in den Einstellungen"
-    rate_limited: "Anfragelimit von %{provider} erreicht; versuche es später erneut"
-    fetch_failed: "%{provider}-Fotos konnten nicht geladen werden: %{detail}"
-  object:
-    title:
-      one: "Fotoshi-Foto"
-      other: "Fotoshi-Fotos (%{count})"
-    checking: "Fotoshi wird nach Fotos gefragt …"
-    photo: "Foto %{number}"
-  panel:
-    title: "Straßenfoto"
-    close: "Foto schließen"
-    loading: "Foto wird geladen …"
-    load_failed: "Das Foto konnte nicht geladen werden"
-    open_in_browser: "Auf %{provider} öffnen"
-    captured: "Aufgenommen am %{date}"
-    by: "von %{creator}"
-    license: "Lizenz: %{license}"
-    heading: "Blickrichtung %{degrees}°"
 
 notes:
   layer_name: "Hinweise"
@@ -1608,6 +1565,9 @@ revert:
     edited_locally: "%{kind} %{id}: hat noch nicht hochgeladene Änderungen"
     refused: "%{kind} %{id}: %{detail}"
 extensions:
+  street_imagery_moved:
+    title: "Straßenfotos sind jetzt Erweiterungen"
+    body: "Mapillary-, Fotoshi- und Panoramax-Fotos sind nicht mehr eingebaut. Installiere die gewünschten unter Erweiterungen > Erweiterungen verwalten…. Ein gespeichertes Mapillary-Zugriffstoken oder ein Fotoshi-API-Schlüssel wird nicht übernommen: trage es in der Erweiterung neu ein (Erweiterungen > Mapillary > Zugriffstoken…, Erweiterungen > Fotoshi > API-Schlüssel und Abfrage…)."
   updates_available: "Erweiterungs-Updates verfügbar: %{count}. Siehe Erweiterungen > Erweiterungen verwalten…"
   load_failed: "Eine Erweiterung konnte nicht geladen werden: %{detail}"
   not_installed: "Die Erweiterung %{id} ist nicht installiert"
@@ -1647,3 +1607,8 @@ todo:
       other: "Noch %{count} To-dos"
     all_done: "To-do-Liste erledigt"
     gone: "Dieses Objekt ist nicht mehr in den Daten; als erledigt markieren, um es zu entfernen"
+image_viewer:
+  close: "Schließen"
+  loading: "Bild wird geladen…"
+  failed: "Das Bild konnte nicht geladen werden"
+  open: "Doppelklick zeigt es in voller Größe"

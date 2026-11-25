@@ -1,0 +1,39 @@
+name = "Mapillary"
+description = "Straßenfotos von Mapillary auf der Karte, mit dem Foto und seinen Angaben in der Seitenleiste. Braucht ein Mapillary-Zugriffstoken."
+
+[commands]
+show-photos = "Fotos anzeigen"
+hide-photos = "Fotos ausblenden"
+refresh-photos = "Fotos aktualisieren"
+settings = "Zugriffstoken…"
+
+[photos]
+zoom_in = "Zum Anzeigen der Mapillary-Fotos hineinzoomen"
+loaded_one = "Mapillary: 1 Foto"
+loaded = "Mapillary: %{count} Fotos"
+no_token = "Trage ein Mapillary-Zugriffstoken ein, um Mapillary-Fotos zu sehen"
+unauthorized = "Mapillary hat das Zugriffstoken abgelehnt; prüfe es unter Erweiterungen > Mapillary > Zugriffstoken…"
+rate_limited = "Anfragelimit von Mapillary erreicht; versuche es später erneut"
+failed = "Mapillary-Fotos konnten nicht geladen werden: %{detail}"
+
+[photo]
+title = "Mapillary-Foto"
+no_picture = "Zu diesem Foto gibt es kein Bild"
+captured = "Aufgenommen am %{date}"
+by = "von %{creator}"
+license = "Lizenz: %{license}"
+heading = "Blickrichtung %{degrees}°"
+open_site = "Auf %{provider} öffnen"
+
+[token]
+title = "Mapillary-Zugriffstoken"
+explain = "Für Mapillary-Fotos wird ein Zugriffstoken gebraucht: ein Client-Token aus deinem Mapillary-Entwickler-Dashboard. Es liegt im Schlüsselbund deines Systems und wird nur an Mapillary gesendet."
+find = "Ein Client-Token bei Mapillary holen"
+label = "Zugriffstoken"
+placeholder = "Client-Token einfügen (MLY|…)"
+placeholder_replace = "Ein Token ist gespeichert; füge ein neues ein, um es zu ersetzen"
+save = "Speichern"
+forget = "Token vergessen"
+cancel = "Abbrechen"
+saved = "Mapillary: Zugriffstoken gespeichert"
+forgotten = "Mapillary: Zugriffstoken vergessen"

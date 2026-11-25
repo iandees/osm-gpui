@@ -1,0 +1,15 @@
+[package]
+name = "street-photos"
+version = "0.2.0"
+edition = "2021"
+publish = false
+description = "What the Mapillary, Fotoshi and Panoramax extensions share: photos by map tile, their markers and the photo panel"
+
+# Used by the street imagery extensions, built for wasm32-wasip2.
+[workspace]
+
+[dependencies]
+osm-gpui-extension-api = { path = "../../crates/osm-gpui-extension-api" }
+serde_json = "1"
+mvt-reader = { version = "2.5", default-features = false }
+geo-types = { version = "0.7", default-features = false }

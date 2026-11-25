@@ -87,6 +87,15 @@ jobs:
       - name: cargo test
         run: cargo test --locked
 
+      # The extensions (and the crate they share) are crates of their own,
+      # outside the app's workspace: run their native unit tests too.
+      - name: extension tests
+        run: |
+          for manifest in extensions/*/Cargo.toml; do
+            echo "== $manifest"
+            cargo test --locked --manifest-path "$manifest"
+          done
+
   # macOS is the primary platform; verify it after merge rather than on every PR push.
   macos:
     if: github.event_name == 'push'
