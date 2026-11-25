@@ -12,8 +12,8 @@ pub(super) const CASING_MIN_ZOOM: f64 = 16.0;
 /// Below this zoom direction arrows aren't drawn.
 pub(super) const ARROW_MIN_ZOOM: f64 = 16.0;
 
-/// Path length between direction arrows along a way, in pixels.
-pub(super) const ARROW_SPACING_PX: f32 = 96.0;
+/// Half the stroke width of a chevron's two legs, in pixels.
+pub(super) const CHEVRON_HALF_WIDTH: f32 = 1.0;
 
 /// A direction arrow is only placed on a segment at least this long, so it
 /// never overhangs the segment's ends.
@@ -139,19 +139,31 @@ pub(super) fn arrow_triangle(
     ])
 }
 
-/// Which segments of the polyline `pts` get a direction arrow: the index
-/// `i` of each chosen segment `pts[i]`-`pts[i + 1]`. One arrow per
-/// `ARROW_SPACING_PX` of path length, starting half a spacing in so even a
-/// short way gets one, and never on a segment too short to hold it.
-pub(super) fn arrow_segments(pts: &[Point<Pixels>]) -> Vec<usize> {
+/// The two legs of a chevron (an open `>`) with the corners of `arrow`
+/// (from [`arrow_triangle`]): left corner to tip, right corner to tip.
+pub(super) fn emit_chevron<S: way_stroke::TriSink>(
+    sink: &mut S,
+    [tip, left, right]: [Point<Pixels>; 3],
+    half_width: f32,
+) {
+    let xy = |p: Point<Pixels>| (f32::from(p.x), f32::from(p.y));
+    way_stroke::emit_segment(sink, xy(left), xy(tip), half_width);
+    way_stroke::emit_segment(sink, xy(right), xy(tip), half_width);
+}
+
+/// Which segments of the polyline `pts` get a direction mark: the index
+/// `i` of each chosen segment `pts[i]`-`pts[i + 1]`. One mark per `spacing`
+/// pixels of path length, starting half a spacing in so even a short way
+/// gets one, and never on a segment too short to hold it.
+pub(super) fn arrow_segments(pts: &[Point<Pixels>], spacing: f32) -> Vec<usize> {
     let mut chosen = Vec::new();
-    let mut since_arrow = ARROW_SPACING_PX / 2.0;
+    let mut since_arrow = spacing / 2.0;
     for (i, pair) in pts.windows(2).enumerate() {
         let dx = f32::from(pair[1].x - pair[0].x);
         let dy = f32::from(pair[1].y - pair[0].y);
         let len = (dx * dx + dy * dy).sqrt();
         since_arrow += len;
-        if since_arrow >= ARROW_SPACING_PX && len >= ARROW_MIN_SEGMENT_PX {
+        if since_arrow >= spacing && len >= ARROW_MIN_SEGMENT_PX {
             since_arrow = 0.0;
             chosen.push(i);
         }
@@ -668,6 +680,26 @@ impl OsmLayer {
             let dashes = style
                 .dashes
                 .filter(|_| detail == WayDetail::Full && !lod.coarse);
+            // Chevrons go in a batch of the casing colour, one layer above
+            // the strokes so they show on top of this way's own.
+            let chevrons = draw_arrows
+                && style.direction != Direction::None
+                && style.direction_style == DirectionStyle::Chevron;
+            let chevron_idx = chevrons.then(|| {
+                let colour = if style.casing_width > 0.0 {
+                    style.casing_color
+                } else {
+                    CASING_COLOR
+                };
+                batch_index(
+                    &mut stroke_index,
+                    &mut strokes,
+                    BatchKind::Stroke,
+                    z + 1,
+                    (colour << 8) | 0xFF,
+                    &hints,
+                )
+            });
             let stroke = &mut strokes[stroke_idx];
 
             // An explicit casing replaces the default dark one.
@@ -869,10 +901,13 @@ impl OsmLayer {
                 way_stroke::emit_dashed(&mut sink, &anchors, dash, gap, half_width);
             }
 
-            let arrows = draw_arrows && style.direction != Direction::None;
+            let arrows = draw_arrows
+                && style.direction != Direction::None
+                && style.direction_style != DirectionStyle::None;
             let reverse = style.direction == Direction::Reverse;
+            let spacing = style.direction_spacing;
             // Start half a spacing in, so even a short way gets an arrow.
-            let mut since_arrow = ARROW_SPACING_PX / 2.0;
+            let mut since_arrow = spacing / 2.0;
             for &(a, b) in &segs {
                 let (p0, p1) = (scratch_pts[a], scratch_pts[b]);
                 if !arrows {
@@ -882,11 +917,24 @@ impl OsmLayer {
                 let dy = f32::from(p1.y - p0.y);
                 let len = (dx * dx + dy * dy).sqrt();
                 since_arrow += len;
-                if since_arrow < ARROW_SPACING_PX || len < ARROW_MIN_SEGMENT_PX {
+                if since_arrow < spacing || len < ARROW_MIN_SEGMENT_PX {
                     continue;
                 }
                 since_arrow = 0.0;
                 let half_base = half_width + ARROW_OVERHANG;
+                if let Some(ci) = chevron_idx {
+                    if let Some(tri) = arrow_triangle(p0, p1, reverse, ARROW_HALF_LENGTH, half_base)
+                    {
+                        let cb = &mut strokes[ci];
+                        let mut sink = PathSink {
+                            path: &mut cb.path,
+                            bounds: &mut cb.bounds,
+                        };
+                        emit_chevron(&mut sink, tri, CHEVRON_HALF_WIDTH);
+                    }
+                    continue;
+                }
+                let stroke = &mut strokes[stroke_idx];
                 if let Some([tip, left, right]) =
                     arrow_triangle(p0, p1, reverse, ARROW_HALF_LENGTH, half_base)
                 {

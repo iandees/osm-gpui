@@ -17,7 +17,7 @@ use crate::selection::{
     DeletedRelationSnapshot, FeatureKind, FeatureRef, HitCandidate, PurgedFeatures,
 };
 use crate::style::mapcss::{NodeShape, NodeVisual};
-use crate::style::{Direction, NodeStyle, Stylesheet, TextPosition, WayStyle};
+use crate::style::{Direction, DirectionStyle, NodeStyle, Stylesheet, TextPosition, WayStyle};
 use crate::viewport::Viewport;
 use gpui::*;
 use rstar::{
