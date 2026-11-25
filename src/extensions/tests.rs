@@ -706,3 +706,134 @@ mod street_photos {
         );
     }
 }
+
+mod older_api_versions {
+    //! Extensions built against an older API version keep working: the
+    //! released MapRoulette 0.1.0 (built against API 0.1.0, kept as a fixture)
+    //! loads and runs in this app.
+
+    use super::*;
+
+    fn fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions/maproulette-0.1.0")
+    }
+
+    #[test]
+    fn every_supported_version_but_the_current_one_has_a_fixture_that_runs() {
+        // A new API version must keep the previous ones running: freeze the
+        // released WIT, add an adapter module, and add a fixture built
+        // against it (see docs/extensions.md, "API versions").
+        let older: Vec<&str> = runtime::SUPPORTED_API_VERSIONS
+            .iter()
+            .copied()
+            .filter(|v| *v != runtime::API_VERSION)
+            .collect();
+        assert_eq!(
+            older,
+            ["0.1.0"],
+            "add a fixture test for each older version"
+        );
+        let wasm = std::fs::read(fixture().join("extension.wasm")).unwrap();
+        assert_eq!(runtime::api_version_of(&wasm).unwrap(), "0.1.0");
+        assert!(registry::api_compatible("0.1.0"));
+    }
+
+    /// The released API versions' WIT, frozen. A released version never
+    /// changes: change the API by adding a version (see docs/extensions.md,
+    /// "Changing the API").
+    const FROZEN: &[(&str, &str)] = &[
+        (
+            "0.1.0",
+            "ec741897211fef13700727b8e6dc13ba8c4b0d6f73a6401b59ad74f88e934e96",
+        ),
+        (
+            "0.2.0",
+            "edc90f5136925fdcee07b47bd4d54158e7b3878298f07c2946f4842c712d23e7",
+        ),
+    ];
+
+    fn frozen_wit(version: &str) -> String {
+        let (major, minor) = {
+            let mut it = version.split('.');
+            (it.next().unwrap(), it.next().unwrap())
+        };
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("src/extensions/wit/v{major}_{minor}/extension.wit"));
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    #[test]
+    fn released_api_versions_never_change() {
+        assert_eq!(
+            FROZEN.iter().map(|(v, _)| *v).collect::<Vec<_>>(),
+            runtime::SUPPORTED_API_VERSIONS,
+            "every supported version is frozen (and only those)"
+        );
+        for (version, hash) in FROZEN {
+            let text = frozen_wit(version);
+            assert!(
+                text.contains(&format!("package osm-gpui:extension@{version};")),
+                "{version}: the frozen WIT names its own version"
+            );
+            assert_eq!(
+                registry::sha256_hex(text.as_bytes()),
+                *hash,
+                "the frozen WIT of released API {version} changed"
+            );
+        }
+        // The SDK builds against the current version, unchanged.
+        let sdk = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/osm-gpui-extension-api/wit/extension.wit"),
+        )
+        .unwrap();
+        assert_eq!(
+            sdk,
+            frozen_wit(runtime::API_VERSION),
+            "the SDK's WIT changed: add a new API version instead"
+        );
+        let sdk_version = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/osm-gpui-extension-api/Cargo.toml"),
+        )
+        .unwrap();
+        assert!(
+            sdk_version.contains(&format!("version = \"{}\"", runtime::API_VERSION)),
+            "the SDK crate's version is the API version"
+        );
+    }
+
+    #[test]
+    fn a_0_1_extension_loads_runs_and_shows_its_panel() {
+        let http = Arc::new(FakeClient::new(vec![
+            ok(200, TASKS),
+            ok(200, TASK),
+            ok(200, CHALLENGE),
+        ]));
+        let ext = LoadedExtension::load(
+            &fixture(),
+            services(http.clone(), Arc::new(MemorySecrets::default())),
+        )
+        .unwrap();
+        assert_eq!(ext.api_version, "0.1.0");
+
+        let out = ext.run_command(context(15.0), "show-tasks");
+        out.result.unwrap();
+        let m = markers(&out.effects);
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].heading, None, "0.1 markers have no heading");
+        assert_eq!(statuses(&out.effects), vec!["MapRoulette: 2 tasks"]);
+
+        let out = ext.marker_clicked(context(15.0), "317096925");
+        out.result.unwrap();
+        let p = panel(&out.effects, "task").flatten().expect("task panel");
+        assert!(p
+            .elements
+            .iter()
+            .any(|e| matches!(e, Element::Heading(h) if h == "Traffic Light Placement West US")));
+
+        // Events 0.1 has no exports for are no-ops, not failures.
+        ext.viewport_changed(context(15.0)).result.unwrap();
+        ext.selection_changed(context(15.0)).result.unwrap();
+        assert_eq!(http.request_count(), 3);
+    }
+}

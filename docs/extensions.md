@@ -507,17 +507,54 @@ API version the app supports.
 ## API versions
 
 The WIT package version (`osm-gpui:extension@0.2.0`) is the API version. The
-SDK version matches it, and the index records which version each extension
+SDK's version matches it, and the index records which version each extension
 was built against.
 
-For an extension to run, it must have been built against the same API line
-as the app, and against a version no newer than the app's. While the API is
-0.x, "the same line" means the same minor version, so 0.2.x extensions run in
-apps providing 0.2.x. The manager shows an extension that needs a newer app
-as unavailable rather than offering to install it.
+**An extension keeps working when the API moves on.** The app runs
+extensions built against every API version it lists in
+`SUPPORTED_API_VERSIONS` (today 0.1.0 and 0.2.0), not only the newest. An
+extension built against an older version gets the host it was built for: it
+simply doesn't see what came later. For example, a 0.1 extension's markers
+have no heading, and it is never sent viewport or selection events. You only
+need to rebuild against a newer SDK to use what it adds.
 
-The API will change while it is 0.x. A breaking change bumps the minor
-version, and extensions need a rebuild against the new SDK.
+An extension built against a *newer* version than the app knows doesn't
+load, and the manager shows it as needing a newer osm-gpui instead of
+offering to install it.
+
+### Changing the API
+
+This part is for people changing osm-gpui itself. A released API version
+never changes. Any change to the WIT, even an addition, is a new version,
+because a component links to the exact interface it was built against. To add
+one:
+
+1. Change `crates/osm-gpui-extension-api/wit/extension.wit` and bump its
+   `package` version, the SDK crate's version, and `runtime::API_VERSION`.
+   While the API is 0.x, bump the minor version.
+2. Freeze the new WIT as `src/extensions/wit/v<major>_<minor>/extension.wit`
+   and add its hash to `FROZEN` in `src/extensions/tests.rs`.
+3. Keep the previous version running. Make its bindings a module beside
+   `src/extensions/runtime/v0_1.rs`, generated from its frozen WIT. Its host
+   functions convert their arguments to the new types and call the current
+   implementation, and its exports join the `Guest` enum and the `dispatch!`
+   macro. Exports it lacks are no-ops. If the previous version was the
+   current one, the old current bindings become this module.
+4. Add it to `SUPPORTED_API_VERSIONS`, and commit an extension built against
+   it under `tests/fixtures/extensions/` with a test that loads and drives
+   it, as `older_api_versions` does for MapRoulette 0.1.0.
+5. Rebuild the extensions in `extensions/` against the new SDK when they need
+   what it adds, and bump their versions so installed copies are offered the
+   update.
+
+`released_api_versions_never_change` fails if a frozen WIT is edited, or if
+the SDK's WIT changes without a new version, so step 1 can't be skipped by
+accident.
+
+To drop support for an old version, delete its module, its frozen WIT, its
+fixture and its test, and remove it from `SUPPORTED_API_VERSIONS` and
+`FROZEN`. Extensions built against it then stop loading, so do it rarely and
+say so in the changelog.
 
 ## Troubleshooting
 
@@ -529,9 +566,10 @@ prefers rustup's toolchain when rustup is present. For a manual build, run
 rustup's binaries explicitly:
 `RUSTC=$(rustup which rustc) $(rustup which cargo) build --release --target wasm32-wasip2`.
 
-**"built against a different extension API version"**: the extension's SDK
-version doesn't match the app's. Update the `osm-gpui-extension-api`
-dependency and rebuild.
+**"was built against extension API …; this app runs …"**: the extension was
+built against an API version this app doesn't run. That is usually a newer
+SDK than the app: update osm-gpui, or build against the SDK version the app
+lists.
 
 **"may not reach …"**: the URL's host isn't in `[capabilities] http`, or the
 URL isn't `https://`.

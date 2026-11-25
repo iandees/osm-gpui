@@ -115,7 +115,7 @@ Dragging a node needs it to be the only thing moved: a press on an unselected ve
 
 ## Extensions
 
-Extensions are sandboxed WebAssembly components the app loads at runtime (`src/extensions`, `src/extensions_ui.rs`, `src/extensions_manage.rs`). The interface is `crates/osm-gpui-extension-api/wit/extension.wit`; [docs/extensions.md](docs/extensions.md) is the guide for writing one. `extensions/maproulette` is the reference extension, and the host's tests build it, so `cargo test` needs the wasm target (`rustup target add wasm32-wasip2`). A change to the WIT is a change to the API: keep `runtime::API_VERSION`, the WIT package version and the SDK crate's version in step, and update the guide.
+Extensions are sandboxed WebAssembly components the app loads at runtime (`src/extensions`, `src/extensions_ui.rs`, `src/extensions_manage.rs`). The interface is `crates/osm-gpui-extension-api/wit/extension.wit`; [docs/extensions.md](docs/extensions.md) is the guide for writing one. `extensions/maproulette` is the reference extension, and the host's tests build it, so `cargo test` needs the wasm target (`rustup target add wasm32-wasip2`). Released API versions never break: a change to the WIT is a new API version, and the previous ones keep running through adapters (`src/extensions/runtime/v0_1.rs`) generated from their frozen WIT (`src/extensions/wit/`). The steps are in [docs/extensions.md](docs/extensions.md#changing-the-api), and `released_api_versions_never_change` enforces them.
 
 ## Translations
 
