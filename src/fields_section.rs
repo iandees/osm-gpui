@@ -511,6 +511,9 @@ impl MapViewer {
                             .flex_col()
                             .max_h(gpui::px(160.0))
                             .overflow_y_scroll()
+                            // gpui's scroll listener never stops propagation, so without
+                            // this the inspector behind the list scrolls along with it.
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                             .border_1()
                             .border_color(cx.theme().border)
                             .when(query.is_empty(), |d| d.child(clear_row))
@@ -636,6 +639,7 @@ impl MapViewer {
                             .flex_col()
                             .max_h(gpui::px(160.0))
                             .overflow_y_scroll()
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                             .border_1()
                             .border_color(cx.theme().border)
                             .children(
@@ -772,6 +776,7 @@ impl MapViewer {
                             .flex_col()
                             .max_h(gpui::px(160.0))
                             .overflow_y_scroll()
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                             .border_1()
                             .border_color(cx.theme().border)
                             .children(
@@ -903,6 +908,7 @@ impl MapViewer {
                         .items_start()
                         .max_h(gpui::px(200.0))
                         .overflow_y_scroll()
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .border_1()
                         .border_color(cx.theme().border)
                         .rounded_md()
