@@ -5,6 +5,7 @@ edition = "2021"
 description = "Write osm-gpui extensions in Rust"
 license = "MIT"
 repository = "https://github.com/iandees/osm-gpui"
+readme = "README.md"
 
 # Built for wasm32-wasip2 by each extension, never as part of the app.
 [workspace]
