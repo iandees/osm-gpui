@@ -11,10 +11,15 @@ file.
 
 ### Extensions
 
-- Extensions: sandboxed WebAssembly add-ons with their own menu commands, map markers and side-panel sections. Extensions > Manage Extensions… installs, updates, turns off and uninstalls them from the extension index, and Install Dev Extension… builds one from a folder. ([#370](https://github.com/iandees/osm-gpui/pull/370))
+- Extensions: sandboxed WebAssembly add-ons with menu commands, map markers and side-panel sections. Settings > Extensions installs, updates, turns off and uninstalls them from the extension index, holds each one's own settings, and Install Dev Extension… builds one from a folder. ([#370](https://github.com/iandees/osm-gpui/pull/370)), ([#375](https://github.com/iandees/osm-gpui/pull/375))
+- Extension commands appear in the app's own menus next to items of the same kind (overlays in View, imagery in Imagery, data in File, tools in Tools), with checkmarks for things that are on or off. ([#375](https://github.com/iandees/osm-gpui/pull/375))
 - A MapRoulette extension shows tasks on the map with their instructions, loads their data and marks them done. ([#370](https://github.com/iandees/osm-gpui/pull/370))
-- Mapillary, Fotoshi and Panoramax photos are now extensions instead of being built in: install them from Extensions > Manage Extensions…. A saved Mapillary token or Fotoshi API key has to be entered again in the extension. ([#372](https://github.com/iandees/osm-gpui/pull/372))
+- Mapillary, Fotoshi and Panoramax photos are now extensions instead of being built in: install them from Settings > Extensions and turn them on in the View menu. A saved Mapillary token or Fotoshi API key has to be entered again in the extension's settings. ([#372](https://github.com/iandees/osm-gpui/pull/372))
 - Extensions built against an older extension API keep working, and the guide for writing extensions is in docs/extensions.md. ([#370](https://github.com/iandees/osm-gpui/pull/370)), ([#372](https://github.com/iandees/osm-gpui/pull/372))
+
+### Interface
+
+- Settings opens inside the main window instead of as a second window. ([#374](https://github.com/iandees/osm-gpui/pull/374))
 
 ### Editing
 
