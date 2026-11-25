@@ -3,8 +3,8 @@
 //! its status set (with the user's MapRoulette API key) once it is done.
 
 use osm_gpui_extension_api::{
-    self as osm, button, Bounds, ButtonStyle, Element, Extension, HttpMethod, HttpRequest,
-    Inputs, LatLon, Marker, Panel, TextInput,
+    self as osm, button, Bounds, ButtonStyle, Element, Extension, HttpMethod, HttpRequest, Inputs,
+    LatLon, Marker, Panel, TextInput,
 };
 use serde::Deserialize;
 
@@ -226,6 +226,7 @@ impl MapRoulette {
                 },
                 color: status_color(t.status),
                 selected: open == Some(t.id),
+                heading: None,
             })
             .collect()
     }

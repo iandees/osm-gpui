@@ -23,6 +23,10 @@ pub struct Manifest {
     pub capabilities: Capabilities,
     #[serde(default)]
     pub commands: Vec<CommandDef>,
+    /// Events the extension wants to hear about: `viewport` (the map
+    /// settled after moving) and `selection` (the selection changed).
+    #[serde(default)]
+    pub subscribe: Vec<String>,
 }
 
 /// What the extension may reach beyond its sandbox.
@@ -67,12 +71,24 @@ impl Manifest {
                 return Err(format!("command id {:?} is not valid", c.id));
             }
         }
+        for event in &m.subscribe {
+            if !matches!(event.as_str(), "viewport" | "selection") {
+                return Err(format!(
+                    "subscribe: unknown event {event:?} (known: viewport, selection)"
+                ));
+            }
+        }
         for h in &m.capabilities.http {
             if h.is_empty() || h.contains(['/', ':', '@', '*']) {
                 return Err(format!("http capability {h:?} must be a bare host name"));
             }
         }
         Ok(m)
+    }
+
+    /// Whether the extension asked to hear about `event`.
+    pub fn subscribes(&self, event: &str) -> bool {
+        self.subscribe.iter().any(|e| e == event)
     }
 
     /// Whether `url` is HTTPS to a host the manifest allows.
@@ -155,6 +171,24 @@ label = "Show Tasks Here"
         assert!(!m.allows_url("https://maproulette.org.evil.com/"));
         assert!(!m.allows_url("https://user@maproulette.org/"));
         assert!(!m.allows_url("https://example.com/?u=https://maproulette.org"));
+    }
+
+    #[test]
+    fn subscriptions_are_read_and_unknown_events_refused() {
+        let top = TOML.replacen(
+            "schema_version = 1\n",
+            "schema_version = 1\nsubscribe = [\"viewport\", \"selection\"]\n",
+            1,
+        );
+        let m = Manifest::parse(&top).unwrap();
+        assert!(m.subscribes("viewport") && m.subscribes("selection"));
+        assert!(!Manifest::parse(TOML).unwrap().subscribes("viewport"));
+        let bad = TOML.replacen(
+            "schema_version = 1\n",
+            "schema_version = 1\nsubscribe = [\"keys\"]\n",
+            1,
+        );
+        assert!(Manifest::parse(&bad).is_err());
     }
 
     #[test]

@@ -5,9 +5,9 @@
 //!
 //! The extension host itself (manifest, sandbox, WIT bindings, locales) is
 //! `osm_gpui::extensions`. Every call into an extension runs on the
-//! background executor; one extension runs one call at a time, and a click
-//! that arrives while it is busy is dropped with a status message rather
-//! than queued.
+//! background executor; one extension runs one call at a time, and calls that
+//! arrive while it is busy wait their turn ([`Queued`]). Viewport and
+//! selection events coalesce: only the latest waits.
 //!
 //! An extension may show several panels at once, and several extensions may
 //! each show theirs. Every panel is a collapsible section of its own at the
@@ -120,11 +120,54 @@ pub(crate) struct ExtensionsState {
     panels: Vec<OpenPanel>,
     /// Extensions with a call in flight.
     busy: HashSet<String>,
+    /// Calls waiting for their extension to finish the one it is running.
+    queue: HashMap<String, std::collections::VecDeque<Queued>>,
+    /// The view last reported to `viewport` subscribers, and since when the
+    /// view has been as it is now (reported once it settles).
+    viewport_sent: Option<[f64; 4]>,
+    viewport_seen: Option<([f64; 4], std::time::Instant)>,
+    /// The pictures panels show, by URL.
+    images: HashMap<String, Picture>,
+    /// The selection last reported to `selection` subscribers.
+    selection_sent: Vec<osm_gpui::selection::FeatureRef>,
     /// The changeset tags each extension last asked for, read when the
     /// upload dialog opens (asking then could wait on a busy extension).
     changeset_tags: HashMap<String, Vec<(String, String)>>,
     pub(crate) installing_dev: bool,
 }
+
+/// One call into an extension, made when its turn comes (with the app's
+/// state at that moment).
+type CallFn = Box<dyn FnOnce(&LoadedExtension, CallContext) -> Outcome<()> + Send>;
+
+/// What a queued call is, so a newer event replaces an older one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallKind {
+    Viewport,
+    Selection,
+    Other,
+}
+
+/// A panel picture's download.
+enum Picture {
+    Loading,
+    Ready(Arc<gpui::RenderImage>),
+    Failed,
+}
+
+/// Largest picture downloaded for a panel.
+const MAX_PICTURE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Height of a picture in a panel.
+const PICTURE_HEIGHT: f32 = 200.0;
+
+struct Queued {
+    kind: CallKind,
+    call: CallFn,
+}
+
+/// How long the view must stay still before `viewport` subscribers hear of it.
+const VIEWPORT_SETTLE: std::time::Duration = std::time::Duration::from_millis(350);
 
 fn to_ext_bounds(b: &GeoBounds) -> Bounds {
     Bounds {
@@ -197,6 +240,8 @@ impl MapViewer {
             self.extensions.started = true;
             self.start_extensions(cx);
         }
+        self.watch_extension_events(cx);
+        self.load_panel_pictures(cx);
         let present: HashSet<LayerId> =
             self.layer_manager.layers().iter().map(|l| l.id()).collect();
         self.extensions
@@ -291,16 +336,56 @@ impl MapViewer {
         call: impl FnOnce(&LoadedExtension, CallContext) -> Outcome<()> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
-        let Some(ext) = self.find_extension(id).cloned() else {
+        self.queue_extension_call(id, CallKind::Other, Box::new(call), cx);
+    }
+
+    /// Run `call` on extension `id` now, or after the call it is running.
+    fn queue_extension_call(
+        &mut self,
+        id: &str,
+        kind: CallKind,
+        call: CallFn,
+        cx: &mut Context<Self>,
+    ) {
+        if self.find_extension(id).is_none() {
             self.set_status(tr!("extensions.not_installed", id = id));
             cx.notify();
             return;
-        };
-        if !self.extensions.busy.insert(id.to_string()) {
-            self.set_status(tr!("extensions.busy", name = self.extension_name(id)));
-            cx.notify();
+        }
+        let queue = self.extensions.queue.entry(id.to_string()).or_default();
+        if kind != CallKind::Other {
+            // Only the latest view or selection matters.
+            let before = queue.len();
+            queue.retain(|q| q.kind != kind);
+            for _ in queue.len()..before {
+                crate::idle_task(false);
+            }
+        }
+        // Waiting and running calls are work a script's `wait_idle` waits for.
+        crate::idle_task(true);
+        queue.push_back(Queued { kind, call });
+        self.run_next_extension_call(id, cx);
+    }
+
+    /// Start extension `id`'s next waiting call, unless one is running.
+    fn run_next_extension_call(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.extensions.busy.contains(id) {
             return;
         }
+        let Some(next) = self
+            .extensions
+            .queue
+            .get_mut(id)
+            .and_then(|q| q.pop_front())
+        else {
+            return;
+        };
+        let Some(ext) = self.find_extension(id).cloned() else {
+            crate::idle_task(false);
+            self.drop_extension_queue(id);
+            return;
+        };
+        self.extensions.busy.insert(id.to_string());
         let context = self.extension_context();
         let id = id.to_string();
         cx.notify();
@@ -308,7 +393,7 @@ impl MapViewer {
             let (outcome, tags) = cx
                 .background_executor()
                 .spawn(async move {
-                    let outcome = call(&ext, context.clone());
+                    let outcome = (next.call)(&ext, context.clone());
                     let tags = ext.changeset_tags(context).result.unwrap_or_default();
                     (outcome, tags)
                 })
@@ -320,10 +405,146 @@ impl MapViewer {
                 if let Err(e) = outcome.result {
                     this.set_status(e);
                 }
+                crate::idle_task(false);
+                this.run_next_extension_call(&id, cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Start downloading the pictures open panels show, and forget those no
+    /// panel shows any more. Only URLs the panel's extension may reach are
+    /// fetched.
+    fn load_panel_pictures(&mut self, cx: &mut Context<Self>) {
+        let mut wanted: Vec<(String, bool)> = Vec::new();
+        for open in &self.extensions.panels {
+            let allowed = |url: &str| {
+                self.extensions
+                    .loaded
+                    .iter()
+                    .find(|e| e.manifest.id == open.extension)
+                    .is_some_and(|e| e.manifest.allows_url(url))
+            };
+            for el in &open.panel.elements {
+                if let Element::Picture(p) = el {
+                    wanted.push((p.url.clone(), allowed(&p.url)));
+                }
+            }
+        }
+        self.extensions
+            .images
+            .retain(|url, _| wanted.iter().any(|(w, _)| w == url));
+        for (url, allowed) in wanted {
+            if self.extensions.images.contains_key(&url) {
+                continue;
+            }
+            if !allowed {
+                self.extensions.images.insert(url, Picture::Failed);
+                continue;
+            }
+            self.extensions.images.insert(url.clone(), Picture::Loading);
+            crate::idle_task(true);
+            let http = self.http.clone();
+            cx.spawn(async move |this, cx| {
+                let fetched = url.clone();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let resp = http
+                            .request_with_progress(
+                                osm_gpui::http::HttpRequest::get(&fetched),
+                                &mut |read, _| read <= MAX_PICTURE_BYTES,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        crate::image_viewer::decode(&resp.body)
+                    })
+                    .await;
+                crate::idle_task(false);
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(slot) = this.extensions.images.get_mut(&url) {
+                        *slot = match result {
+                            Ok(image) => Picture::Ready(Arc::new(image)),
+                            Err(e) => {
+                                eprintln!("extension picture {url}: {e}");
+                                Picture::Failed
+                            }
+                        };
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Forget the calls waiting for extension `id`.
+    fn drop_extension_queue(&mut self, id: &str) {
+        if let Some(queue) = self.extensions.queue.remove(id) {
+            for _ in 0..queue.len() {
+                crate::idle_task(false);
+            }
+        }
+    }
+
+    /// The running extensions that subscribe to `event`.
+    fn subscribers(&self, event: &str) -> Vec<String> {
+        self.extensions
+            .loaded
+            .iter()
+            .filter(|e| e.manifest.subscribes(event))
+            .map(|e| e.manifest.id.clone())
+            .collect()
+    }
+
+    /// Per frame: tell `viewport` subscribers when the map has settled
+    /// somewhere new, and `selection` subscribers when the selection changed.
+    fn watch_extension_events(&mut self, cx: &mut Context<Self>) {
+        let viewport_ids = self.subscribers("viewport");
+        if !viewport_ids.is_empty() && !self.viewport.is_dragging {
+            let b = self.viewport.visible_bounds();
+            let now = [b.min_lat, b.min_lon, b.max_lat, b.max_lon];
+            let still_since = match self.extensions.viewport_seen {
+                Some((seen, at)) if seen == now => at,
+                _ => {
+                    let at = std::time::Instant::now();
+                    self.extensions.viewport_seen = Some((now, at));
+                    at
+                }
+            };
+            if self.extensions.viewport_sent != Some(now) {
+                if still_since.elapsed() >= VIEWPORT_SETTLE {
+                    self.extensions.viewport_sent = Some(now);
+                    for id in viewport_ids {
+                        self.queue_extension_call(
+                            &id,
+                            CallKind::Viewport,
+                            Box::new(|ext, ctx| ext.viewport_changed(ctx)),
+                            cx,
+                        );
+                    }
+                } else {
+                    // Look again once it has had time to settle.
+                    let wait = VIEWPORT_SETTLE.saturating_sub(still_since.elapsed());
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        let _ = this.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
+                }
+            }
+        }
+        if self.selected != self.extensions.selection_sent {
+            self.extensions.selection_sent = self.selected.clone();
+            for id in self.subscribers("selection") {
+                self.queue_extension_call(
+                    &id,
+                    CallKind::Selection,
+                    Box::new(|ext, ctx| ext.selection_changed(ctx)),
+                    cx,
+                );
+            }
+        }
     }
 
     fn apply_extension_effects(&mut self, id: &str, effects: Vec<Effect>, cx: &mut Context<Self>) {
@@ -501,6 +722,7 @@ impl MapViewer {
             }
         }
         self.extensions.panels.retain(|p| p.extension != id);
+        self.drop_extension_queue(id);
         self.extensions.changeset_tags.remove(id);
     }
 
@@ -619,7 +841,7 @@ impl MapViewer {
                             let button = Button::new(("extension-button", key * 100 + j))
                                 .small()
                                 .label(b.label.clone())
-                                .disabled(busy || !b.enabled)
+                                .disabled(!b.enabled)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.extension_panel_button(index, id.clone(), cx);
                                 }));
@@ -642,7 +864,7 @@ impl MapViewer {
                             Some(state) => v_flex()
                                 .gap_1()
                                 .children(label)
-                                .child(Input::new(state).disabled(busy))
+                                .child(Input::new(state))
                                 .into_any_element(),
                             // Made on the next frame.
                             None => v_flex().children(label).into_any_element(),
@@ -664,6 +886,54 @@ impl MapViewer {
                             .into_any_element()
                     }
                     Element::Divider => div().h(px(1.0)).bg(border).into_any_element(),
+                    Element::Picture(p) => match self.extensions.images.get(&p.url) {
+                        // Capped in height (photos are often portrait) and
+                        // letterboxed; a double-click opens it full size.
+                        Some(Picture::Ready(image)) => {
+                            let full = image.clone();
+                            div()
+                                .id(("extension-picture", key))
+                                .w_full()
+                                .h(px(PICTURE_HEIGHT))
+                                .flex_shrink_0()
+                                .overflow_hidden()
+                                .cursor_pointer()
+                                .tooltip({
+                                    let tip = tr!("image_viewer.open");
+                                    move |w, cx| {
+                                        gpui_component::tooltip::Tooltip::new(tip.clone())
+                                            .build(w, cx)
+                                    }
+                                })
+                                .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
+                                    if ev.click_count() >= 2 {
+                                        this.open_image_viewer(full.clone(), cx);
+                                    }
+                                }))
+                                .child(
+                                    gpui::img(image.clone())
+                                        .w_full()
+                                        .h(px(PICTURE_HEIGHT))
+                                        .rounded_sm()
+                                        .object_fit(gpui::ObjectFit::Contain),
+                                )
+                                .into_any_element()
+                        }
+                        Some(Picture::Failed) => div()
+                            .text_size(muted_text_size())
+                            .text_color(cx.theme().danger)
+                            .child(if p.alt.is_empty() {
+                                tr!("image_viewer.failed")
+                            } else {
+                                SharedString::from(p.alt.clone())
+                            })
+                            .into_any_element(),
+                        _ => div()
+                            .text_size(muted_text_size())
+                            .text_color(muted)
+                            .child(tr!("image_viewer.loading"))
+                            .into_any_element(),
+                    },
                 };
                 body = body.child(row);
             }

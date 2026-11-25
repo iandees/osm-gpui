@@ -20,7 +20,6 @@ pub mod osm_layer;
 pub mod paint;
 pub mod reference_layer;
 pub mod resolve;
-pub mod street_imagery_layer;
 pub mod tile_layer;
 pub mod vector_tile_layer;
 pub mod way_stroke;
@@ -152,7 +151,6 @@ pub enum LayerKind {
     Notes,
     /// GPX, GeoJSON and downloaded GPS traces.
     Reference,
-    StreetImagery,
     /// Tiles of a vector-tile archive (PMTiles).
     VectorTile,
     /// An extension's markers.
@@ -164,12 +162,6 @@ pub enum LayerKind {
 pub enum LayerHit {
     /// A note's pin; the note's id.
     Note(i64),
-    /// A street-imagery photo's dot, and how far (pixels) the click was from
-    /// its centre.
-    Photo {
-        photo: crate::street_imagery::StreetPhoto,
-        distance_px: f32,
-    },
     /// A GPX/GeoJSON/trace feature; its index in the layer's data.
     ReferenceFeature(usize),
     /// A feature of a vector-tile layer.
@@ -180,25 +172,13 @@ pub enum LayerHit {
 
 impl LayerHit {
     /// Which hit wins when several layers have one under the same click:
-    /// lower first. Notes sit above photos, which sit above reference
+    /// lower first. Notes and extension markers sit above reference
     /// features, whatever order the layers are stacked in.
     fn rank(&self) -> u8 {
         match self {
             LayerHit::Note(_) | LayerHit::ExtensionMarker { .. } => 0,
-            LayerHit::Photo { .. } => 1,
-            LayerHit::ReferenceFeature(_) => 2,
-            LayerHit::VectorFeature(_) => 3,
-        }
-    }
-
-    /// Tie-break within one rank: the nearer photo wins.
-    fn distance_px(&self) -> f32 {
-        match self {
-            LayerHit::Photo { distance_px, .. } => *distance_px,
-            LayerHit::Note(_)
-            | LayerHit::ReferenceFeature(_)
-            | LayerHit::VectorFeature(_)
-            | LayerHit::ExtensionMarker { .. } => 0.0,
+            LayerHit::ReferenceFeature(_) => 1,
+            LayerHit::VectorFeature(_) => 2,
         }
     }
 }
@@ -1006,9 +986,9 @@ impl LayerManager {
     }
 
     /// The winning `MapLayer::hit_test_point` over the visible layers, with
-    /// the layer that answered. Notes beat photos beat reference features;
-    /// among photos the nearest wins, and any remaining tie goes to the
-    /// topmost layer.
+    /// the layer that answered. Notes and extension markers beat reference
+    /// features, which beat vector-tile features; a tie goes to the topmost
+    /// layer.
     pub fn hit_test_point(
         &self,
         viewport: &Viewport,
@@ -1019,9 +999,7 @@ impl LayerManager {
             let Some(hit) = layer.hit_test_point(viewport, point) else {
                 continue;
             };
-            let better = best
-                .as_ref()
-                .is_none_or(|(_, b)| (hit.rank(), hit.distance_px()) < (b.rank(), b.distance_px()));
+            let better = best.as_ref().is_none_or(|(_, b)| hit.rank() < b.rank());
             if better {
                 best = Some((layer.id(), hit));
             }
@@ -1391,9 +1369,9 @@ mod tests {
     /// One layer of each type, in a fixed order, for tests that pin down what
     /// each type answers. The tile layer needs an executor, hence the context.
     fn one_of_each(cx: &mut gpui::TestAppContext) -> Vec<(&'static str, Box<dyn MapLayer>)> {
+        use crate::layers::extension_layer::{ExtensionLayer, MarkerStore};
         use crate::layers::notes_layer::NotesLayer;
         use crate::layers::osm_layer::OsmLayer;
-        use crate::layers::street_imagery_layer::StreetImageryLayer;
         use crate::layers::tile_layer::TileLayer;
         use std::sync::{Arc, Mutex};
 
@@ -1414,12 +1392,12 @@ mod tests {
             ),
             ("reference", Box::new(gpx_layer(LayerId(4)))),
             (
-                "street imagery",
-                Box::new(StreetImageryLayer::new(
+                "extension",
+                Box::new(ExtensionLayer::new(
                     LayerId(5),
-                    "street".into(),
-                    crate::street_imagery::Provider::Fotoshi,
-                    crate::street_imagery::PhotoStore::default(),
+                    "ext".into(),
+                    "ext".into(),
+                    MarkerStore::default(),
                 )),
             ),
         ]
@@ -1434,7 +1412,7 @@ mod tests {
             ("osm", (true, false, false, true)),
             ("notes", (false, false, false, false)),
             ("reference", (false, false, true, false)),
-            ("street imagery", (false, false, false, false)),
+            ("extension", (false, false, false, false)),
         ];
         let mut layers = one_of_each(cx);
         assert_eq!(layers.len(), expected.len());
@@ -1445,7 +1423,7 @@ mod tests {
                 "osm" => LayerKind::Osm,
                 "notes" => LayerKind::Notes,
                 "reference" => LayerKind::Reference,
-                "street imagery" => LayerKind::StreetImagery,
+                "extension" => LayerKind::Extension,
                 other => panic!("no kind for {other}"),
             };
             assert_eq!(layer.kind(), want_layer_kind, "{kind}");
@@ -1467,16 +1445,14 @@ mod tests {
     }
 
     #[test]
-    fn a_note_beats_a_photo_beats_a_reference_feature_whatever_the_stacking() {
+    fn a_note_beats_a_reference_feature_whatever_the_stacking() {
         use crate::layers::notes_layer::NotesLayer;
-        use crate::layers::street_imagery_layer::StreetImageryLayer;
         use crate::notes::{CommentAction, Note, NoteComment, NoteStatus, NoteStore};
-        use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
 
         let (lat, lon) = (40.0, -74.0);
         let viewport = Viewport::new(LatLon::new(lat, lon), 18.0, size(px(800.0), px(600.0)));
-        // The pin's head is above its tip, so click the head; the photo and
-        // the track vertex are put under that same pixel.
+        // The pin's head is above its tip, so click the head; the track
+        // vertex is put under that same pixel.
         let tip = viewport.geo_to_screen(LatLon::new(lat, lon));
         let click = point(tip.x, tip.y - px(16.0));
         let LatLon {
@@ -1499,22 +1475,6 @@ mod tests {
                 text: "x".into(),
             }],
         }]);
-        let photo = |id: &str, lat: f64, lon: f64| StreetPhoto {
-            provider: Provider::Fotoshi,
-            id: id.into(),
-            lat,
-            lon,
-            heading: None,
-            captured: None,
-            creator: None,
-            license: None,
-            thumb_url: None,
-            large_url: None,
-        };
-        let photos = PhotoStore::default();
-        let tile = crate::tiles::TileCoord { z: 15, x: 0, y: 0 };
-        photos.insert_tile(tile, vec![photo("p", hit_lat, hit_lon)]);
-
         let reference = {
             use crate::reference::{Builder, FeatureKind, Format};
             let mut b = Builder::new(Format::Gpx);
@@ -1541,24 +1501,12 @@ mod tests {
             "n".into(),
             notes.clone(),
         )));
-        m.add_layer(Box::new(StreetImageryLayer::new(
-            LayerId(2),
-            "p".into(),
-            Provider::Fotoshi,
-            photos.clone(),
-        )));
         m.add_layer(Box::new(reference));
 
         let at = |m: &LayerManager| m.hit_test_point(&viewport, click);
         assert_eq!(at(&m), Some((LayerId(1), LayerHit::Note(9))));
 
         m.find_layer_mut(LayerId(1)).unwrap().set_visible(false);
-        let Some((LayerId(2), LayerHit::Photo { photo, .. })) = at(&m) else {
-            panic!("the photo is next");
-        };
-        assert_eq!(photo.id, "p");
-
-        m.find_layer_mut(LayerId(2)).unwrap().set_visible(false);
         assert!(matches!(
             at(&m),
             Some((LayerId(3), LayerHit::ReferenceFeature(0)))
@@ -1566,51 +1514,6 @@ mod tests {
 
         m.find_layer_mut(LayerId(3)).unwrap().set_visible(false);
         assert_eq!(at(&m), None);
-    }
-
-    #[test]
-    fn the_nearer_photo_wins_across_layers() {
-        use crate::layers::street_imagery_layer::StreetImageryLayer;
-        use crate::street_imagery::{PhotoStore, Provider, StreetPhoto};
-
-        let viewport = Viewport::new(LatLon::new(40.0, -74.0), 18.0, size(px(800.0), px(600.0)));
-        let centre = viewport.geo_to_screen(LatLon::new(40.0, -74.0));
-        let photo_at = |provider: Provider, id: &str, dx: f32| {
-            let LatLon { lat, lon } = viewport.screen_to_geo(point(centre.x + px(dx), centre.y));
-            StreetPhoto {
-                provider,
-                id: id.into(),
-                lat,
-                lon,
-                heading: None,
-                captured: None,
-                creator: None,
-                license: None,
-                thumb_url: None,
-                large_url: None,
-            }
-        };
-        let layer = |layer_id: u64, provider: Provider, id: &str, dx: f32| {
-            let store = PhotoStore::default();
-            store.insert_tile(
-                crate::tiles::TileCoord { z: 15, x: 0, y: 0 },
-                vec![photo_at(provider, id, dx)],
-            );
-            Box::new(StreetImageryLayer::new(
-                LayerId(layer_id),
-                "p".into(),
-                provider,
-                store,
-            ))
-        };
-        let mut m = LayerManager::new();
-        m.add_layer(layer(1, Provider::Mapillary, "near", 1.0));
-        m.add_layer(layer(2, Provider::Fotoshi, "far", 5.0));
-        let Some((LayerId(1), LayerHit::Photo { photo, .. })) = m.hit_test_point(&viewport, centre)
-        else {
-            panic!("the nearer photo, though its layer is lower");
-        };
-        assert_eq!(photo.id, "near");
     }
 
     #[gpui::test]

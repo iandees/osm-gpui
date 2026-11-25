@@ -52,6 +52,7 @@ use modes::AddProgress;
 use modes::{BuildingReference, ExtrudeDrag, ExtrudeStyle};
 mod extensions_manage;
 mod extensions_ui;
+mod image_viewer;
 mod notes_ui;
 mod pmtiles_ui;
 mod pointer_state;
@@ -65,7 +66,6 @@ mod side_panel;
 mod side_panel_layout;
 mod side_panel_state;
 mod status_bar;
-mod street_imagery_ui;
 mod tag_suggest_ui;
 #[cfg(test)]
 mod test_support;
@@ -631,6 +631,17 @@ pub(crate) fn with_map_viewer_in(
 // Global idle tracker shared with the script runner
 static GLOBAL_IDLE: std::sync::OnceLock<Arc<IdleTracker>> = std::sync::OnceLock::new();
 
+/// Note that background work `wait_idle` should wait for began, or ended.
+pub(crate) fn idle_task(started: bool) {
+    if let Some(idle) = GLOBAL_IDLE.get() {
+        if started {
+            idle.task_started();
+        } else {
+            idle.task_finished();
+        }
+    }
+}
+
 #[derive(Default)]
 struct CliArgs {
     script: Option<PathBuf>,
@@ -878,14 +889,14 @@ struct MapViewer {
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
     /// OSM notes: the Notes layer, the open note, writes (see `notes_ui`).
     notes: notes_ui::NotesState,
+    /// A picture shown full size over the window (see `image_viewer`).
+    image_viewer: Option<image_viewer::Open>,
     /// The to-do list and its side-panel section (see `todo_ui`).
     todo: todo_ui::TodoState,
     /// Installed extensions, their markers and panel (see `extensions_ui`).
     extensions: extensions_ui::ExtensionsState,
     /// Downloaded OSM GPS traces (see `gps_traces_ui`).
     gps_traces: gps_traces_ui::GpsTracesState,
-    /// Street-level photos from Mapillary and Fotoshi (see `street_imagery_ui`).
-    imagery: street_imagery_ui::ImageryState,
     pmtiles: pmtiles_ui::PmtilesState,
 }
 
@@ -1096,9 +1107,9 @@ impl MapViewer {
             offset_adjust: None,
             notes: Default::default(),
             todo: Default::default(),
+            image_viewer: None,
             extensions: Default::default(),
             gps_traces: Default::default(),
-            imagery: Default::default(),
             pmtiles: Default::default(),
         }
     }
@@ -1124,7 +1135,6 @@ impl MapViewer {
             show_notes: self.shows_notes(),
             show_todo: self.shows_todo(),
             labels: osm_gpui::settings_store::snapshot().label_visibility(),
-            show_imagery: osm_gpui::street_imagery::Provider::ALL.map(|p| self.shows_imagery(p)),
             can_upload: self.has_uploadable_changes(),
         }
     }
@@ -3865,9 +3875,9 @@ impl MapViewer {
     }
 
     /// In Select mode, open what a non-OSM layer has under `screen_pt` (a
-    /// note, a photo); the click is used then. A click on anything else
-    /// closes the open photo and goes on to the mode. OSM features are not
-    /// layer hits: `select::click` resolves those.
+    /// note, an extension's marker); the click is used then. A click on
+    /// anything else goes on to the mode. OSM features are not layer hits:
+    /// `select::click` resolves those.
     fn open_layer_hit(
         &mut self,
         screen_pt: gpui::Point<gpui::Pixels>,
@@ -3875,7 +3885,6 @@ impl MapViewer {
     ) -> bool {
         use osm_gpui::layers::LayerHit;
         if self.mode() != EditMode::Select {
-            self.close_photo_panel();
             return false;
         }
         match self.layer_manager.hit_test_point(&self.viewport, screen_pt) {
@@ -3884,17 +3893,11 @@ impl MapViewer {
                 self.notes.pending_open = Some(id);
                 true
             }
-            Some((_, LayerHit::Photo { photo, .. })) => {
-                self.close_vector_feature();
-                self.imagery.pending_open = Some(photo);
-                true
-            }
             Some((layer, LayerHit::VectorFeature(info))) => {
                 self.select_vector_feature(layer, info);
                 true
             }
             Some((_, LayerHit::ExtensionMarker { extension, marker })) => {
-                self.close_photo_panel();
                 self.close_vector_feature();
                 self.extension_marker_clicked(&extension, &marker, cx);
                 true
@@ -3902,7 +3905,6 @@ impl MapViewer {
             // Reference features only describe themselves when no OSM
             // feature is under the click (`select::click`).
             Some((_, LayerHit::ReferenceFeature(_))) | None => {
-                self.close_photo_panel();
                 self.close_vector_feature();
                 false
             }
@@ -5152,10 +5154,8 @@ impl MapViewer {
                 use osm_gpui::ui::sign_in_dialog::DialogEvent;
                 this.dialogs.sign_in_dialog = None;
                 if matches!(event, DialogEvent::OpenSettings) {
-                    let page = (purpose == osm_gpui::ui::sign_in_dialog::SignInPurpose::Mapillary)
-                        .then_some(osm_gpui::ui::settings_window::SettingsPage::Imagery);
                     // Deferred so the window is opened outside this entity update.
-                    cx.defer(move |cx| crate::menu::open_settings_page(page, cx));
+                    cx.defer(move |cx| crate::menu::open_settings_page(None, cx));
                 }
                 cx.notify();
             },
@@ -6306,7 +6306,6 @@ impl Render for MapViewer {
         self.notes_frame(window, cx);
         self.todo_frame();
         self.extensions_frame(window, cx);
-        self.imagery_frame(cx);
         self.pmtiles_frame(cx);
         self.maybe_rebuild_imagery_menu(cx);
         // Re-run the validator (debounced) if the edits changed since the
@@ -6789,10 +6788,6 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_install_dev_extension))
             .on_action(cx.listener(Self::on_manage_extensions))
             .on_action(cx.listener(Self::on_refresh_notes))
-            .on_action(cx.listener(Self::on_toggle_mapillary))
-            .on_action(cx.listener(Self::on_toggle_fotoshi))
-            .on_action(cx.listener(Self::on_toggle_panoramax))
-            .on_action(cx.listener(Self::on_refresh_street_imagery))
             .on_action(cx.listener(Self::on_new_note))
             .on_action(cx.listener(Self::on_minimize_window))
             .on_action(cx.listener(Self::on_zoom_window))
@@ -6821,7 +6816,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_open_pmtiles_dialog))
             .on_action(cx.listener(Self::on_show_about))
             .children(self.open_modals(cx).into_iter().map(|m| m.view))
-            .children(self.render_photo_fullscreen(window, cx))
+            .children(self.render_image_viewer(window, cx))
             .children(self.render_context_menu(window, cx))
     }
 }
@@ -7042,9 +7037,6 @@ fn main() {
         // Light, dark or the OS appearance, now that the saved choice is known.
         osm_gpui::appearance::apply(cx);
         auth::init_store(auth::load());
-        // Move provider secrets that older builds kept in settings.json into
-        // secret storage. Writes only; no keychain read at launch.
-        osm_gpui::secrets::migrate_from_settings();
         // Learn the server's limits (max download area etc.) in the
         // background; defaults apply until it answers.
         osm_gpui::capabilities::ensure_fetched(

@@ -272,8 +272,6 @@ pub struct SettingsWindow {
     cache_budget_error: Option<SharedString>,
     edit_simplify_tolerance: Entity<InputState>,
     simplify_tolerance_error: Option<SharedString>,
-    edit_mapillary_token: Entity<InputState>,
-    edit_fotoshi_key: Entity<InputState>,
     cache_clear_error: Option<SharedString>,
     map_style_input: Entity<InputState>,
     map_style_error: Option<SharedString>,
@@ -320,18 +318,6 @@ impl SettingsWindow {
                 .placeholder("3")
                 .default_value(app_settings.simplify_tolerance().to_string())
         });
-        let edit_mapillary_token = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("MLY|…")
-                .default_value(
-                    crate::secrets::get(crate::secrets::MAPILLARY_TOKEN).unwrap_or_default(),
-                )
-        });
-        let edit_fotoshi_key = cx.new(|cx| {
-            InputState::new(window, cx).default_value(
-                crate::secrets::get(crate::secrets::FOTOSHI_API_KEY).unwrap_or_default(),
-            )
-        });
         let map_style_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr!("settings.map_style.placeholder"))
         });
@@ -358,8 +344,6 @@ impl SettingsWindow {
             cache_budget_error: None,
             edit_simplify_tolerance,
             simplify_tolerance_error: None,
-            edit_mapillary_token,
-            edit_fotoshi_key,
             cache_clear_error: None,
             map_style_input,
             map_style_error: None,
@@ -580,26 +564,6 @@ impl SettingsWindow {
                 s.client_ids.insert(oauth_base, client_id);
             }
         });
-        cx.notify();
-    }
-
-    /// Store the Fotoshi API key typed into its field.
-    fn save_fotoshi_key(&mut self, cx: &mut Context<Self>) {
-        let raw = self.edit_fotoshi_key.read(cx).value().to_string();
-        crate::secrets::set(crate::secrets::FOTOSHI_API_KEY, &raw);
-        cx.notify();
-    }
-
-    /// Turn the per-feature Fotoshi lookup on or off.
-    fn set_fotoshi_lookup(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.commit(|s| s.fotoshi_lookup_selected = on);
-        cx.notify();
-    }
-
-    /// Store the Mapillary access token typed into its field.
-    fn save_mapillary_token(&mut self, cx: &mut Context<Self>) {
-        let raw = self.edit_mapillary_token.read(cx).value().to_string();
-        crate::secrets::set(crate::secrets::MAPILLARY_TOKEN, &raw);
         cx.notify();
     }
 
@@ -1362,83 +1326,8 @@ impl SettingsWindow {
                 SettingGroup::new()
                     .title(tr!("settings.imagery.custom_sources"))
                     .items(items),
-                self.street_imagery_group(view.clone()),
                 self.cache_group(view),
             ])
-    }
-
-    /// The street-imagery group: the Mapillary access token.
-    fn street_imagery_group(&self, view: Entity<Self>) -> SettingGroup {
-        let token_view = view.clone();
-        let token_input = self.edit_mapillary_token.clone();
-        let token_item = SettingItem::new(
-            tr!("settings.street_imagery.mapillary_token"),
-            SettingField::render(move |_options, _window, cx| {
-                let muted = cx.theme().muted_foreground;
-                let view = token_view.clone();
-                v_flex()
-                    .gap_2()
-                    .child(field_row(
-                        tr!("settings.street_imagery.mapillary_token"),
-                        &token_input,
-                        muted,
-                    ))
-                    .child(
-                        Button::new("save-mapillary-token")
-                            .label(tr!("settings.save"))
-                            .primary()
-                            .compact()
-                            .on_click(move |_ev, _window, cx| {
-                                view.update(cx, |this, cx| this.save_mapillary_token(cx));
-                            }),
-                    )
-            }),
-        )
-        .description(tr!("settings.street_imagery.mapillary_token_description"))
-        .layout(Axis::Vertical);
-        let key_view = view.clone();
-        let key_input = self.edit_fotoshi_key.clone();
-        let key_item = SettingItem::new(
-            tr!("settings.street_imagery.fotoshi_key"),
-            SettingField::render(move |_options, _window, cx| {
-                let muted = cx.theme().muted_foreground;
-                let view = key_view.clone();
-                v_flex()
-                    .gap_2()
-                    .child(field_row(
-                        tr!("settings.street_imagery.fotoshi_key"),
-                        &key_input,
-                        muted,
-                    ))
-                    .child(
-                        Button::new("save-fotoshi-key")
-                            .label(tr!("settings.save"))
-                            .primary()
-                            .compact()
-                            .on_click(move |_ev, _window, cx| {
-                                view.update(cx, |this, cx| this.save_fotoshi_key(cx));
-                            }),
-                    )
-            }),
-        )
-        .description(tr!("settings.street_imagery.fotoshi_key_description"))
-        .layout(Axis::Vertical);
-        let lookup_view = view;
-        let lookup_item = SettingItem::new(
-            tr!("settings.street_imagery.fotoshi_lookup"),
-            SettingField::switch(
-                |_cx: &App| settings_store::snapshot().fotoshi_lookup_selected,
-                move |on: bool, cx: &mut App| {
-                    lookup_view.update(cx, |this, cx| this.set_fotoshi_lookup(on, cx));
-                },
-            ),
-        )
-        .description(tr!("settings.street_imagery.fotoshi_lookup_description"));
-        SettingGroup::new()
-            .title(tr!("settings.street_imagery.group"))
-            .item(token_item)
-            .item(key_item)
-            .item(lookup_item)
     }
 
     fn cache_group(&self, view: Entity<Self>) -> SettingGroup {

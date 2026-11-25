@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::manifest::{Capabilities, Manifest};
-use super::runtime::{api_version_of, API_VERSION};
+use super::runtime::{api_version_of, SUPPORTED_API_VERSIONS};
 use crate::http::{HttpClient, HttpRequest};
 
 /// The index format this app reads.
@@ -192,22 +192,28 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
     Ordering::Equal
 }
 
-/// Whether an extension built against API `version` runs here: same major
-/// (for 0.x, same minor), and not newer than this app's.
+/// Whether an extension built against API `version` runs here: one of the
+/// supported versions' lines (same major; for 0.x, same minor), and not newer
+/// than the app's version on that line.
 pub fn api_compatible(version: &str) -> bool {
     let nums = |v: &str| -> Option<(u64, u64, u64)> {
         let mut it = v.split('.').map(|p| p.parse::<u64>().ok());
         Some((it.next()??, it.next()??, it.next().flatten().unwrap_or(0)))
     };
-    let (Some(ext), Some(host)) = (nums(version), nums(API_VERSION)) else {
+    let Some(ext) = nums(version) else {
         return false;
     };
-    let same_line = if host.0 == 0 {
-        ext.0 == 0 && ext.1 == host.1
-    } else {
-        ext.0 == host.0
-    };
-    same_line && ext <= host
+    SUPPORTED_API_VERSIONS
+        .iter()
+        .filter_map(|v| nums(v))
+        .any(|host| {
+            let same_line = if host.0 == 0 {
+                ext.0 == 0 && ext.1 == host.1
+            } else {
+                ext.0 == host.0
+            };
+            same_line && ext <= host
+        })
 }
 
 // --- Packages ---
@@ -339,8 +345,9 @@ pub fn install_package(root: &Path, entry: &IndexEntry, bytes: &[u8]) -> Result<
         let api = api_version_of(&wasm)?;
         if !api_compatible(&api) {
             return Err(format!(
-                "{} needs extension API {api}; this app has {API_VERSION}",
-                entry.id
+                "{} needs extension API {api}; this app runs {}",
+                entry.id,
+                SUPPORTED_API_VERSIONS.join(", ")
             ));
         }
         Ok(manifest)
@@ -404,6 +411,7 @@ pub fn save_state(root: &Path, state: &State) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::runtime::API_VERSION;
 
     #[test]
     fn versions_compare_numerically() {
@@ -415,9 +423,12 @@ mod tests {
     #[test]
     fn api_compatibility_follows_semver_with_0x_minor_lines() {
         assert!(api_compatible(API_VERSION));
-        assert!(!api_compatible("0.2.0"));
+        assert!(api_compatible("0.1.0"), "an older line the app still runs");
+        assert!(!api_compatible("0.0.1"), "a line it never ran");
+        assert!(!api_compatible("0.3.0"));
         assert!(!api_compatible("1.0.0"));
-        assert!(!api_compatible("0.1.99"), "newer than the app");
+        assert!(!api_compatible("0.2.99"), "newer than the app");
+        assert!(!api_compatible("0.1.1"), "newer than the 0.1 it runs");
         assert!(!api_compatible("garbage"));
     }
 

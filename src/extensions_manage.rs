@@ -119,6 +119,35 @@ impl MapViewer {
         })
         .detach();
         self.fetch_extension_index(false, cx);
+        self.maybe_show_street_imagery_notice();
+    }
+
+    /// Once: tell someone who used the street imagery that was built in that
+    /// it is three extensions now. Someone who never did (a first run with
+    /// no saved Mapillary token or Fotoshi key) is not told.
+    fn maybe_show_street_imagery_notice(&mut self) {
+        let settings = osm_gpui::settings_store::snapshot();
+        if settings.street_imagery_notice_shown || crate::script_harness::script_mode() {
+            return;
+        }
+        osm_gpui::settings_store::update(crate::may_persist_settings(), |s| {
+            s.street_imagery_notice_shown = true
+        });
+        let used_before = settings.welcome_dismissed
+            || osm_gpui::secrets::is_set(osm_gpui::secrets::MAPILLARY_TOKEN)
+            || osm_gpui::secrets::is_set(osm_gpui::secrets::FOTOSHI_API_KEY);
+        let installed = self.extensions.installed.iter().any(|i| {
+            matches!(
+                i.manifest.id.as_str(),
+                "mapillary" | "fotoshi" | "panoramax"
+            )
+        });
+        if used_before && !installed {
+            self.dialogs.pending_notice = Some((
+                tr!("extensions.street_imagery_moved.title").to_string(),
+                tr!("extensions.street_imagery_moved.body").to_string(),
+            ));
+        }
     }
 
     fn scan_installed(&mut self, root: &Path) {

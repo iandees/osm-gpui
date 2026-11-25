@@ -1,0 +1,55 @@
+id = "panoramax"
+name = "Panoramax"
+version = "0.1.0"
+schema_version = 1
+authors = ["Ian Dees"]
+description = "Street-level photos from Panoramax on the map, with the photo and its details in the side panel."
+repository = "https://github.com/iandees/osm-gpui"
+subscribe = ["viewport"]
+
+[capabilities]
+# The federated API, and the instances that serve the photos themselves
+# (https://api.panoramax.xyz/api/instances). A new instance needs a new
+# entry here.
+http = [
+    "panoramax.xyz",
+    "panoramax.at",
+    "vee.network",
+    "pano.kasik-gis.eu",
+    "pano.locus.sbs",
+    "pano.mahdi.cz",
+    "panorama.osm-fulda.de",
+    "panoramax-ulm.jjbaur.de",
+    "panoramax.basi.re",
+    "panoramax.bikespaceproject.ca",
+    "panoramax.burakonder.net",
+    "panoramax.grabier.fr",
+    "panoramax.horatio.us",
+    "panoramax.ign.fr",
+    "panoramax.koenhabets.nl",
+    "panoramax.libre.net.ar",
+    "panoramax.mapcomplete.org",
+    "panoramax.multimob.be",
+    "panoramax.multimodall.com",
+    "panoramax.openstreetmap.es",
+    "panoramax.openstreetmap.fr",
+    "panoramax.osm-hr.org",
+    "panoramax.osm.be",
+    "panoramax.osm.tw",
+    "panoramax.serenedeluge.se",
+    "panoramax.veloroute.hamburg",
+    "seespider.net",
+    "www.panoramax.wales",
+]
+
+[[commands]]
+id = "show-photos"
+label = "Show Photos"
+
+[[commands]]
+id = "hide-photos"
+label = "Hide Photos"
+
+[[commands]]
+id = "refresh-photos"
+label = "Refresh Photos"

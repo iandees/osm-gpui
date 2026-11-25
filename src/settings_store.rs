@@ -168,19 +168,9 @@ pub struct AppSettings {
     pub window_bounds: Option<WindowRect>,
     /// How downloaded GPS traces draw (colours, width, age filter).
     pub gps_trace_style: crate::trace_style::TraceStyle,
-    /// Legacy: older builds kept the Mapillary access token here. It is read
-    /// only so `crate::secrets::migrate_from_settings` can move it into secret
-    /// storage; it is blank afterwards and never written while empty.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub mapillary_token: String,
-    /// Legacy: older builds kept the Fotoshi API key here (see
-    /// `mapillary_token`).
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub fotoshi_api_key: String,
-    /// Whether selecting a feature asks Fotoshi for photos of it. Off by
-    /// default: the lookup sends the feature's OSM id to Fotoshi, which tells
-    /// it what the user is looking at.
-    pub fotoshi_lookup_selected: bool,
+    /// The one-time notice that Mapillary, Fotoshi and Panoramax photos
+    /// moved to extensions was shown.
+    pub street_imagery_notice_shown: bool,
 }
 
 /// A saved window placement in logical pixels (screen coordinates).
@@ -304,9 +294,7 @@ impl Default for AppSettings {
             last_map_view: None,
             window_bounds: None,
             gps_trace_style: Default::default(),
-            mapillary_token: String::new(),
-            fotoshi_api_key: String::new(),
-            fotoshi_lookup_selected: false,
+            street_imagery_notice_shown: false,
         }
     }
 }
@@ -409,10 +397,6 @@ pub fn set_show_area_labels(on: bool, persist: bool) {
 
 pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
     update(persist, |s| s.suggest_from_taginfo = on);
-}
-
-pub fn set_fotoshi_lookup_selected(on: bool, persist: bool) {
-    update(persist, |s| s.fotoshi_lookup_selected = on);
 }
 
 /// Values outside the allowed range are ignored (`false`).
@@ -596,11 +580,11 @@ mod tests {
         assert_eq!(store.snapshot("t").last_source, "a");
 
         update_in(&store, Some(&path), true, |s| {
-            s.mapillary_token = "t".into()
+            s.street_imagery_notice_shown = true
         })
         .unwrap();
         let on_disk = load_from(&path);
-        assert_eq!(on_disk.mapillary_token, "t");
+        assert!(on_disk.street_imagery_notice_shown);
         // The earlier in-memory-only change rode along with the next write.
         assert_eq!(on_disk.last_source, "a");
     }
@@ -797,9 +781,7 @@ mod tests {
                 color_by: crate::trace_style::ColorBy::Speed,
                 ..Default::default()
             },
-            mapillary_token: "MLY|123|abc".into(),
-            fotoshi_api_key: "fsk_123".into(),
-            fotoshi_lookup_selected: true,
+            street_imagery_notice_shown: true,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
@@ -1021,9 +1003,7 @@ mod tests {
             last_map_view: None,
             window_bounds: None,
             gps_trace_style: Default::default(),
-            mapillary_token: String::new(),
-            fotoshi_api_key: String::new(),
-            fotoshi_lookup_selected: false,
+            street_imagery_notice_shown: false,
         };
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path);
