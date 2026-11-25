@@ -3344,6 +3344,7 @@ impl MapViewer {
             open_modal(&self.dialogs.restore_dialog, cx),
             open_modal(&self.dialogs.find_dialog, cx),
             open_modal(&self.dialogs.about_dialog, cx),
+            open_modal(&self.dialogs.settings, cx),
             open_modal(&self.extensions.dialog, cx),
             open_modal(&self.dialogs.nsi_dialog, cx),
             open_modal(&self.dialogs.preset_picker_dialog, cx),
@@ -5162,6 +5163,37 @@ impl MapViewer {
         )
         .detach();
         self.dialogs.sign_in_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Open Settings inside the window on `page` (the first when `None`),
+    /// or switch the open one to `page`.
+    pub(crate) fn open_settings(
+        &mut self,
+        page: Option<osm_gpui::ui::settings_window::SettingsPage>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use osm_gpui::ui::settings_window::{SettingsEvent, SettingsWindow};
+        if let Some(settings) = &self.dialogs.settings {
+            if let Some(page) = page {
+                settings.update(cx, |s, cx| s.show_page(page, cx));
+            }
+            return;
+        }
+        let view = cx.new(|cx| SettingsWindow::new(page, window, cx));
+        cx.subscribe(&view, |this, _entity, event: &SettingsEvent, cx| {
+            match event {
+                SettingsEvent::Closed => this.dialogs.settings = None,
+                SettingsEvent::KeybindingsChanged => {
+                    cx.defer(crate::menu::apply_keybindings_change);
+                }
+                SettingsEvent::MapStyleChanged => this.apply_map_style(cx),
+            }
+            cx.notify();
+        })
+        .detach();
+        self.dialogs.settings = Some(view);
         cx.notify();
     }
 

@@ -1,9 +1,6 @@
 //! Menu bar construction and the free-function menu action handlers.
 
-use gpui::{
-    actions, point, px, size, App, AppContext as _, Bounds, Menu, MenuItem, SystemMenuType,
-    WindowOptions,
-};
+use gpui::{actions, px, App, Menu, MenuItem, SystemMenuType};
 
 use gpui_component::menu::AppMenuBar;
 use gpui_component::{GlobalState, ThemeMode};
@@ -28,38 +25,6 @@ use crate::{
     ToggleDebugOverlay, ToggleDownloadedArea, Undo, UploadToOsm, Validate, ZoomIn, ZoomOut,
     ZoomToData, ZoomToSelection, ZoomWindow, IMAGERY_INDEX,
 };
-
-/// The Settings window, once opened. Whether it is still open is read from
-/// the app's window list, not remembered, so closing it any way at all
-/// leaves nothing stale.
-#[derive(Default)]
-struct SettingsWindowSlot(Option<gpui::AnyWindowHandle>);
-
-impl gpui::Global for SettingsWindowSlot {}
-
-/// What asking for Settings does.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SettingsOpen {
-    /// Open a window, on `page` when one was asked for.
-    New { page: Option<SettingsPage> },
-    /// There is one already: bring it to the front.
-    Focus,
-    /// There is one already and a page was asked for: bring it to the front
-    /// on that page.
-    FocusAndShow { page: SettingsPage },
-}
-
-/// Settings is a single window: open it, or focus the one that exists.
-pub(crate) fn settings_open_decision(
-    already_open: bool,
-    page: Option<SettingsPage>,
-) -> SettingsOpen {
-    match (already_open, page) {
-        (false, page) => SettingsOpen::New { page },
-        (true, Some(page)) => SettingsOpen::FocusAndShow { page },
-        (true, None) => SettingsOpen::Focus,
-    }
-}
 
 pub(crate) fn custom_imagery_snapshot() -> Vec<CustomImageryEntry> {
     custom_imagery_store::snapshot()
@@ -178,79 +143,11 @@ pub(crate) fn open_settings(_: &OpenSettings, cx: &mut App) {
     open_settings_page(None, cx);
 }
 
-/// Open the Settings window on `page` (the first when `None`), or focus it if
-/// it is already open, switching it to `page` when one is given.
+/// Open Settings (inside the main window) on `page`, the first when `None`.
+/// Deferred, like Upload, so the map window is not checked out by the
+/// dispatch that called this.
 pub(crate) fn open_settings_page(page: Option<SettingsPage>, cx: &mut App) {
-    let existing = cx
-        .try_global::<SettingsWindowSlot>()
-        .and_then(|slot| slot.0)
-        .filter(|handle| cx.windows().contains(handle));
-    let page = match settings_open_decision(existing.is_some(), page) {
-        SettingsOpen::Focus => {
-            if let Some(handle) = existing {
-                let _ = handle.update(cx, |_, window, _| window.activate_window());
-            }
-            return;
-        }
-        SettingsOpen::FocusAndShow { page } => {
-            if let Some(handle) = existing {
-                let _ = handle.update(cx, |root, window, cx| {
-                    window.activate_window();
-                    show_settings_page(root, page, cx);
-                });
-            }
-            return;
-        }
-        SettingsOpen::New { page } => page,
-    };
-
-    let settings_window = cx
-        .open_window(
-            WindowOptions {
-                window_bounds: Some(gpui::WindowBounds::Windowed(Bounds {
-                    origin: point(px(200.0), px(200.0)),
-                    size: size(px(600.0), px(500.0)),
-                })),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some(tr!("settings.window_title")),
-                    appears_transparent: false,
-                    traffic_light_position: None,
-                }),
-                focus: true,
-                ..Default::default()
-            },
-            |window, cx| {
-                let view = cx
-                    .new(|cx| osm_gpui::ui::settings_window::SettingsWindow::new(page, window, cx));
-                cx.subscribe(
-                    &view,
-                    |_entity, event: &osm_gpui::ui::settings_window::SettingsEvent, cx| match event
-                    {
-                        osm_gpui::ui::settings_window::SettingsEvent::KeybindingsChanged => {
-                            apply_keybindings_change(cx);
-                        }
-                        osm_gpui::ui::settings_window::SettingsEvent::MapStyleChanged => {
-                            crate::with_map_viewer(cx, |v, cx| v.apply_map_style(cx));
-                        }
-                    },
-                )
-                .detach();
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
-            },
-        )
-        .unwrap();
-    cx.set_global(SettingsWindowSlot(Some(settings_window.into())));
-}
-
-/// Switch the open Settings window (whose root view is `root`) to `page`.
-fn show_settings_page(root: gpui::AnyView, page: SettingsPage, cx: &mut App) {
-    let Ok(root) = root.downcast::<gpui_component::Root>() else {
-        return;
-    };
-    let content = root.read(cx).view().clone();
-    if let Ok(settings) = content.downcast::<osm_gpui::ui::settings_window::SettingsWindow>() {
-        settings.update(cx, |settings, cx| settings.show_page(page, cx));
-    }
+    cx.defer(move |cx| with_map_viewer_in(cx, |v, window, cx| v.open_settings(page, window, cx)));
 }
 
 pub(crate) fn download_from_osm(_: &DownloadFromOsm, cx: &mut App) {
@@ -385,7 +282,7 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
 /// `SettingsEvent::KeybindingsChanged` from the Settings window. Menu
 /// shortcut labels are baked in at `cx.set_menus` time (they don't update
 /// on their own), so this always re-triggers a full `rebuild_menus` too.
-fn apply_keybindings_change(cx: &mut App) {
+pub(crate) fn apply_keybindings_change(cx: &mut App) {
     let settings = osm_gpui::settings_store::snapshot();
     cx.clear_key_bindings();
     cx.bind_keys(crate::key_bindings_from_settings(
@@ -1350,27 +1247,6 @@ mod tests {
         .into_iter()
         .map(|m| fit_owned_menu(m.owned()))
         .collect()
-    }
-
-    #[test]
-    fn settings_opens_one_window_and_focuses_it_afterwards() {
-        assert_eq!(
-            settings_open_decision(false, None),
-            SettingsOpen::New { page: None }
-        );
-        assert_eq!(
-            settings_open_decision(false, Some(SettingsPage::Imagery)),
-            SettingsOpen::New {
-                page: Some(SettingsPage::Imagery)
-            }
-        );
-        assert_eq!(settings_open_decision(true, None), SettingsOpen::Focus);
-        assert_eq!(
-            settings_open_decision(true, Some(SettingsPage::Imagery)),
-            SettingsOpen::FocusAndShow {
-                page: SettingsPage::Imagery
-            }
-        );
     }
 
     /// No menu is over the limit unless it is a leaf without submenus.

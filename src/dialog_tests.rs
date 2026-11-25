@@ -65,6 +65,10 @@ fn openers() -> Vec<(&'static str, Opener)> {
         ("about", |v, w, cx| {
             v.dialogs.about_dialog = Some(cx.new(|cx| ui::about_dialog::AboutDialog::new(w, cx)));
         }),
+        ("settings", |v, w, cx| {
+            v.dialogs.settings =
+                Some(cx.new(|cx| ui::settings_window::SettingsWindow::new(None, w, cx)));
+        }),
         ("extensions", |v, w, cx| {
             v.extensions.dialog =
                 Some(cx.new(|cx| {
@@ -302,6 +306,12 @@ fn escape_closes_every_dialog_in_its_initial_state(cx: &mut TestAppContext) {
         about_dialog::AboutDialog::new,
         about_dialog::DialogEvent,
         about_dialog::DialogEvent::Closed
+    );
+    closes_on_escape!(
+        cx,
+        |w, cx| settings_window::SettingsWindow::new(None, w, cx),
+        settings_window::SettingsEvent,
+        settings_window::SettingsEvent::Closed
     );
     closes_on_escape!(
         cx,

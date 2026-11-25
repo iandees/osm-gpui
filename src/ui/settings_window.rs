@@ -38,6 +38,8 @@ enum LoginState {
 /// `Action` types that only the binary crate (`src/main.rs`/`src/menu.rs`)
 /// has access to.
 pub enum SettingsEvent {
+    /// The close button or Escape.
+    Closed,
     KeybindingsChanged,
     /// The active MapCSS style changed (`style::custom::set_active` has
     /// already run); open layers must be restyled.
@@ -322,11 +324,14 @@ impl SettingsWindow {
             InputState::new(window, cx).placeholder(tr!("settings.map_style.placeholder"))
         });
         let login_state = Self::current_login_state(&app_settings);
+        // Like every in-window dialog, take the focus so Escape reaches it.
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
 
         Self {
             http: crate::http::default_client(),
             page: PageSelection::new(start_page),
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             entries: custom_imagery_store::load(),
             editing_index: None,
             confirm_delete_index: None,
@@ -1481,6 +1486,8 @@ impl Focusable for SettingsWindow {
 
 impl EventEmitter<SettingsEvent> for SettingsWindow {}
 
+impl crate::ui::modal::ModalDialog for SettingsWindow {}
+
 fn render_server_picker(
     api_choice: ApiServerChoice,
     view: Entity<SettingsWindow>,
@@ -1983,24 +1990,79 @@ fn render_entry_edit_form(
         .into_any_element()
 }
 
+/// The settings card's size in a window of `w` x `h`: most of it, within
+/// limits.
+fn card_size(w: f32, h: f32) -> (f32, f32) {
+    (
+        (w - 96.0).clamp(480.0, 980.0),
+        (h - 96.0).clamp(360.0, 760.0),
+    )
+}
+
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .bg(cx.theme().background)
+    /// Settings is drawn inside the app's window, over the map: a large
+    /// card on a scrim, closed by its close button or Escape.
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let size = window.viewport_size();
+        let (w, h) = card_size(size.width.as_f32(), size.height.as_f32());
+        let settings = {
+            let mut settings = Settings::new(self.page.element_id()).pages(self.setting_pages(cx));
+            if let Some(page) = self.page.start {
+                settings = settings.default_selected_index(SelectIndex {
+                    page_ix: page.index(),
+                    group_ix: None,
+                });
+            }
+            settings
+        };
+        let theme = cx.theme();
+        let card = v_flex()
+            .w(px(w))
+            .h(px(h))
+            .bg(theme.background)
+            .border_1()
+            .border_color(theme.border)
+            .rounded_lg()
+            .shadow_lg()
+            .overflow_hidden()
             .text_size(crate::ui::style::current_text_scale().body)
-            .child({
-                let mut settings =
-                    Settings::new(self.page.element_id()).pages(self.setting_pages(cx));
-                if let Some(page) = self.page.start {
-                    settings = settings.default_selected_index(SelectIndex {
-                        page_ix: page.index(),
-                        group_ix: None,
-                    });
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_4()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.foreground)
+                            .child(tr!("settings.window_title")),
+                    )
+                    .child(
+                        Button::new("settings-close")
+                            .ghost()
+                            .icon(IconName::Close)
+                            .tooltip(tr!("dialog.extensions.close"))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Closed))),
+                    ),
+            )
+            .child(div().flex_1().min_h(px(0.)).child(settings));
+        crate::ui::modal::scrim(
+            &self.focus_handle,
+            cx.listener(|_, ev: &gpui::KeyDownEvent, _, cx| {
+                if crate::ui::modal::classify_key(ev) == crate::ui::modal::ModalKey::Escape {
+                    cx.emit(SettingsEvent::Closed);
                 }
-                settings
-            })
+            }),
+            // Clicks on the card stay on it.
+            div()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(card),
+        )
     }
 }
 
