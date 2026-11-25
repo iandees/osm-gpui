@@ -107,13 +107,29 @@ pub enum DialogEvent {
     Refresh,
 }
 
+/// A step the user is asked to confirm, for one extension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Confirm {
+    /// Install from the index (its capabilities are shown first).
+    Install(String),
+    Uninstall(String),
+}
+
+impl Confirm {
+    fn id(&self) -> &str {
+        match self {
+            Confirm::Install(id) | Confirm::Uninstall(id) => id,
+        }
+    }
+}
+
 pub struct ExtensionsDialog {
     focus_handle: FocusHandle,
     search: Entity<InputState>,
     tab: Tab,
     model: Model,
-    /// The extension whose install is being confirmed.
-    confirming: Option<String>,
+    /// The step being confirmed, if any.
+    confirming: Option<Confirm>,
 }
 
 impl EventEmitter<DialogEvent> for ExtensionsDialog {}
@@ -141,13 +157,16 @@ impl ExtensionsDialog {
     }
 
     pub fn set_model(&mut self, model: Model, cx: &mut Context<Self>) {
-        if let Some(id) = &self.confirming {
-            // Installed (or gone) meanwhile: nothing left to confirm.
-            if !model
-                .rows
-                .iter()
-                .any(|r| &r.id == id && r.installed_version.is_none())
-            {
+        if let Some(confirm) = &self.confirming {
+            // Installed or uninstalled meanwhile: nothing left to confirm.
+            let still = model.rows.iter().any(|r| {
+                r.id == confirm.id()
+                    && match confirm {
+                        Confirm::Install(_) => r.installed_version.is_none(),
+                        Confirm::Uninstall(_) => r.installed_version.is_some(),
+                    }
+            });
+            if !still {
                 self.confirming = None;
             }
         }
@@ -171,12 +190,34 @@ impl ExtensionsDialog {
 
     /// Ask to install `id` (shows its capabilities first).
     pub fn ask_install(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.confirming = Some(id.to_string());
+        self.confirming = Some(Confirm::Install(id.to_string()));
         cx.notify();
     }
 
-    pub fn confirming(&self) -> Option<&str> {
-        self.confirming.as_deref()
+    /// Ask whether to uninstall `id`.
+    pub fn ask_uninstall(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.confirming = Some(Confirm::Uninstall(id.to_string()));
+        cx.notify();
+    }
+
+    pub fn confirming(&self) -> Option<&Confirm> {
+        self.confirming.as_ref()
+    }
+
+    /// The confirming row's confirm button: do what was asked.
+    pub fn confirm(&mut self, cx: &mut Context<Self>) {
+        match self.confirming.take() {
+            Some(Confirm::Install(id)) => cx.emit(DialogEvent::Install(id)),
+            Some(Confirm::Uninstall(id)) => cx.emit(DialogEvent::Uninstall(id)),
+            None => {}
+        }
+        cx.notify();
+    }
+
+    /// The confirming row's Cancel button (and Escape): back out.
+    pub fn cancel_confirm(&mut self, cx: &mut Context<Self>) {
+        self.confirming = None;
+        cx.notify();
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -217,7 +258,11 @@ impl ExtensionsDialog {
             .clone()
             .or_else(|| row.index_version.clone())
             .unwrap_or_default();
-        let confirming = self.confirming.as_deref() == Some(row.id.as_str());
+        let confirming = self
+            .confirming
+            .as_ref()
+            .filter(|c| c.id() == row.id)
+            .cloned();
 
         let mut actions = div().flex().flex_row().items_center().gap_2();
         match self.tab {
@@ -250,17 +295,19 @@ impl ExtensionsDialog {
                             })),
                     );
                 }
-                let uninstall_id = id.clone();
-                actions = actions.child(
-                    Button::new(("ext-uninstall", index))
-                        .small()
-                        .ghost()
-                        .label(tr!("dialog.extensions.uninstall"))
-                        .disabled(row.busy)
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(DialogEvent::Uninstall(uninstall_id.clone()))
-                        })),
-                );
+                if confirming.is_none() {
+                    let uninstall_id = id.clone();
+                    actions = actions.child(
+                        Button::new(("ext-uninstall", index))
+                            .small()
+                            .ghost()
+                            .label(tr!("dialog.extensions.uninstall"))
+                            .disabled(row.busy)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.ask_uninstall(&uninstall_id, cx)
+                            })),
+                    );
+                }
                 let enabled = row.enabled;
                 actions = actions.child(
                     Switch::new(("ext-enabled", index))
@@ -276,7 +323,7 @@ impl ExtensionsDialog {
                         })),
                 );
             }
-            Tab::Available if !confirming => {
+            Tab::Available if confirming.is_none() => {
                 actions = actions.child(if row.compatible {
                     Button::new(("ext-install", index))
                         .small()
@@ -355,7 +402,7 @@ impl ExtensionsDialog {
                     )
                     .child(actions.flex_shrink_0()),
             );
-        if self.tab == Tab::Installed || confirming {
+        if self.tab == Tab::Installed || confirming.is_some() {
             block = block.child(
                 v_flex()
                     .gap_0p5()
@@ -368,38 +415,48 @@ impl ExtensionsDialog {
                     ),
             );
         }
-        if confirming {
-            let install = row.id.clone();
-            block = block.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap_2()
-                    .pt_1()
-                    .child(
-                        Button::new(("ext-confirm-cancel", index))
-                            .small()
-                            .label(tr!("dialog.extensions.cancel"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.confirming = None;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new(("ext-confirm-install", index))
-                            .small()
-                            .primary()
-                            .label(tr!(
-                                "dialog.extensions.install_confirm",
-                                name = row.name.clone()
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.confirming = None;
-                                cx.emit(DialogEvent::Install(install.clone()));
-                            })),
+        if let Some(confirm) = &confirming {
+            let (question, label) = match confirm {
+                Confirm::Install(_) => (
+                    None,
+                    tr!("dialog.extensions.install_confirm", name = row.name.clone()),
+                ),
+                Confirm::Uninstall(_) => (
+                    Some(tr!(
+                        "dialog.extensions.uninstall_question",
+                        name = row.name.clone()
+                    )),
+                    tr!(
+                        "dialog.extensions.uninstall_confirm",
+                        name = row.name.clone()
                     ),
-            );
+                ),
+            };
+            let confirm_button = Button::new(("ext-confirm", index))
+                .small()
+                .label(label)
+                .on_click(cx.listener(|this, _, _, cx| this.confirm(cx)));
+            let confirm_button = match confirm {
+                Confirm::Install(_) => confirm_button.primary(),
+                Confirm::Uninstall(_) => confirm_button.danger(),
+            };
+            block = block
+                .children(question.map(|q| div().pt_1().text_color(foreground).child(q)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap_2()
+                        .pt_1()
+                        .child(
+                            Button::new(("ext-confirm-cancel", index))
+                                .small()
+                                .label(tr!("dialog.extensions.cancel"))
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_confirm(cx))),
+                        )
+                        .child(confirm_button),
+                );
         }
         if row.busy {
             block = block.child(

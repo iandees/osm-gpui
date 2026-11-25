@@ -965,6 +965,8 @@ dialog:
     install_confirm: "Install %{name}"
     cancel: "Cancel"
     uninstall: "Uninstall"
+    uninstall_question: "Uninstall %{name}? Its settings and saved secrets stay on this computer, so installing it again restores them."
+    uninstall_confirm: "Uninstall %{name}"
     update_to: "Update to %{version}"
     rebuild: "Rebuild"
     enable: "Turn on"

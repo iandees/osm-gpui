@@ -942,6 +942,8 @@ dialog:
     install_confirm: "%{name} installieren"
     cancel: "Abbrechen"
     uninstall: "Deinstallieren"
+    uninstall_question: "%{name} deinstallieren? Seine Einstellungen und gespeicherten Geheimnisse bleiben auf diesem Computer; eine erneute Installation stellt sie wieder her."
+    uninstall_confirm: "%{name} deinstallieren"
     update_to: "Auf %{version} aktualisieren"
     rebuild: "Neu bauen"
     enable: "Einschalten"
