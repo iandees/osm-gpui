@@ -745,15 +745,17 @@ pub(crate) fn in_window_menu_bar(cx: &App) -> Option<gpui::Entity<AppMenuBar>> {
 /// off macOS, and the rest moves to where Windows and Linux users look for it:
 /// Quit at the end of File, Settings at the end of Edit, About at the end of
 /// Help.
-/// The Extensions menu: a submenu per installed extension with its commands,
-/// then Install Dev Extension.
+/// The Extensions menu: a submenu per running extension with its commands,
+/// then Manage Extensions… and Install Dev Extension….
 fn extension_items() -> Vec<MenuItem> {
-    use crate::extensions_ui::{InstallDevExtension, RunExtensionCommand, UninstallExtension};
+    use crate::extensions_manage::{InstallDevExtension, ManageExtensions};
+    use crate::extensions_ui::RunExtensionCommand;
     let locale = osm_gpui::i18n::current_locale();
     let mut items: Vec<MenuItem> = crate::extensions_ui::menu_snapshot()
         .into_iter()
+        .filter(|ext| !ext.commands.is_empty())
         .map(|ext| {
-            let mut sub: Vec<MenuItem> = ext
+            let sub: Vec<MenuItem> = ext
                 .commands
                 .iter()
                 .map(|c| {
@@ -766,15 +768,6 @@ fn extension_items() -> Vec<MenuItem> {
                     )
                 })
                 .collect();
-            if !sub.is_empty() {
-                sub.push(MenuItem::separator());
-            }
-            sub.push(MenuItem::action(
-                tr!("menu.extensions.uninstall", version = ext.version),
-                UninstallExtension {
-                    extension: ext.id.clone(),
-                },
-            ));
             MenuItem::submenu(Menu {
                 name: ext.name_in(&locale).into(),
                 items: sub,
@@ -785,6 +778,10 @@ fn extension_items() -> Vec<MenuItem> {
     if !items.is_empty() {
         items.push(MenuItem::separator());
     }
+    items.push(MenuItem::action(
+        tr!("menu.extensions.manage"),
+        ManageExtensions,
+    ));
     items.push(MenuItem::action(
         tr!("menu.extensions.install_dev"),
         InstallDevExtension,

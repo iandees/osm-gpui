@@ -49,6 +49,7 @@ flate2 = "1"
 wasmtime = { version = "51", default-features = false, features = ["component-model", "cranelift", "runtime", "std", "parallel-compilation"] }
 wasmtime-wasi = { version = "51", default-features = false, features = ["p2"] }
 toml = "1"
+tar = { version = "0.4", default-features = false }
 
 # gpui_linux is pulled in with default-features = false, so without these two
 # features no windowing backend is compiled in and gpui panics at startup
@@ -74,6 +75,12 @@ winresource = "0.1"
 [[bin]]
 name = "osm-gpui"
 path = "src/main.rs"
+
+# Builds the extension index (`registry/extensions.toml` -> packages and
+# index.json); run by .github/workflows/extensions.yml.
+[[bin]]
+name = "build-extension-index"
+path = "src/bin/build-extension-index.rs"
 
 # Debug builds of this crate hit ~40ms/frame in OsmLayer's canvas paint alone
 # (measured on an 8k-node/4k-way dataset) vs ~2ms/frame in release — an ~18x

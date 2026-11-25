@@ -1,0 +1,48 @@
+# Extensions > Manage Extensions…: install MapRoulette from the extension
+# index, then use it. Run with an empty extensions folder and an index (built
+# by build-extension-index with --base-url https://ext.example.test/) served
+# from fixtures:
+#
+#   OSM_GPUI_EXTENSIONS_DIR=<empty dir> \
+#   OSM_GPUI_EXTENSION_INDEX=https://ext.example.test/index.json \
+#   cargo run --release -- --script docs/screenshots/extensions-manager.osmscript \
+#     --offline --http-fixtures <dir with index.json, the package and http-fixtures.json>
+#
+# The fixtures also need the MapRoulette answers in
+# docs/screenshots/fixtures/maproulette/.
+
+window 1200 800
+load_osm docs/screenshots/fixtures/areas.osm
+viewport 40.714147 -74.006000 17
+wait_idle 5s
+
+# Nothing installed: the manager opens on Available.
+action ManageExtensions
+wait_idle 3s
+capture out/extensions-01-available.png
+
+# Install first shows what the extension may reach, and asks again.
+click 861,379
+wait_idle 1s
+capture out/extensions-02-confirm.png
+
+# Install MapRoulette: download, checksum, unpack, load.
+click 819,482
+wait_idle 5s
+capture out/extensions-03-installed-from-available.png
+
+# Reopened, the manager shows what is installed.
+key escape
+wait_idle 1s
+action ManageExtensions
+wait_idle 2s
+capture out/extensions-04-installed.png
+
+# It runs: its menu command works straight away.
+key escape
+wait_idle 1s
+action RunExtensionCommand {"extension":"maproulette","command":"show-tasks"}
+wait_idle 3s
+capture out/extensions-05-running.png
+
+log done

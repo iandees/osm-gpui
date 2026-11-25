@@ -21,6 +21,7 @@
 
 pub mod locales;
 pub mod manifest;
+pub mod registry;
 pub mod runtime;
 
 use std::path::{Path, PathBuf};
@@ -59,6 +60,12 @@ pub fn installed(root: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
+        // Staging folders (`.<id>.new`) are not installs.
+        .filter(|p| {
+            !p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'))
+        })
         .filter(|p| p.join("extension.toml").is_file() && p.join("extension.wasm").is_file())
         .collect();
     dirs.sort();
@@ -158,6 +165,26 @@ pub fn build_dev_extension_in(src: &Path, target_dir: Option<&Path>) -> Result<P
         })
         .next()
         .ok_or_else(|| "cargo built no .wasm (is the crate a cdylib?)".to_string())
+}
+
+/// The file in a dev extension's installed folder naming its source folder.
+const DEV_SOURCE: &str = "dev-source";
+
+/// The source folder of the dev extension installed in `dir`; `None` for
+/// one installed from the index.
+pub fn dev_source(dir: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dir.join(DEV_SOURCE)).ok()?;
+    let path = PathBuf::from(text.trim());
+    path.is_dir().then_some(path)
+}
+
+/// Install the dev extension in `src` (built as `wasm`), remembering where
+/// its source is so it can be rebuilt.
+pub fn install_dev(root: &Path, src: &Path, wasm: &Path) -> Result<PathBuf, String> {
+    let dest = install(root, src, wasm)?;
+    let src = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
+    std::fs::write(dest.join(DEV_SOURCE), src.display().to_string()).map_err(|e| e.to_string())?;
+    Ok(dest)
 }
 
 /// Copy the extension in `src` (its manifest, and `wasm`) into the installed

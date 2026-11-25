@@ -2,7 +2,7 @@
 //! commands it offers. Read before the extension's code is loaded, so the
 //! Extensions menu can be built without running it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The manifest format this app reads.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -26,12 +26,15 @@ pub struct Manifest {
 }
 
 /// What the extension may reach beyond its sandbox.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct Capabilities {
     /// Hosts `http-fetch` may reach over HTTPS. `example.org` also allows its
     /// subdomains (`api.example.org`).
     #[serde(default)]
     pub http: Vec<String>,
+    /// May keep secrets in the system keychain (`secret-get`/`secret-set`).
+    #[serde(default)]
+    pub secrets: bool,
 }
 
 /// One entry of the Extensions menu.

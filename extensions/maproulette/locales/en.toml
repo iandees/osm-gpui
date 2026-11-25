@@ -1,4 +1,5 @@
 name = "MapRoulette"
+description = "Find MapRoulette tasks on the map, read their instructions, load their data and mark them done."
 
 [commands]
 show-tasks = "Show Tasks Here"

@@ -1,0 +1,19 @@
+# The extensions osm-gpui offers in its Extensions manager.
+#
+# One table per extension id. Publishing or updating an extension is a pull
+# request here; reviewers check the extension's code at `rev` and the
+# capabilities its manifest asks for.
+#
+#   [my-extension]
+#   repository = "https://github.com/someone/my-extension"  # omit for this repository
+#   rev = "<full commit sha>"                               # required with `repository`
+#   path = "."                                              # its folder in the repository
+#   version = "1.2.0"                                       # must equal its extension.toml
+#
+# CI (.github/workflows/extensions.yml) builds every entry for wasm32-wasip2,
+# packages it, and publishes the packages and index.json as the
+# `extension-index` release, which the app reads.
+
+[maproulette]
+path = "extensions/maproulette"
+version = "0.1.0"

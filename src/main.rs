@@ -50,6 +50,7 @@ mod road_paint;
 use modes::AddProgress;
 #[cfg(test)]
 use modes::{BuildingReference, ExtrudeDrag, ExtrudeStyle};
+mod extensions_manage;
 mod extensions_ui;
 mod notes_ui;
 mod pmtiles_ui;
@@ -3321,6 +3322,7 @@ impl MapViewer {
             open_modal(&self.dialogs.restore_dialog, cx),
             open_modal(&self.dialogs.find_dialog, cx),
             open_modal(&self.dialogs.about_dialog, cx),
+            open_modal(&self.extensions.dialog, cx),
             open_modal(&self.dialogs.nsi_dialog, cx),
             open_modal(&self.dialogs.preset_picker_dialog, cx),
             open_modal(&self.dialogs.opening_hours_dialog, cx),
@@ -6767,7 +6769,7 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_toggle_notes))
             .on_action(cx.listener(Self::on_run_extension_command))
             .on_action(cx.listener(Self::on_install_dev_extension))
-            .on_action(cx.listener(Self::on_uninstall_extension))
+            .on_action(cx.listener(Self::on_manage_extensions))
             .on_action(cx.listener(Self::on_refresh_notes))
             .on_action(cx.listener(Self::on_toggle_mapillary))
             .on_action(cx.listener(Self::on_toggle_fotoshi))

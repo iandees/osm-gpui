@@ -73,8 +73,8 @@ menu:
     toggle_debug_overlay: "Toggle Debug Overlay"
   extensions:
     title: "Extensions"
+    manage: "Manage Extensions…"
     install_dev: "Install Dev Extension…"
-    uninstall: "Uninstall (version %{version})"
   window:
     title: "Window"
     minimize: "Minimize"
@@ -955,6 +955,35 @@ shortcut_category:
   actions: "Selection Actions"
 
 dialog:
+  extensions:
+    title: "Extensions"
+    search: "Search extensions"
+    tab_installed: "Installed (%{count})"
+    tab_installed_updates: "Installed (%{count}) · %{updates} update(s)"
+    tab_available: "Available"
+    install: "Install"
+    install_confirm: "Install %{name}"
+    cancel: "Cancel"
+    uninstall: "Uninstall"
+    update_to: "Update to %{version}"
+    rebuild: "Rebuild"
+    enable: "Turn on"
+    disable: "Turn off"
+    dev: "dev"
+    "off": "off"
+    by: "By %{authors}"
+    working: "Working…"
+    incompatible: "Needs a newer osm-gpui"
+    loading: "Loading the extension index…"
+    index_failed: "The extension index could not be read: %{detail}"
+    none_available: "Every extension in the index is installed."
+    none_installed: "No extensions are installed. See Available."
+    install_dev: "Install Dev Extension…"
+    refresh: "Refresh"
+    close: "Close"
+    can_reach: "Can reach %{hosts} over HTTPS"
+    no_network: "No network access"
+    can_store_secrets: "May keep secrets in your keychain"
   cancel: "Cancel"
   no_matches: "No matches."
   upload:
@@ -1636,6 +1665,7 @@ revert:
     edited_locally: "%{kind} %{id}: has edits that are not uploaded yet"
     refused: "%{kind} %{id}: %{detail}"
 extensions:
+  updates_available: "Extension updates available: %{count}. See Extensions > Manage Extensions…"
   load_failed: "An extension failed to load: %{detail}"
   not_installed: "Extension %{id} is not installed"
   busy: "%{name} is still working…"

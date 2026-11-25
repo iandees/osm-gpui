@@ -156,7 +156,9 @@ interface host {
 
     /// Secret storage, private to this extension: the system keychain (or
     /// an owner-only file where there is none). The first read of a secret
-    /// in a session may show the system's keychain prompt.
+    /// in a session may show the system's keychain prompt. Only for an
+    /// extension whose manifest has `[capabilities] secrets = true`; for any
+    /// other, reads find nothing and writes are dropped.
     secret-get: func(key: string) -> option<string>;
     /// Store a secret; `none` (or an empty value) deletes it.
     secret-set: func(key: string, value: option<string>);

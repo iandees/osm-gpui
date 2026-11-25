@@ -8,6 +8,8 @@ repository = "https://github.com/iandees/osm-gpui"
 
 [capabilities]
 http = ["maproulette.org"]
+# The MapRoulette API key lives in the system keychain.
+secrets = true
 
 [[commands]]
 id = "show-tasks"

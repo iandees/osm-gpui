@@ -15,10 +15,9 @@
 //! the order they were first shown.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use gpui::{actions, div, prelude::*, px, AnyElement, Context, Entity, SharedString, Window};
+use gpui::{div, prelude::*, px, AnyElement, Context, Entity, SharedString, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     input::{Input, InputState},
@@ -28,12 +27,9 @@ use gpui_component::{
 use osm_gpui::coordinates::{GeoBounds, LatLon};
 use osm_gpui::extensions::manifest::CommandDef;
 use osm_gpui::extensions::runtime::{
-    Bounds, ButtonStyle, Element, FeatureKind as ExtFeatureKind, FeatureRef as ExtFeatureRef,
-    KeychainSecrets, Panel,
+    Bounds, ButtonStyle, Element, FeatureKind as ExtFeatureKind, FeatureRef as ExtFeatureRef, Panel,
 };
-use osm_gpui::extensions::{
-    self, CallContext, Effect, LoadedExtension, Locales, Outcome, Services,
-};
+use osm_gpui::extensions::{CallContext, Effect, LoadedExtension, Locales, Outcome};
 use osm_gpui::layers::extension_layer::{ExtensionLayer, MarkerStore};
 use osm_gpui::layers::LayerId;
 use osm_gpui::selection::FeatureKind;
@@ -41,8 +37,6 @@ use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
 
 use crate::MapViewer;
-
-actions!(osm_gpui, [InstallDevExtension]);
 
 /// Extensions > <extension> > <command>.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
@@ -53,20 +47,11 @@ pub(crate) struct RunExtensionCommand {
     pub command: String,
 }
 
-/// Extensions > <extension> > Uninstall.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
-#[action(namespace = osm_gpui)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct UninstallExtension {
-    pub extension: String,
-}
-
 /// One extension as the Extensions menu lists it.
 #[derive(Clone, Debug)]
 pub(crate) struct MenuEntry {
     pub id: String,
     name: String,
-    pub version: String,
     pub commands: Vec<CommandDef>,
     locales: Arc<Locales>,
 }
@@ -114,7 +99,21 @@ struct OpenPanel {
 #[derive(Default)]
 pub(crate) struct ExtensionsState {
     started: bool,
-    loaded: Vec<Arc<LoadedExtension>>,
+    /// The running extensions (installed and turned on).
+    pub(crate) loaded: Vec<Arc<LoadedExtension>>,
+    /// Everything installed, on or off (see `extensions_manage`).
+    pub(crate) installed: Vec<crate::extensions_manage::Installed>,
+    /// Installed extensions the user turned off.
+    pub(crate) disabled: std::collections::BTreeSet<String>,
+    /// The extension index, once fetched.
+    pub(crate) index: Option<osm_gpui::extensions::registry::Index>,
+    pub(crate) index_state: osm_gpui::ui::extensions_dialog::IndexState,
+    /// Extensions > Manage Extensions…, while open.
+    pub(crate) dialog: Option<Entity<osm_gpui::ui::extensions_dialog::ExtensionsDialog>>,
+    /// Extensions being installed, updated or rebuilt, and the last failure
+    /// of each, for the manager.
+    pub(crate) row_busy: HashSet<String>,
+    pub(crate) row_errors: HashMap<String, String>,
     /// Each extension's marker layer, made when it first sets markers.
     layers: HashMap<String, (LayerId, MarkerStore)>,
     /// Open panels, in the order they were first shown.
@@ -124,7 +123,7 @@ pub(crate) struct ExtensionsState {
     /// The changeset tags each extension last asked for, read when the
     /// upload dialog opens (asking then could wait on a busy extension).
     changeset_tags: HashMap<String, Vec<(String, String)>>,
-    installing: bool,
+    pub(crate) installing_dev: bool,
 }
 
 fn to_ext_bounds(b: &GeoBounds) -> Bounds {
@@ -196,7 +195,7 @@ impl MapViewer {
     pub(crate) fn extensions_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.extensions.started {
             self.extensions.started = true;
-            self.load_extensions(cx);
+            self.start_extensions(cx);
         }
         let present: HashSet<LayerId> =
             self.layer_manager.layers().iter().map(|l| l.id()).collect();
@@ -227,61 +226,7 @@ impl MapViewer {
         }
     }
 
-    fn extension_services(&self, root: &std::path::Path, id: &str) -> Services {
-        Services {
-            http: self.http.clone(),
-            secrets: Arc::new(KeychainSecrets),
-            storage: Some(extensions::storage_path(root, id)),
-        }
-    }
-
-    /// Load every installed extension, in the background.
-    fn load_extensions(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = extensions::root_dir() else {
-            return;
-        };
-        let dirs = extensions::installed(&root);
-        let jobs: Vec<(PathBuf, Services)> = dirs
-            .into_iter()
-            .map(|dir| {
-                let id = dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let services = self.extension_services(&root, &id);
-                (dir, services)
-            })
-            .collect();
-        cx.spawn(async move |this, cx| {
-            let results = cx
-                .background_executor()
-                .spawn(async move {
-                    jobs.into_iter()
-                        .map(|(dir, services)| {
-                            LoadedExtension::load(&dir, services)
-                                .map_err(|e| format!("{}: {e}", dir.display()))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                for r in results {
-                    match r {
-                        Ok(ext) => this.add_loaded_extension(ext),
-                        Err(e) => {
-                            eprintln!("extension failed to load: {e}");
-                            this.set_status(tr!("extensions.load_failed", detail = e));
-                        }
-                    }
-                }
-                this.refresh_extension_menu(cx);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn add_loaded_extension(&mut self, ext: LoadedExtension) {
+    pub(crate) fn add_loaded_extension(&mut self, ext: LoadedExtension) {
         let id = ext.manifest.id.clone();
         self.extensions.loaded.retain(|e| e.manifest.id != id);
         self.extensions.loaded.push(Arc::new(ext));
@@ -290,7 +235,7 @@ impl MapViewer {
             .sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
     }
 
-    fn refresh_extension_menu(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_extension_menu(&mut self, cx: &mut Context<Self>) {
         *menu_store().lock().unwrap() = self
             .extensions
             .loaded
@@ -298,7 +243,6 @@ impl MapViewer {
             .map(|e| MenuEntry {
                 id: e.manifest.id.clone(),
                 name: e.manifest.name.clone(),
-                version: e.manifest.version.clone(),
                 commands: e.manifest.commands.clone(),
                 locales: e.locales.clone(),
             })
@@ -312,7 +256,7 @@ impl MapViewer {
     }
 
     /// Extension `id`'s name in the app's language.
-    fn extension_name(&self, id: &str) -> String {
+    pub(crate) fn extension_name(&self, id: &str) -> String {
         self.find_extension(id)
             .map(|e| e.display_name(&osm_gpui::i18n::current_locale()))
             .unwrap_or_else(|| id.to_string())
@@ -543,113 +487,9 @@ impl MapViewer {
         }
     }
 
-    pub(crate) fn on_install_dev_extension(
-        &mut self,
-        _: &InstallDevExtension,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.extensions.installing {
-            return;
-        }
-        let Some(root) = extensions::root_dir() else {
-            return;
-        };
-        let picked = rfd::AsyncFileDialog::new()
-            .set_title(tr!("extensions.pick_folder").to_string())
-            .pick_folder();
-        let http = self.http.clone();
-        cx.spawn(async move |this, cx| {
-            let Some(folder) = picked.await else {
-                return;
-            };
-            let src: PathBuf = folder.path().to_path_buf();
-            let _ = this.update(cx, |this, cx| {
-                this.extensions.installing = true;
-                this.set_status(tr!("extensions.building", path = src.display().to_string()));
-                cx.notify();
-            });
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let manifest = extensions::read_manifest(&src)?;
-                    // A prebuilt extension.wasm next to the manifest is used
-                    // as is; otherwise the crate is built.
-                    let prebuilt = src.join("extension.wasm");
-                    let wasm = if prebuilt.is_file() {
-                        prebuilt
-                    } else {
-                        extensions::build_dev_extension(&src)?
-                    };
-                    let dir = extensions::install(&root, &src, &wasm)?;
-                    LoadedExtension::load(
-                        &dir,
-                        Services {
-                            http,
-                            secrets: Arc::new(KeychainSecrets),
-                            storage: Some(extensions::storage_path(&root, &manifest.id)),
-                        },
-                    )
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.extensions.installing = false;
-                match result {
-                    Ok(ext) => {
-                        let id = ext.manifest.id.clone();
-                        let (name, version) = (
-                            ext.display_name(&osm_gpui::i18n::current_locale()),
-                            ext.manifest.version.clone(),
-                        );
-                        this.drop_extension_ui(&id);
-                        this.add_loaded_extension(ext);
-                        this.refresh_extension_menu(cx);
-                        this.set_status(tr!(
-                            "extensions.installed",
-                            name = name,
-                            version = version
-                        ));
-                    }
-                    Err(e) => {
-                        eprintln!("{e}");
-                        this.set_status(tr!(
-                            "extensions.install_failed",
-                            detail = e.lines().next().unwrap_or("")
-                        ));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    pub(crate) fn on_uninstall_extension(
-        &mut self,
-        action: &UninstallExtension,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(root) = extensions::root_dir() else {
-            return;
-        };
-        let id = action.extension.clone();
-        let name = self.extension_name(&id);
-        match extensions::uninstall(&root, &id) {
-            Ok(()) => {
-                self.drop_extension_ui(&id);
-                self.extensions.loaded.retain(|e| e.manifest.id != id);
-                self.refresh_extension_menu(cx);
-                self.set_status(tr!("extensions.uninstalled", name = name));
-            }
-            Err(e) => self.set_status(tr!("extensions.uninstall_failed", name = name, detail = e)),
-        }
-        cx.notify();
-    }
-
     /// Remove extension `id`'s markers and panels (it is being replaced or
     /// uninstalled).
-    fn drop_extension_ui(&mut self, id: &str) {
+    pub(crate) fn drop_extension_ui(&mut self, id: &str) {
         if let Some((layer, _)) = self.extensions.layers.remove(id) {
             if let Some(i) = self
                 .layer_manager

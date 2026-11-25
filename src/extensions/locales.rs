@@ -80,7 +80,7 @@ impl Locales {
     }
 
     /// The tags to try for `locale`, best first.
-    fn chain(locale: &str) -> Vec<String> {
+    pub(crate) fn chain(locale: &str) -> Vec<String> {
         let mut tag = locale.replace('_', "-").to_ascii_lowercase();
         let mut chain = Vec::new();
         loop {
@@ -104,6 +104,14 @@ impl Locales {
                 .and_then(|c| c.get(key))
                 .map(String::as_str)
         })
+    }
+
+    /// `key` in every catalog that has it, by language tag (for the index).
+    pub fn all_of(&self, key: &str) -> std::collections::BTreeMap<String, String> {
+        self.catalogs
+            .iter()
+            .filter_map(|(tag, c)| c.get(key).map(|m| (tag.clone(), m.clone())))
+            .collect()
     }
 
     /// `key` in `locale` with `%{name}` replaced from `args`; the key itself

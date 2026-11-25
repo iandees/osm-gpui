@@ -71,8 +71,8 @@ menu:
     toggle_debug_overlay: "Debug-Overlay ein-/ausblenden"
   extensions:
     title: "Erweiterungen"
+    manage: "Erweiterungen verwalten…"
     install_dev: "Entwicklungs-Erweiterung installieren…"
-    uninstall: "Deinstallieren (Version %{version})"
   window:
     title: "Fenster"
     minimize: "Im Dock ablegen"
@@ -932,6 +932,35 @@ shortcut_category:
   actions: "Auswahlaktionen"
 
 dialog:
+  extensions:
+    title: "Erweiterungen"
+    search: "Erweiterungen suchen"
+    tab_installed: "Installiert (%{count})"
+    tab_installed_updates: "Installiert (%{count}) · %{updates} Update(s)"
+    tab_available: "Verfügbar"
+    install: "Installieren"
+    install_confirm: "%{name} installieren"
+    cancel: "Abbrechen"
+    uninstall: "Deinstallieren"
+    update_to: "Auf %{version} aktualisieren"
+    rebuild: "Neu bauen"
+    enable: "Einschalten"
+    disable: "Ausschalten"
+    dev: "Entw."
+    "off": "aus"
+    by: "Von %{authors}"
+    working: "Arbeitet…"
+    incompatible: "Braucht eine neuere osm-gpui-Version"
+    loading: "Erweiterungsverzeichnis wird geladen…"
+    index_failed: "Das Erweiterungsverzeichnis konnte nicht gelesen werden: %{detail}"
+    none_available: "Alle Erweiterungen des Verzeichnisses sind installiert."
+    none_installed: "Keine Erweiterungen installiert. Siehe „Verfügbar“."
+    install_dev: "Entwicklungs-Erweiterung installieren…"
+    refresh: "Aktualisieren"
+    close: "Schließen"
+    can_reach: "Darf %{hosts} über HTTPS erreichen"
+    no_network: "Kein Netzzugriff"
+    can_store_secrets: "Darf Geheimnisse im Schlüsselbund ablegen"
   cancel: "Abbrechen"
   no_matches: "Keine Treffer."
   upload:
@@ -1571,6 +1600,7 @@ revert:
     edited_locally: "%{kind} %{id}: hat noch nicht hochgeladene Änderungen"
     refused: "%{kind} %{id}: %{detail}"
 extensions:
+  updates_available: "Erweiterungs-Updates verfügbar: %{count}. Siehe Erweiterungen > Erweiterungen verwalten…"
   load_failed: "Eine Erweiterung konnte nicht geladen werden: %{detail}"
   not_installed: "Die Erweiterung %{id} ist nicht installiert"
   busy: "%{name} arbeitet noch…"

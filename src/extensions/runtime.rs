@@ -308,6 +308,13 @@ impl host::Host for HostState {
     }
 
     fn secret_get(&mut self, key: String) -> Option<String> {
+        if !self.manifest.capabilities.secrets {
+            eprintln!(
+                "[ext {}] secret-get refused: the manifest does not ask for `secrets`",
+                self.manifest.id
+            );
+            return None;
+        }
         if key.is_empty() || key.len() > 128 {
             return None;
         }
@@ -317,6 +324,13 @@ impl host::Host for HostState {
     }
 
     fn secret_set(&mut self, key: String, value: Option<String>) {
+        if !self.manifest.capabilities.secrets {
+            eprintln!(
+                "[ext {}] secret-set refused: the manifest does not ask for `secrets`",
+                self.manifest.id
+            );
+            return;
+        }
         if key.is_empty() || key.len() > 128 {
             return;
         }
@@ -348,6 +362,24 @@ impl host::Host for HostState {
     fn log(&mut self, message: String) {
         eprintln!("[ext {}] {message}", self.manifest.id);
     }
+}
+
+/// The extension API version this app provides: the WIT package version of
+/// `crates/osm-gpui-extension-api/wit`.
+pub const API_VERSION: &str = "0.1.0";
+
+/// The extension API version `wasm` was built against, read from its import
+/// of `osm-gpui:extension/host@<version>`. `Err` when it is not a component
+/// or imports no version of the host interface.
+pub fn api_version_of(wasm: &[u8]) -> Result<String, String> {
+    let engine = engine();
+    let component = Component::new(engine, wasm).map_err(|e| e.to_string())?;
+    let ty = component.component_type();
+    let version = ty.imports(engine).find_map(|(name, _)| {
+        name.strip_prefix("osm-gpui:extension/host@")
+            .map(str::to_string)
+    });
+    version.ok_or_else(|| "not an osm-gpui extension (no host import)".to_string())
 }
 
 /// One engine for every extension.

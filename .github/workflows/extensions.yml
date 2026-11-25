@@ -1,0 +1,82 @@
+name: Extension index
+
+# Builds every extension in registry/extensions.toml for wasm32-wasip2,
+# packages it, and writes index.json (see src/bin/build-extension-index.rs).
+# On pull requests this only checks that the registry builds; on main it
+# publishes the packages and the index to the `extension-index` release,
+# which the app's Extensions manager reads.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "registry/**"
+      - "extensions/**"
+      - "crates/osm-gpui-extension-api/**"
+      - "src/extensions/**"
+      - "src/bin/build-extension-index.rs"
+      - ".github/workflows/extensions.yml"
+  pull_request:
+    paths:
+      - "registry/**"
+      - "extensions/**"
+      - "crates/osm-gpui-extension-api/**"
+      - "src/extensions/**"
+      - "src/bin/build-extension-index.rs"
+      - ".github/workflows/extensions.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: extension-index-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  index:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake pkg-config \
+            libasound2-dev libfontconfig-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
+            libssl-dev libzstd-dev libvulkan1 libdrm-dev libgbm-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-extension-index
+
+      - name: Build the index
+        run: |
+          cargo run --locked --bin build-extension-index -- \
+            --registry registry/extensions.toml \
+            --out dist \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/extension-index/"
+
+      - name: Publish to the extension-index release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view extension-index >/dev/null 2>&1; then
+            gh release create extension-index --prerelease --latest=false \
+              --title "Extension index" \
+              --notes "The extensions osm-gpui offers in Extensions > Manage Extensions. Rebuilt from registry/extensions.toml on every change; not an app release."
+          fi
+          # Packages first, so the new index never names one not uploaded yet.
+          gh release upload extension-index dist/*.tar.gz --clobber
+          gh release upload extension-index dist/index.json --clobber

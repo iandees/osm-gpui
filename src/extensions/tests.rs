@@ -288,6 +288,30 @@ fn secrets_are_namespaced_per_extension() {
 }
 
 #[test]
+fn secrets_need_the_manifest_capability() {
+    let mut manifest = read_manifest(&maproulette_src()).unwrap();
+    manifest.capabilities.secrets = false;
+    let secrets = Arc::new(MemorySecrets::default());
+    let ext = LoadedExtension::from_parts(
+        Arc::new(manifest),
+        maproulette_src(),
+        &maproulette_wasm(),
+        Arc::new(Locales::default()),
+        services(Arc::new(FakeClient::new(vec![])), secrets.clone()),
+    )
+    .unwrap();
+    ext.panel_button(
+        context(15.0),
+        "api-key",
+        "save-key",
+        &[("key".to_string(), "k".to_string())],
+    )
+    .result
+    .unwrap();
+    assert_eq!(secrets.get(&secret_name("maproulette", "api-key")), None);
+}
+
+#[test]
 fn a_key_kept_in_plain_storage_moves_to_the_secret_store() {
     let dir = std::env::temp_dir().join(format!("osm-gpui-ext-mig-{}", std::process::id()));
     let storage = dir.join("maproulette.json");
@@ -365,4 +389,152 @@ fn install_copies_the_manifest_wasm_and_locales_and_uninstall_removes_them() {
     uninstall(&root, "maproulette").unwrap();
     assert!(installed(&root).is_empty());
     let _ = std::fs::remove_dir_all(root);
+}
+
+mod from_the_index {
+    use super::*;
+    use crate::extensions::registry::{
+        download_and_install, fetch_index, install_package, package, sha256_hex, Index, IndexEntry,
+        INDEX_SCHEMA_VERSION,
+    };
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("osm-gpui-ext-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The MapRoulette package and its index entry.
+    fn packaged(dir: &Path) -> (Vec<u8>, IndexEntry) {
+        let wasm = dir.join("built.wasm");
+        std::fs::write(&wasm, maproulette_wasm()).unwrap();
+        let bytes = package(&maproulette_src(), &wasm).unwrap();
+        let entry = IndexEntry {
+            id: "maproulette".into(),
+            name: "MapRoulette".into(),
+            version: read_manifest(&maproulette_src()).unwrap().version,
+            description: String::new(),
+            authors: vec![],
+            repository: String::new(),
+            api_version: runtime::API_VERSION.into(),
+            capabilities: Default::default(),
+            names: Default::default(),
+            descriptions: Default::default(),
+            download_url: "https://ext.example.test/maproulette.tar.gz".into(),
+            sha256: sha256_hex(&bytes),
+            size: bytes.len() as u64,
+        };
+        (bytes, entry)
+    }
+
+    #[test]
+    fn the_built_extension_reports_the_apps_api_version() {
+        assert_eq!(
+            runtime::api_version_of(&maproulette_wasm()).unwrap(),
+            runtime::API_VERSION
+        );
+    }
+
+    #[test]
+    fn an_index_entry_downloads_installs_and_loads_with_its_locales() {
+        let root = scratch("index-install");
+        let (bytes, entry) = packaged(&root);
+        let index = Index {
+            schema_version: INDEX_SCHEMA_VERSION,
+            extensions: vec![entry.clone()],
+        };
+        let http = Arc::new(FakeClient::new(vec![
+            ok(200, serde_json::to_string(&index).unwrap()),
+            ok(200, bytes),
+        ]));
+        let fetched = fetch_index(http.as_ref(), "https://ext.example.test/index.json").unwrap();
+        assert_eq!(fetched, index);
+        let dir = download_and_install(http.as_ref(), &root, &fetched.extensions[0]).unwrap();
+        assert_eq!(installed(&root), vec![dir.clone()]);
+        assert!(dev_source(&dir).is_none(), "not a dev extension");
+        let ext = LoadedExtension::load(
+            &dir,
+            services(
+                Arc::new(FakeClient::new(vec![])),
+                Arc::new(MemorySecrets::default()),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            ext.locales.lookup("de", "commands.settings"),
+            Some("API-Schlüssel…")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_package_that_does_not_match_its_entry_is_refused_and_leaves_nothing() {
+        let root = scratch("index-refuse");
+        let (bytes, entry) = packaged(&root);
+
+        let mut tampered = bytes.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        let err = install_package(&root, &entry, &tampered).unwrap_err();
+        assert!(err.contains("checksum"), "{err}");
+
+        let wrong_version = IndexEntry {
+            version: "9.9.9".into(),
+            ..entry.clone()
+        };
+        let err = install_package(&root, &wrong_version, &bytes).unwrap_err();
+        assert!(err.contains("not maproulette 9.9.9"), "{err}");
+
+        let wrong_id = IndexEntry {
+            id: "other".into(),
+            ..entry
+        };
+        assert!(install_package(&root, &wrong_id, &bytes).is_err());
+        assert!(installed(&root).is_empty());
+        let leftovers: Vec<_> = std::fs::read_dir(installed_dir(&root))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(leftovers.is_empty(), "staging is cleaned up: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_archive_with_other_files_is_refused() {
+        let root = scratch("index-evil");
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        let mut header = tar::Header::new_gnu();
+        let data = b"#!/bin/sh\n";
+        header.set_size(data.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, "run.sh", &data[..]).unwrap();
+        let bytes = tar.into_inner().unwrap().finish().unwrap();
+        let (_, entry) = packaged(&root);
+        let entry = IndexEntry {
+            sha256: sha256_hex(&bytes),
+            size: bytes.len() as u64,
+            ..entry
+        };
+        let err = install_package(&root, &entry, &bytes).unwrap_err();
+        assert!(err.contains("unexpected"), "{err}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_dev_install_remembers_its_source() {
+        let root = scratch("dev-install");
+        let wasm = root.join("built.wasm");
+        std::fs::write(&wasm, maproulette_wasm()).unwrap();
+        let dir = install_dev(&root, &maproulette_src(), &wasm).unwrap();
+        assert_eq!(
+            dev_source(&dir).unwrap(),
+            maproulette_src().canonicalize().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
