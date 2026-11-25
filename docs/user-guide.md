@@ -50,7 +50,7 @@ Imagery gives you something to trace over. The **Imagery** menu has:
 - **Add PMTiles Vector Layer…** adds a vector overlay from a PMTiles file or web address.
 - **Adjust Imagery Offset** / **Reset Imagery Offset**: nudge an imagery layer that is misaligned with the real world. The offset is remembered per layer.
 
-Street-level photos (Mapillary, Fotoshi, Panoramax) are extensions: install them from **Extensions > Manage Extensions…**, then use **Extensions > *provider* > Show Photos**. Click a photo's dot to see it in the side panel; double-click the picture to see it full size. Mapillary needs an access token (**Extensions > Mapillary > Access Token…**); Fotoshi works without a key, and with one (**Extensions > Fotoshi > API Key and Lookup…**) shows more photos and can list the photos of the feature you select.
+Street-level photos (Mapillary, Fotoshi, Panoramax) are extensions: install them from **Settings > Extensions**, then turn on **View > *provider* Photos**. Click a photo's dot to see it in the side panel; double-click the picture to see it full size. Mapillary needs an access token, which you enter in its row of **Settings > Extensions**; Fotoshi works without a key, and with one (also entered there) shows more photos and can list the photos of the feature you select.
 
 Imagery attribution is shown on the map. Tiles are cached on disk; the cache limit can be changed or cleared in Settings > Imagery.
 

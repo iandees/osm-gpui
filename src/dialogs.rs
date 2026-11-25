@@ -29,6 +29,8 @@ pub(crate) struct Dialogs {
     /// Edit > Find, while open.
     pub(crate) find_dialog: Option<gpui::Entity<FindDialog>>,
     pub(crate) about_dialog: Option<gpui::Entity<AboutDialog>>,
+    /// Settings, drawn inside the main window, while open.
+    pub(crate) settings: Option<gpui::Entity<osm_gpui::ui::settings_window::SettingsWindow>>,
     /// Active upload-review dialog, if open.
     pub(crate) upload_dialog: Option<gpui::Entity<UploadDialog>>,
     pub(crate) sign_in_dialog: Option<gpui::Entity<SignInDialog>>,

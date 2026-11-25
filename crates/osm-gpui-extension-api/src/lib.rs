@@ -52,7 +52,7 @@ pub trait Extension: 'static {
         Self: Sized;
 
     /// A `[[commands]]` entry of the manifest was chosen from the
-    /// Extensions menu.
+    /// app's menus.
     fn run_command(&mut self, id: &str) -> Result<()> {
         Err(format!("unknown command {id}"))
     }
@@ -80,6 +80,13 @@ pub trait Extension: 'static {
     /// `subscribe = ["selection"]`.
     fn selection_changed(&mut self) -> Result<()> {
         Ok(())
+    }
+
+    /// The extension's configuration for its section of Settings >
+    /// Extensions. Buttons in it call `panel_button` with panel
+    /// [`SETTINGS_PANEL`].
+    fn settings(&mut self) -> Option<Panel> {
+        None
     }
 
     /// Tags for the next changeset: `comment` and `hashtags` fill the upload
@@ -215,6 +222,16 @@ pub fn t_args(key: &str, args: &[(&str, &str)]) -> String {
     host::translate(key, &args)
 }
 
+/// The panel id `panel_button` gets for a button in the extension's
+/// section of Settings.
+pub const SETTINGS_PANEL: &str = "settings";
+
+/// Show or clear the checkmark of a menu command declared with
+/// `toggle = true`.
+pub fn set_command_checked(command: &str, checked: bool) {
+    host::set_command_checked(command, checked)
+}
+
 pub fn log(message: &str) {
     host::log(message)
 }
@@ -293,6 +310,10 @@ impl bindings::Guest for Component {
 
     fn selection_changed() -> Result<(), String> {
         with_extension(|e| e.selection_changed())
+    }
+
+    fn settings() -> Option<Panel> {
+        with_extension(|e| e.settings())
     }
 
     fn changeset_tags() -> Vec<(String, String)> {

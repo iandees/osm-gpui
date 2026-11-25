@@ -12,10 +12,9 @@ use osm_gpui_extension_api::{
     self as osm, button, ButtonStyle, Element, Extension, HttpRequest, Inputs, Panel, TextInput,
 };
 use serde_json::Value;
-use street_photos::{date_from_millis, mvt, Photo, Photos, Source, Tile};
+use street_photos::{date_from_millis, mvt, Photo, Photos, Source, Tile, TOGGLE_COMMAND};
 
 const TOKEN: &str = "access-token";
-const TOKEN_PANEL: &str = "token";
 
 pub struct Mapillary;
 
@@ -172,43 +171,39 @@ impl Source for Mapillary {
     }
 }
 
-fn show_token_panel() {
+/// Its section of Settings > Extensions: the access token.
+fn token_panel() -> Panel {
     let has_token = token().is_some();
-    let mut buttons = vec![
-        button("save", &osm::t("token.save"), ButtonStyle::Primary),
-        button("cancel", &osm::t("token.cancel"), ButtonStyle::Ghost),
-    ];
+    let mut buttons = vec![button("save", &osm::t("token.save"), ButtonStyle::Primary)];
     if has_token {
-        buttons.insert(
-            1,
-            button("forget", &osm::t("token.forget"), ButtonStyle::Danger),
-        );
+        buttons.push(button(
+            "forget",
+            &osm::t("token.forget"),
+            ButtonStyle::Danger,
+        ));
     }
-    osm::show_panel(
-        TOKEN_PANEL,
-        Some(&Panel {
-            title: osm::t("token.title"),
-            elements: vec![
-                Element::Text(osm::t("token.explain")),
-                Element::Link((
-                    osm::t("token.find"),
-                    "https://www.mapillary.com/dashboard/developers".into(),
-                )),
-                Element::Input(TextInput {
-                    id: "token".into(),
-                    label: osm::t("token.label"),
-                    placeholder: osm::t(if has_token {
-                        "token.placeholder_replace"
-                    } else {
-                        "token.placeholder"
-                    }),
-                    value: String::new(),
-                    secret: true,
+    Panel {
+        title: osm::t("token.title"),
+        elements: vec![
+            Element::Text(osm::t("token.explain")),
+            Element::Link((
+                osm::t("token.find"),
+                "https://www.mapillary.com/dashboard/developers".into(),
+            )),
+            Element::Input(TextInput {
+                id: "token".into(),
+                label: osm::t("token.label"),
+                placeholder: osm::t(if has_token {
+                    "token.placeholder_replace"
+                } else {
+                    "token.placeholder"
                 }),
-                Element::Buttons(buttons),
-            ],
-        }),
-    );
+                value: String::new(),
+                secret: true,
+            }),
+            Element::Buttons(buttons),
+        ],
+    }
 }
 
 struct MapillaryExtension {
@@ -224,23 +219,17 @@ impl Extension for MapillaryExtension {
 
     fn run_command(&mut self, id: &str) -> osm::Result<()> {
         match id {
-            "show-photos" => {
-                if token().is_none() {
-                    // Without a token there would be nothing to show: ask.
-                    osm::set_status(&osm::t("photos.no_token"));
-                    show_token_panel();
-                    return Ok(());
-                }
-                self.photos.show()
-            }
-            "hide-photos" => {
+            TOGGLE_COMMAND if self.photos.shown() => {
                 self.photos.hide();
                 Ok(())
             }
-            "refresh-photos" => self.photos.refresh(),
-            "settings" => {
-                show_token_panel();
-                Ok(())
+            TOGGLE_COMMAND => {
+                if token().is_none() {
+                    // Without a token there would be nothing to show.
+                    osm::set_status(&osm::t("photos.no_token"));
+                    return Ok(());
+                }
+                self.photos.show()
             }
             other => Err(format!("unknown command {other}")),
         }
@@ -255,7 +244,7 @@ impl Extension for MapillaryExtension {
     }
 
     fn panel_button(&mut self, panel: &str, button: &str, inputs: &Inputs) -> osm::Result<()> {
-        if panel != TOKEN_PANEL {
+        if panel != osm::SETTINGS_PANEL {
             return Ok(());
         }
         match button {
@@ -264,22 +253,22 @@ impl Extension for MapillaryExtension {
                 if !value.is_empty() {
                     osm::secret_set(TOKEN, Some(value));
                     osm::set_status(&osm::t("token.saved"));
-                    osm::show_panel(TOKEN_PANEL, None);
                     self.photos.unblock();
-                    // The user wants to see photos: show them now.
-                    return self.photos.show();
+                    return self.photos.refresh();
                 }
-                osm::show_panel(TOKEN_PANEL, None);
             }
             "forget" => {
                 osm::secret_set(TOKEN, None);
                 osm::set_status(&osm::t("token.forgotten"));
-                osm::show_panel(TOKEN_PANEL, None);
                 self.photos.hide();
             }
-            _ => osm::show_panel(TOKEN_PANEL, None),
+            _ => {}
         }
         Ok(())
+    }
+
+    fn settings(&mut self) -> Option<Panel> {
+        Some(token_panel())
     }
 
     fn panel_closed(&mut self, panel: &str) {

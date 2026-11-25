@@ -16,7 +16,7 @@
 // The package version is the API version. A breaking change bumps it, and the
 // app refuses extensions built against a version it does not provide.
 
-package osm-gpui:extension@0.2.0;
+package osm-gpui:extension@0.3.0;
 
 interface types {
     record lat-lon {
@@ -188,12 +188,17 @@ interface host {
     /// the key itself), with each `%{name}` replaced from `args`.
     translate: func(key: string, args: list<tuple<string, string>>) -> string;
 
+    /// Show or clear the checkmark of menu command `command`, one the
+    /// manifest declares with `toggle = true`.
+    set-command-checked: func(command: string, checked: bool);
+
     /// Write a line to the app's log.
     log: func(message: string);
 }
 
 world extension {
     import host;
+    use types.{panel};
 
     /// Called once, after loading.
     export init: func() -> result<_, string>;
@@ -210,6 +215,12 @@ world extension {
 
     /// The user closed panel `panel`.
     export panel-closed: func(panel: string);
+
+    /// The extension's own configuration, shown in its section of Settings >
+    /// Extensions; `none` for an extension with nothing to configure. Its
+    /// buttons call `panel-button` with panel `settings`, and the app asks
+    /// again after every call, so it always shows the current state.
+    export settings: func() -> option<panel>;
 
     /// The map moved or zoomed and has settled (only for an extension whose
     /// manifest has `subscribe = ["viewport"]`). `host.viewport` and

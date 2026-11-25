@@ -1,6 +1,6 @@
 id = "mapillary"
 name = "Mapillary"
-version = "0.1.0"
+version = "0.2.0"
 schema_version = 1
 authors = ["Ian Dees"]
 description = "Street-level photos from Mapillary on the map, with the photo and its details in the side panel. Needs a Mapillary access token."
@@ -15,17 +15,7 @@ http = ["mapillary.com", "fbcdn.net"]
 secrets = true
 
 [[commands]]
-id = "show-photos"
-label = "Show Photos"
-
-[[commands]]
-id = "hide-photos"
-label = "Hide Photos"
-
-[[commands]]
-id = "refresh-photos"
-label = "Refresh Photos"
-
-[[commands]]
-id = "settings"
-label = "Access Token…"
+id = "photos"
+label = "Mapillary Photos"
+menu = "overlays"
+toggle = true

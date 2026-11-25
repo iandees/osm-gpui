@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "osm-gpui-extension-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "panoramax"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "osm-gpui-extension-api",
  "serde_json",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "street-photos"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "geo-types",
  "mvt-reader",

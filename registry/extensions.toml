@@ -1,4 +1,4 @@
-# The extensions osm-gpui offers in its Extensions manager.
+# The extensions osm-gpui offers in Settings > Extensions.
 #
 # One table per extension id. Publishing or updating an extension is a pull
 # request here; reviewers check the extension's code at `rev` and the
@@ -16,16 +16,16 @@
 
 [maproulette]
 path = "extensions/maproulette"
-version = "0.2.0"
+version = "0.3.0"
 
 [mapillary]
 path = "extensions/mapillary"
-version = "0.1.0"
+version = "0.2.0"
 
 [fotoshi]
 path = "extensions/fotoshi"
-version = "0.1.0"
+version = "0.2.0"
 
 [panoramax]
 path = "extensions/panoramax"
-version = "0.1.0"
+version = "0.2.0"

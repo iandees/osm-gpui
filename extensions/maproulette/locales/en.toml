@@ -2,9 +2,7 @@ name = "MapRoulette"
 description = "Find MapRoulette tasks on the map, read their instructions, load their data and mark them done."
 
 [commands]
-show-tasks = "Show Tasks Here"
-hide-tasks = "Hide Tasks"
-settings = "API Key…"
+tasks = "MapRoulette Tasks"
 
 [status]
 0 = "Open"

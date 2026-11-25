@@ -71,10 +71,6 @@ menu:
     show_street_names: "Show Street Names"
     show_area_labels: "Show Area Labels"
     toggle_debug_overlay: "Toggle Debug Overlay"
-  extensions:
-    title: "Extensions"
-    manage: "Manage Extensions…"
-    install_dev: "Install Dev Extension…"
   window:
     title: "Window"
     minimize: "Minimize"
@@ -575,6 +571,8 @@ settings:
       not_a_number: "Enter a whole number of megabytes"
       clear_source: "Failed to clear %{source}: %{error}"
       clear_all: "Failed to clear cache: %{error}"
+  extensions:
+    title: "Extensions"
   shortcuts:
     title: "Keyboard Shortcuts"
     reset_all: "Reset All to Defaults"
@@ -981,6 +979,7 @@ dialog:
     install_dev: "Install Dev Extension…"
     refresh: "Refresh"
     close: "Close"
+    no_settings: "Nothing to configure."
     can_reach: "Can reach %{hosts} over HTTPS"
     no_network: "No network access"
     can_store_secrets: "May keep secrets in your keychain"

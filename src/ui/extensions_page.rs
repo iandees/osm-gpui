@@ -1,31 +1,30 @@
-//! Extensions > Manage Extensions…: the installed extensions and the ones the
-//! extension index offers, in an in-window modal (a second native window is
-//! avoided, as for About).
+//! Settings > Extensions: the installed extensions and the ones the extension
+//! index offers. An installed one's row opens to show what it may reach and
+//! its own settings (its `settings` export).
 //!
-//! The dialog only shows and asks: the window gives it a [`Model`] (rows and
-//! the index's state) and does what its [`DialogEvent`]s ask (install,
-//! update, uninstall, enable, rebuild), then hands it the new model.
-//! Installing from the index first shows what the extension may reach and
-//! asks again.
+//! The page only shows and asks: the window gives it a [`Model`] (rows and
+//! the index's state) and does what its [`PageEvent`]s ask (install, update,
+//! uninstall, enable, rebuild, an extension's settings button), then hands it
+//! the new model. Installing from the index first shows what the extension
+//! may reach and asks again; uninstalling asks too.
 
-use gpui::{
-    div, prelude::*, px, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    SharedString, Window,
-};
+use std::collections::{HashMap, HashSet};
+
+use gpui::{div, prelude::*, px, App, Context, Entity, EventEmitter, SharedString, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     input::{Input, InputState},
     label::Label,
     switch::Switch,
-    v_flex, ActiveTheme as _, Disableable as _, IconName, Sizable as _,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
 };
 
+use crate::extensions::runtime::{ButtonStyle, Element, Panel};
 use crate::tr;
-use crate::ui::modal;
 use crate::ui::style::muted_text_size;
 
 /// One extension, installed or offered (or both).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Row {
     pub id: String,
     pub name: String,
@@ -46,6 +45,8 @@ pub struct Row {
     pub busy: bool,
     /// The last thing done to it failed.
     pub error: Option<String>,
+    /// Its own settings, when it is running and has any.
+    pub settings: Option<Panel>,
 }
 
 impl Row {
@@ -79,7 +80,7 @@ pub enum IndexState {
     Failed(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Model {
     pub rows: Vec<Row>,
     pub index: IndexState,
@@ -95,8 +96,7 @@ pub enum Tab {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum DialogEvent {
-    Closed,
+pub enum PageEvent {
     Install(String),
     Update(String),
     Uninstall(String),
@@ -105,6 +105,12 @@ pub enum DialogEvent {
     InstallDev,
     /// Fetch the index again.
     Refresh,
+    /// A button in an extension's settings, with the text of its inputs.
+    Settings {
+        extension: String,
+        button: String,
+        inputs: Vec<(String, String)>,
+    },
 }
 
 /// A step the user is asked to confirm, for one extension.
@@ -123,24 +129,25 @@ impl Confirm {
     }
 }
 
-pub struct ExtensionsDialog {
-    focus_handle: FocusHandle,
+pub struct ExtensionsPage {
     search: Entity<InputState>,
     tab: Tab,
     model: Model,
     /// The step being confirmed, if any.
     confirming: Option<Confirm>,
+    /// Installed extensions whose details (capabilities, settings) are open.
+    expanded: HashSet<String>,
+    /// The text boxes of extensions' settings, by (extension, input id).
+    inputs: HashMap<(String, String), Entity<InputState>>,
 }
 
-impl EventEmitter<DialogEvent> for ExtensionsDialog {}
+impl EventEmitter<PageEvent> for ExtensionsPage {}
 
-impl ExtensionsDialog {
+impl ExtensionsPage {
     pub fn new(model: Model, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let focus_handle = cx.focus_handle();
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder(tr!("dialog.extensions.search")));
         cx.observe(&search, |_, _, cx| cx.notify()).detach();
-        search.update(cx, |s, cx| s.focus(window, cx));
         // With nothing installed, start where there is something to see.
         let tab = if model.rows.iter().any(|r| r.installed_version.is_some()) {
             Tab::Installed
@@ -148,11 +155,12 @@ impl ExtensionsDialog {
             Tab::Available
         };
         Self {
-            focus_handle,
             search,
             tab,
             model,
             confirming: None,
+            expanded: HashSet::new(),
+            inputs: HashMap::new(),
         }
     }
 
@@ -207,8 +215,8 @@ impl ExtensionsDialog {
     /// The confirming row's confirm button: do what was asked.
     pub fn confirm(&mut self, cx: &mut Context<Self>) {
         match self.confirming.take() {
-            Some(Confirm::Install(id)) => cx.emit(DialogEvent::Install(id)),
-            Some(Confirm::Uninstall(id)) => cx.emit(DialogEvent::Uninstall(id)),
+            Some(Confirm::Install(id)) => cx.emit(PageEvent::Install(id)),
+            Some(Confirm::Uninstall(id)) => cx.emit(PageEvent::Uninstall(id)),
             None => {}
         }
         cx.notify();
@@ -220,14 +228,153 @@ impl ExtensionsDialog {
         cx.notify();
     }
 
-    fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if modal::classify_key(ev) == modal::ModalKey::Escape {
-            if self.confirming.take().is_some() {
-                cx.notify();
-            } else {
-                cx.emit(DialogEvent::Closed);
-            }
+    /// Open or close installed extension `id`'s details.
+    pub fn toggle_details(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !self.expanded.remove(id) {
+            self.expanded.insert(id.to_string());
         }
+        cx.notify();
+    }
+
+    /// Extension `extension`'s settings button `button` was pressed.
+    fn settings_button(&mut self, extension: &str, button: &str, cx: &mut Context<Self>) {
+        let inputs = self
+            .inputs
+            .iter()
+            .filter(|((ext, _), _)| ext == extension)
+            .map(|((_, id), state)| (id.clone(), state.read(cx).value().to_string()))
+            .collect();
+        // The boxes start again from what the extension's answer says (a
+        // saved key is not left typed in).
+        self.inputs.retain(|(ext, _), _| ext != extension);
+        cx.emit(PageEvent::Settings {
+            extension: extension.to_string(),
+            button: button.to_string(),
+            inputs,
+        });
+    }
+
+    /// Extension `row`'s settings, as its section draws them.
+    fn render_settings(
+        &mut self,
+        index: usize,
+        row: &Row,
+        panel: &Panel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let mut out = v_flex()
+            .gap_2()
+            .pt_2()
+            .mt_1()
+            .border_t_1()
+            .border_color(theme.border);
+        for (i, el) in panel.elements.iter().enumerate() {
+            let key = index * 1000 + i;
+            let element: gpui::AnyElement = match el {
+                Element::Heading(t) => Label::new(t.clone())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .into_any_element(),
+                Element::Text(t) => div()
+                    .text_color(theme.foreground)
+                    .child(SharedString::from(t.clone()))
+                    .into_any_element(),
+                Element::Muted(t) => div()
+                    .text_size(muted_text_size())
+                    .text_color(theme.muted_foreground)
+                    .child(SharedString::from(t.clone()))
+                    .into_any_element(),
+                Element::Property((label, value)) => div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from(label.clone())),
+                    )
+                    .child(SharedString::from(value.clone()))
+                    .into_any_element(),
+                Element::Buttons(buttons) => {
+                    let mut line = div().flex().flex_row().flex_wrap().gap_2();
+                    for (j, b) in buttons.iter().enumerate() {
+                        let (ext, id) = (row.id.clone(), b.id.clone());
+                        let button = Button::new(("ext-settings-button", key * 100 + j))
+                            .small()
+                            .label(b.label.clone())
+                            .disabled(!b.enabled)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.settings_button(&ext, &id, cx)
+                            }));
+                        line = line.child(match b.style {
+                            ButtonStyle::Primary => button.primary(),
+                            ButtonStyle::Danger => button.danger(),
+                            ButtonStyle::Ghost => button.ghost(),
+                            ButtonStyle::Secondary => button,
+                        });
+                    }
+                    line.into_any_element()
+                }
+                Element::Input(input) => {
+                    let k = (row.id.clone(), input.id.clone());
+                    let state = match self.inputs.get(&k) {
+                        Some(s) => s.clone(),
+                        None => {
+                            let (placeholder, value, secret) =
+                                (input.placeholder.clone(), input.value.clone(), input.secret);
+                            let state = cx.new(|cx| {
+                                let mut s = InputState::new(window, cx)
+                                    .placeholder(placeholder)
+                                    .masked(secret);
+                                if !value.is_empty() {
+                                    s.set_value(value, window, cx);
+                                }
+                                s
+                            });
+                            self.inputs.insert(k, state.clone());
+                            state
+                        }
+                    };
+                    v_flex()
+                        .gap_1()
+                        .when(!input.label.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .text_size(muted_text_size())
+                                    .text_color(theme.muted_foreground)
+                                    .child(SharedString::from(input.label.clone())),
+                            )
+                        })
+                        .child(Input::new(&state))
+                        .into_any_element()
+                }
+                Element::Link((label, url)) => {
+                    let url = url.clone();
+                    div()
+                        .id(("ext-settings-link", key))
+                        .text_color(theme.link)
+                        .underline()
+                        .cursor_pointer()
+                        .child(SharedString::from(label.clone()))
+                        .on_click(move |_, _, _| {
+                            if url.starts_with("https://") || url.starts_with("http://") {
+                                let _ = open::that(&url);
+                            }
+                        })
+                        .into_any_element()
+                }
+                Element::Divider => div().h(px(1.0)).bg(theme.border).into_any_element(),
+                // Settings show no pictures; say what it is.
+                Element::Picture(p) => div()
+                    .text_size(muted_text_size())
+                    .text_color(theme.muted_foreground)
+                    .child(SharedString::from(p.alt.clone()))
+                    .into_any_element(),
+            };
+            out = out.child(element);
+        }
+        out
     }
 
     /// The rows the current tab and search show.
@@ -244,7 +391,13 @@ impl ExtensionsDialog {
             .collect()
     }
 
-    fn render_row(&self, index: usize, row: &Row, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(
+        &mut self,
+        index: usize,
+        row: &Row,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, border, foreground, danger) = (
             theme.muted_foreground,
@@ -279,7 +432,7 @@ impl ExtensionsDialog {
                             ))
                             .disabled(row.busy)
                             .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(DialogEvent::Update(id.clone()))
+                                cx.emit(PageEvent::Update(id.clone()))
                             })),
                     );
                 }
@@ -291,7 +444,7 @@ impl ExtensionsDialog {
                             .label(tr!("dialog.extensions.rebuild"))
                             .disabled(row.busy)
                             .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(DialogEvent::Rebuild(id.clone()))
+                                cx.emit(PageEvent::Rebuild(id.clone()))
                             })),
                     );
                 }
@@ -319,7 +472,7 @@ impl ExtensionsDialog {
                             tr!("dialog.extensions.enable")
                         })
                         .on_click(cx.listener(move |_, checked: &bool, _, cx| {
-                            cx.emit(DialogEvent::SetEnabled(id.clone(), *checked))
+                            cx.emit(PageEvent::SetEnabled(id.clone(), *checked))
                         })),
                 );
             }
@@ -350,11 +503,30 @@ impl ExtensionsDialog {
             badges = badges.child(badge(tr!("dialog.extensions.off"), cx));
         }
 
+        let installed = row.installed_version.is_some();
+        let expanded = installed && self.expanded.contains(&row.id);
+        let toggle_id = row.id.clone();
         let title = div()
+            .id(("ext-title", index))
             .flex()
             .flex_row()
             .items_center()
             .gap_2()
+            .when(installed, |el| {
+                el.cursor_pointer()
+                    .child(
+                        Icon::new(if expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .xsmall()
+                        .text_color(muted),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.toggle_details(&toggle_id, cx)),
+                    )
+            })
             .child(
                 Label::new(row.name.clone())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -402,7 +574,7 @@ impl ExtensionsDialog {
                     )
                     .child(actions.flex_shrink_0()),
             );
-        if self.tab == Tab::Installed || confirming.is_some() {
+        if expanded || confirming.is_some() {
             block = block.child(
                 v_flex()
                     .gap_0p5()
@@ -414,6 +586,23 @@ impl ExtensionsDialog {
                             .map(|c| div().child(SharedString::from(c.clone()))),
                     ),
             );
+        }
+        if expanded {
+            match &row.settings {
+                Some(panel) => {
+                    let section = self.render_settings(index, row, panel, window, cx);
+                    block = block.child(section);
+                }
+                None if row.enabled => {
+                    block = block.child(
+                        div()
+                            .text_size(muted_text_size())
+                            .text_color(muted)
+                            .child(tr!("dialog.extensions.no_settings")),
+                    );
+                }
+                None => {}
+            }
         }
         if let Some(confirm) = &confirming {
             let (question, label) = match confirm {
@@ -487,20 +676,8 @@ fn badge(text: SharedString, cx: &App) -> impl IntoElement {
         .child(text)
 }
 
-impl modal::ModalDialog for ExtensionsDialog {
-    fn initial_focus(&self, cx: &App) -> FocusHandle {
-        self.search.read(cx).focus_handle(cx)
-    }
-}
-
-impl Focusable for ExtensionsDialog {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl Render for ExtensionsDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Render for ExtensionsPage {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let updates = self.model.rows.iter().filter(|r| r.has_update()).count();
         let installed = self
@@ -553,7 +730,8 @@ impl Render for ExtensionsDialog {
         let rows: Vec<Row> = self.visible_rows(cx).into_iter().cloned().collect();
         let mut list = v_flex();
         for (i, row) in rows.iter().enumerate() {
-            list = list.child(self.render_row(i, row, cx));
+            let row = self.render_row(i, row, window, cx);
+            list = list.child(row);
         }
         let empty_message = match (&self.tab, &self.model.index) {
             _ if !rows.is_empty() => None,
@@ -564,12 +742,7 @@ impl Render for ExtensionsDialog {
             (Tab::Available, IndexState::Loaded) => Some(tr!("dialog.extensions.none_available")),
             (Tab::Installed, _) => Some(tr!("dialog.extensions.none_installed")),
         };
-        let body =
-            v_flex().gap_2().child(toolbar).child(list).children(
-                empty_message.map(|m| div().py_6().text_center().text_color(muted).child(m)),
-            );
-
-        let footer = div()
+        let actions = div()
             .flex()
             .flex_row()
             .items_center()
@@ -579,7 +752,7 @@ impl Render for ExtensionsDialog {
                     .small()
                     .label(tr!("dialog.extensions.install_dev"))
                     .disabled(self.model.installing_dev)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::InstallDev))),
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PageEvent::InstallDev))),
             )
             .child(
                 Button::new("ext-refresh")
@@ -588,21 +761,16 @@ impl Render for ExtensionsDialog {
                     .icon(IconName::Redo2)
                     .label(tr!("dialog.extensions.refresh"))
                     .disabled(self.model.index == IndexState::Loading)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Refresh))),
-            )
-            .child(div().flex_1())
-            .child(
-                Button::new("ext-close")
-                    .primary()
-                    .label(tr!("dialog.extensions.close"))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Closed))),
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PageEvent::Refresh))),
             );
 
-        let frame = modal::card(cx, px(620.0), tr!("dialog.extensions.title"), body)
-            .scroll_body("extensions-dialog-body", px(460.0))
-            .footer(footer)
-            .build();
-        modal::scrim(&self.focus_handle, cx.listener(Self::on_key_down), frame)
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(toolbar)
+            .child(list)
+            .children(empty_message.map(|m| div().py_6().text_center().text_color(muted).child(m)))
+            .child(actions.pt_2())
     }
 }
 
