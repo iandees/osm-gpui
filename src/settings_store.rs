@@ -150,6 +150,9 @@ pub struct AppSettings {
     /// Whether the tag key/value inputs ask taginfo.openstreetmap.org for
     /// suggestions (see `crate::taginfo`). On by default.
     pub suggest_from_taginfo: bool,
+    /// Download the visible area automatically once the map has been still
+    /// for a moment at high zoom (see `crate::auto_fetch`). Off by default.
+    pub auto_fetch_data: bool,
     /// Simplify Way's Douglas-Peucker tolerance in metres. Use
     /// [`AppSettings::simplify_tolerance`] to read it: a value outside
     /// [`SIMPLIFY_TOLERANCE_RANGE_M`] (hand-edited file) counts as the default.
@@ -288,6 +291,7 @@ impl Default for AppSettings {
             last_source: String::new(),
             recent_comments: Vec::new(),
             suggest_from_taginfo: default_suggest_from_taginfo(),
+            auto_fetch_data: false,
             simplify_tolerance_m: default_simplify_tolerance_m(),
             map_styles: Vec::new(),
             active_map_style: None,
@@ -393,6 +397,10 @@ pub fn set_show_street_names(on: bool, persist: bool) {
 
 pub fn set_show_area_labels(on: bool, persist: bool) {
     update(persist, |s| s.show_area_labels = on);
+}
+
+pub fn set_auto_fetch_data(on: bool, persist: bool) {
+    update(persist, |s| s.auto_fetch_data = on);
 }
 
 pub fn set_suggest_from_taginfo(on: bool, persist: bool) {
@@ -763,6 +771,7 @@ mod tests {
             last_source: "survey; GPS".into(),
             recent_comments: vec!["Add a cafe".into(), "Fix \"quotes\" #tag".into()],
             suggest_from_taginfo: false,
+            auto_fetch_data: true,
             simplify_tolerance_m: 7.5,
             map_styles: vec!["/s/a.mapcss".into()],
             active_map_style: Some("/s/a.mapcss".into()),
@@ -997,6 +1006,7 @@ mod tests {
             last_source: String::new(),
             recent_comments: Vec::new(),
             suggest_from_taginfo: true,
+            auto_fetch_data: false,
             simplify_tolerance_m: 3.0,
             map_styles: Vec::new(),
             active_map_style: None,
