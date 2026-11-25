@@ -175,7 +175,7 @@ If a file can't be read, a message appears in the status bar and any other files
 ## 9. Shortcuts, undo and saving
 
 - **Undo / Redo** (`⌘Z` / `⇧⌘Z`) work for every edit, and the **History** section in the side panel lists them. Undo and redo select the features they changed.
-- Every shortcut can be changed in **Settings > Keyboard Shortcuts**. The single-letter ones only work while the map has focus.
+- Every shortcut can be changed in **Settings > Keyboard Shortcuts**. Changes and resets apply immediately; text inputs keep their standard editing shortcuts (Backspace, Select All, Copy and Paste). The single-letter map shortcuts only work while the map has focus.
 - Navigation: scroll or pinch to zoom, drag to pan (or hold Space and left-drag), arrow keys to pan, `+` and `-` to zoom, and `⌘0` / `⌘J` for Zoom to Data / Selection. Right-click without dragging opens the context menu.
 - The app warns on quit if you have unsaved changes. If it was closed abnormally, it offers to restore your work when next started.
 - **Settings > Language** switches between English and German. For one run only, start with `--language de`.

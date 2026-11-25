@@ -279,16 +279,32 @@ pub(crate) fn add_saved_custom_imagery(action: &AddSavedCustomImagery, cx: &mut 
 
 /// Re-apply the live `gpui` keymap from current settings and refresh the
 /// native menu's shortcut labels, in response to a
-/// `SettingsEvent::KeybindingsChanged` from the Settings window. Menu
-/// shortcut labels are baked in at `cx.set_menus` time (they don't update
-/// on their own), so this always re-triggers a full `rebuild_menus` too.
+/// `SettingsEvent::KeybindingsChanged` from Settings. Menu shortcut labels
+/// are baked in at `cx.set_menus` time (they don't update on their own), so
+/// this always re-triggers a full `rebuild_menus` too.
 pub(crate) fn apply_keybindings_change(cx: &mut App) {
-    let settings = osm_gpui::settings_store::snapshot();
+    replace_app_keybindings(&osm_gpui::settings_store::snapshot(), cx);
+}
+
+/// `apply_keybindings_change` for `settings`.
+fn replace_app_keybindings(settings: &osm_gpui::settings_store::AppSettings, cx: &mut App) {
+    let app_bindings = crate::key_bindings_from_settings(settings, cfg!(target_os = "macos"));
+    // GPUI's keymap also holds component bindings (input editing, menus,
+    // focus traversal, ...). Replace only our actions, keeping the others
+    // in their original order. Appending alone would leave old shortcuts live.
+    let component_bindings: Vec<_> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .filter(|binding| {
+            !app_bindings
+                .iter()
+                .any(|app| app.action().partial_eq(binding.action()))
+        })
+        .cloned()
+        .collect();
     cx.clear_key_bindings();
-    cx.bind_keys(crate::key_bindings_from_settings(
-        &settings,
-        cfg!(target_os = "macos"),
-    ));
+    cx.bind_keys(component_bindings.into_iter().chain(app_bindings));
     rebuild_menus_for_live_viewer(cx);
 }
 
@@ -1030,6 +1046,108 @@ pub(crate) fn no_op_imagery_info(_: &NoOpImageryInfo, _cx: &mut App) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn shortcut_changes_preserve_find_input_editing(cx: &mut gpui::TestAppContext) {
+        use gpui::{point, size, AppContext as _, AvailableSpace, VisualTestContext};
+        use osm_gpui::ui::find_dialog::FindDialog;
+
+        cx.update(gpui_component::init);
+        let window = cx.add_window(|window, cx| {
+            let dialog = cx.new(|cx| FindDialog::new(Default::default(), Vec::new(), window, cx));
+            gpui_component::Root::new(dialog, window, cx)
+        });
+        let vcx = &mut VisualTestContext::from_window(window.into(), cx);
+        let root = window.root(vcx).unwrap();
+        let dialog = root
+            .read_with(vcx, |root, _| root.view().clone())
+            .downcast::<FindDialog>()
+            .unwrap();
+        vcx.draw(
+            point(px(0.0), px(0.0)),
+            size(
+                AvailableSpace::Definite(px(1200.0)),
+                AvailableSpace::Definite(px(800.0)),
+            ),
+            |_, _| gpui::AnyView::from(root.clone()),
+        );
+
+        let defaults = osm_gpui::settings_store::AppSettings::default();
+        let mut custom = defaults.clone();
+        custom
+            .keybindings
+            .insert("download_osm".into(), "cmd-shift-down".into());
+        custom
+            .keybindings
+            .insert("upload_osm".into(), "cmd-shift-up".into());
+        let select_all = if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        };
+
+        // Customizing, customizing again, and resetting must all keep input
+        // bindings. These are app-wide, including the Settings URL input.
+        for settings in [&custom, &custom, &defaults] {
+            vcx.update(|_, cx| replace_app_keybindings(settings, cx));
+            vcx.simulate_keystrokes("a b backspace");
+            assert_eq!(dialog.read_with(vcx, |d, cx| d.query_text(cx)), "a");
+            vcx.simulate_keystrokes(select_all);
+            vcx.simulate_keystrokes("x y z");
+            assert_eq!(dialog.read_with(vcx, |d, cx| d.query_text(cx)), "xyz");
+            vcx.simulate_keystrokes("shift-left backspace");
+            assert_eq!(dialog.read_with(vcx, |d, cx| d.query_text(cx)), "xy");
+            vcx.simulate_keystrokes(select_all);
+            vcx.simulate_keystrokes("backspace");
+            assert_eq!(dialog.read_with(vcx, |d, cx| d.query_text(cx)), "");
+        }
+    }
+
+    #[gpui::test]
+    fn shortcut_changes_replace_old_app_bindings(cx: &mut gpui::TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+
+        let downloads = Rc::new(Cell::new(0));
+        let uploads = Rc::new(Cell::new(0));
+        cx.update(|cx| {
+            let downloads = downloads.clone();
+            let uploads = uploads.clone();
+            cx.on_action(move |_: &DownloadFromOsm, _| downloads.set(downloads.get() + 1));
+            cx.on_action(move |_: &UploadToOsm, _| uploads.set(uploads.get() + 1));
+        });
+        let vcx = cx.add_empty_window();
+        let defaults = osm_gpui::settings_store::AppSettings::default();
+        let mut custom = defaults.clone();
+        custom
+            .keybindings
+            .insert("download_osm".into(), "cmd-shift-down".into());
+        custom
+            .keybindings
+            .insert("upload_osm".into(), "cmd-shift-up".into());
+        vcx.update(|_, cx| replace_app_keybindings(&defaults, cx));
+        vcx.update(|_, cx| replace_app_keybindings(&custom, cx));
+        let default_download = if cfg!(target_os = "macos") {
+            "cmd-shift-d"
+        } else {
+            "ctrl-shift-d"
+        };
+        let default_upload = if cfg!(target_os = "macos") {
+            "cmd-shift-u"
+        } else {
+            "ctrl-shift-u"
+        };
+        vcx.simulate_keystrokes(default_download);
+        vcx.simulate_keystrokes(default_upload);
+        assert_eq!((downloads.get(), uploads.get()), (0, 0));
+        vcx.simulate_keystrokes("cmd-shift-down cmd-shift-up");
+        assert_eq!((downloads.get(), uploads.get()), (1, 1));
+        vcx.update(|_, cx| replace_app_keybindings(&defaults, cx));
+        vcx.simulate_keystrokes("cmd-shift-down cmd-shift-up");
+        assert_eq!((downloads.get(), uploads.get()), (1, 1));
+        vcx.simulate_keystrokes(default_download);
+        vcx.simulate_keystrokes(default_upload);
+        assert_eq!((downloads.get(), uploads.get()), (2, 2));
+    }
 
     #[test]
     fn in_window_menu_is_wanted_off_macos_regardless_of_override() {
