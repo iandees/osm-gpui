@@ -2,17 +2,14 @@ name = "Mapillary"
 description = "Street-level photos from Mapillary on the map, with the photo and its details in the side panel. Needs a Mapillary access token."
 
 [commands]
-show-photos = "Show Photos"
-hide-photos = "Hide Photos"
-refresh-photos = "Refresh Photos"
-settings = "Access Token…"
+photos = "Mapillary Photos"
 
 [photos]
 zoom_in = "Zoom in to see Mapillary photos"
 loaded_one = "Mapillary: 1 photo"
 loaded = "Mapillary: %{count} photos"
-no_token = "Add a Mapillary access token to see Mapillary photos"
-unauthorized = "Mapillary refused the access token; check it in Extensions > Mapillary > Access Token…"
+no_token = "Add a Mapillary access token in Settings > Extensions > Mapillary to see Mapillary photos"
+unauthorized = "Mapillary refused the access token; check it in Settings > Extensions > Mapillary"
 rate_limited = "Mapillary rate limit reached; try again later"
 failed = "Could not load Mapillary photos: %{detail}"
 
@@ -34,6 +31,5 @@ placeholder = "Paste your client token (MLY|…)"
 placeholder_replace = "A token is saved; paste a new one to replace it"
 save = "Save"
 forget = "Forget Token"
-cancel = "Cancel"
 saved = "Mapillary: access token saved"
 forgotten = "Mapillary: access token forgotten"

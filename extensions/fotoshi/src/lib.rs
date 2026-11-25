@@ -15,7 +15,7 @@ use osm_gpui_extension_api::{
     TextInput,
 };
 use serde_json::Value;
-use street_photos::{Photo, Photos, Source, Tile};
+use street_photos::{Photo, Photos, Source, Tile, TOGGLE_COMMAND};
 
 const API: &str = "https://api.fotoshi.com/v1";
 /// Photos per search: anonymous callers get at most 20 a page.
@@ -210,7 +210,8 @@ impl Source for Fotoshi {
 }
 
 /// The settings panel: the optional API key, and the feature lookup.
-fn show_settings_panel() {
+/// Its section of Settings > Extensions.
+fn settings_panel() -> Panel {
     let has_key = api_key().is_some();
     let mut key_buttons = vec![button(
         "save",
@@ -234,38 +235,32 @@ fn show_settings_panel() {
         ButtonStyle::Secondary,
     );
     lookup.enabled = has_key;
-    osm::show_panel(
-        SETTINGS_PANEL,
-        Some(&Panel {
-            title: osm::t("settings.title"),
-            elements: vec![
-                Element::Text(osm::t("settings.explain")),
-                Element::Link((osm::t("settings.find"), "https://fotoshi.com".into())),
-                Element::Input(TextInput {
-                    id: "key".into(),
-                    label: osm::t("settings.label"),
-                    placeholder: osm::t(if has_key {
-                        "settings.placeholder_replace"
-                    } else {
-                        "settings.placeholder"
-                    }),
-                    value: String::new(),
-                    secret: true,
-                }),
-                Element::Buttons(key_buttons),
-                Element::Divider,
-                Element::Muted(osm::t(if lookup_on() {
-                    "settings.lookup_is_on"
+    Panel {
+        title: osm::t("settings.title"),
+        elements: vec![
+            Element::Text(osm::t("settings.explain")),
+            Element::Link((osm::t("settings.find"), "https://fotoshi.com".into())),
+            Element::Input(TextInput {
+                id: "key".into(),
+                label: osm::t("settings.label"),
+                placeholder: osm::t(if has_key {
+                    "settings.placeholder_replace"
                 } else {
-                    "settings.lookup_is_off"
-                })),
-                Element::Buttons(vec![
-                    lookup,
-                    button("close", &osm::t("settings.close"), ButtonStyle::Ghost),
-                ]),
-            ],
-        }),
-    );
+                    "settings.placeholder"
+                }),
+                value: String::new(),
+                secret: true,
+            }),
+            Element::Buttons(key_buttons),
+            Element::Divider,
+            Element::Muted(osm::t(if lookup_on() {
+                "settings.lookup_is_on"
+            } else {
+                "settings.lookup_is_off"
+            })),
+            Element::Buttons(vec![lookup]),
+        ],
+    }
 }
 
 struct FotoshiExtension {
@@ -379,16 +374,11 @@ impl Extension for FotoshiExtension {
 
     fn run_command(&mut self, id: &str) -> osm::Result<()> {
         match id {
-            "show-photos" => self.photos.show(),
-            "hide-photos" => {
+            TOGGLE_COMMAND if self.photos.shown() => {
                 self.photos.hide();
                 Ok(())
             }
-            "refresh-photos" => self.photos.refresh(),
-            "settings" => {
-                show_settings_panel();
-                Ok(())
-            }
+            TOGGLE_COMMAND => self.photos.show(),
             other => Err(format!("unknown command {other}")),
         }
     }
@@ -415,7 +405,6 @@ impl Extension for FotoshiExtension {
                     self.photos.unblock();
                     self.photos.refresh()?;
                 }
-                show_settings_panel();
             }
             (SETTINGS_PANEL, "forget") => {
                 osm::secret_set(KEY, None);
@@ -423,7 +412,6 @@ impl Extension for FotoshiExtension {
                 osm::set_status(&osm::t("settings.forgotten"));
                 self.close_feature_panel();
                 self.photos.refresh()?;
-                show_settings_panel();
             }
             (SETTINGS_PANEL, "lookup") => {
                 if lookup_on() {
@@ -433,9 +421,7 @@ impl Extension for FotoshiExtension {
                     osm::storage_set(LOOKUP, Some("1"));
                     self.update_feature()?;
                 }
-                show_settings_panel();
             }
-            (SETTINGS_PANEL, _) => osm::show_panel(SETTINGS_PANEL, None),
             (FEATURE_PANEL, b) => {
                 let photo = b
                     .strip_prefix("photo-")
@@ -448,6 +434,10 @@ impl Extension for FotoshiExtension {
             _ => {}
         }
         Ok(())
+    }
+
+    fn settings(&mut self) -> Option<Panel> {
+        Some(settings_panel())
     }
 
     fn panel_closed(&mut self, panel: &str) {

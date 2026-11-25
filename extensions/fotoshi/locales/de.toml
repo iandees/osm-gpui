@@ -2,16 +2,13 @@ name = "Fotoshi"
 description = "Straßenfotos von Fotoshi auf der Karte, mit dem Foto und seinen Angaben in der Seitenleiste; mit einem API-Schlüssel auch die Fotos des ausgewählten Objekts."
 
 [commands]
-show-photos = "Fotos anzeigen"
-hide-photos = "Fotos ausblenden"
-refresh-photos = "Fotos aktualisieren"
-settings = "API-Schlüssel und Abfrage…"
+photos = "Fotoshi-Fotos"
 
 [photos]
 zoom_in = "Zum Anzeigen der Fotoshi-Fotos hineinzoomen"
 loaded_one = "Fotoshi: 1 Foto"
 loaded = "Fotoshi: %{count} Fotos"
-unauthorized = "Fotoshi hat den API-Schlüssel abgelehnt; prüfe ihn unter Erweiterungen > Fotoshi > API-Schlüssel und Abfrage…"
+unauthorized = "Fotoshi hat den API-Schlüssel abgelehnt; prüfe ihn unter Einstellungen > Erweiterungen > Fotoshi"
 rate_limited = "Anfragelimit von Fotoshi erreicht; versuche es später erneut"
 failed = "Fotoshi-Fotos konnten nicht geladen werden: %{detail}"
 
@@ -44,4 +41,3 @@ lookup_is_on = "Die Abfrage der Fotos des ausgewählten Objekts ist an. Fotoshi 
 lookup_is_off = "Die Abfrage der Fotos des ausgewählten Objekts ist aus. Ist sie an, wird Fotoshi zu jedem ausgewählten Objekt gefragt (braucht den API-Schlüssel)."
 lookup_on = "Abfrage einschalten"
 lookup_off = "Abfrage ausschalten"
-close = "Schließen"

@@ -1,6 +1,6 @@
 //! `extension.toml`: who an extension is, what it may reach, and the menu
 //! commands it offers. Read before the extension's code is loaded, so the
-//! Extensions menu can be built without running it.
+//! menus can be built without running it.
 
 use serde::{Deserialize, Serialize};
 
@@ -41,11 +41,37 @@ pub struct Capabilities {
     pub secrets: bool,
 }
 
-/// One entry of the Extensions menu.
+/// One menu command an extension adds.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct CommandDef {
     pub id: String,
     pub label: String,
+    /// Where it goes: one of [`MENU_LOCATIONS`]. Tools when not given.
+    #[serde(default)]
+    pub menu: Option<String>,
+    /// Drawn with a checkmark, which the extension sets with
+    /// `set-command-checked`.
+    #[serde(default)]
+    pub toggle: bool,
+}
+
+/// The places in the menus an extension's commands can go, each next to the
+/// app's own items of the same kind:
+///
+/// - `overlays`: View, with Show Notes and To-do List. Things drawn over the
+///   map (photos, tasks).
+/// - `imagery`: Imagery, with the ways to add imagery layers.
+/// - `data`: File, with Download from OSM and Download GPS Traces. Ways to
+///   load data layers.
+/// - `tools`: Tools, with the selection actions. The default.
+/// - `help`: Help.
+pub const MENU_LOCATIONS: &[&str] = &["overlays", "imagery", "data", "tools", "help"];
+
+impl CommandDef {
+    /// Where the command goes.
+    pub fn location(&self) -> &str {
+        self.menu.as_deref().unwrap_or("tools")
+    }
 }
 
 impl Manifest {
@@ -69,6 +95,14 @@ impl Manifest {
         for c in &m.commands {
             if !valid_id(&c.id) {
                 return Err(format!("command id {:?} is not valid", c.id));
+            }
+            if !MENU_LOCATIONS.contains(&c.location()) {
+                return Err(format!(
+                    "command {:?}: unknown menu {:?} (known: {})",
+                    c.id,
+                    c.location(),
+                    MENU_LOCATIONS.join(", ")
+                ));
             }
         }
         for event in &m.subscribe {
@@ -189,6 +223,27 @@ label = "Show Tasks Here"
             1,
         );
         assert!(Manifest::parse(&bad).is_err());
+    }
+
+    #[test]
+    fn commands_go_to_known_menu_locations() {
+        let m = Manifest::parse(TOML).unwrap();
+        assert_eq!(m.commands[0].location(), "tools", "the default");
+        assert!(!m.commands[0].toggle);
+        let overlay = TOML.replacen(
+            "label = \"Show Tasks Here\"",
+            "label = \"Show Tasks Here\"\nmenu = \"overlays\"\ntoggle = true",
+            1,
+        );
+        let m = Manifest::parse(&overlay).unwrap();
+        assert_eq!(m.commands[0].location(), "overlays");
+        assert!(m.commands[0].toggle);
+        let bad = TOML.replacen(
+            "label = \"Show Tasks Here\"",
+            "label = \"Show Tasks Here\"\nmenu = \"window\"",
+            1,
+        );
+        assert!(Manifest::parse(&bad).unwrap_err().contains("unknown menu"));
     }
 
     #[test]

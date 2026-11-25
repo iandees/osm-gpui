@@ -1,4 +1,4 @@
-# Extensions > Manage Extensions…: install MapRoulette from the extension
+# Settings > Extensions: install MapRoulette from the extension
 # index, then use it. Run with an empty extensions folder and an index (built
 # by build-extension-index with --base-url https://ext.example.test/) served
 # from fixtures:
@@ -16,7 +16,8 @@ load_osm docs/screenshots/fixtures/areas.osm
 viewport 40.714147 -74.006000 17
 wait_idle 5s
 
-# Nothing installed: the manager opens on Available.
+# Nothing installed: the page opens on Available. (ManageExtensions opens
+# Settings on its Extensions page.)
 action ManageExtensions
 wait_idle 3s
 capture out/extensions-01-available.png
@@ -31,17 +32,17 @@ click 819,482
 wait_idle 5s
 capture out/extensions-03-installed-from-available.png
 
-# Reopened, the manager shows what is installed.
+# Reopened, the page shows what is installed.
 key escape
 wait_idle 1s
 action ManageExtensions
 wait_idle 2s
 capture out/extensions-04-installed.png
 
-# It runs: its menu command works straight away.
+# It runs: View > MapRoulette Tasks works straight away.
 key escape
 wait_idle 1s
-action RunExtensionCommand {"extension":"maproulette","command":"show-tasks"}
+action RunExtensionCommand {"extension":"maproulette","command":"tasks"}
 wait_idle 3s
 capture out/extensions-05-running.png
 

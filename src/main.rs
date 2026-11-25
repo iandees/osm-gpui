@@ -3345,7 +3345,6 @@ impl MapViewer {
             open_modal(&self.dialogs.find_dialog, cx),
             open_modal(&self.dialogs.about_dialog, cx),
             open_modal(&self.dialogs.settings, cx),
-            open_modal(&self.extensions.dialog, cx),
             open_modal(&self.dialogs.nsi_dialog, cx),
             open_modal(&self.dialogs.preset_picker_dialog, cx),
             open_modal(&self.dialogs.opening_hours_dialog, cx),
@@ -5182,9 +5181,14 @@ impl MapViewer {
             return;
         }
         let view = cx.new(|cx| SettingsWindow::new(page, window, cx));
+        let extensions = self.new_extensions_page(window, cx);
+        view.update(cx, |s, cx| s.set_extensions_page(extensions, cx));
         cx.subscribe(&view, |this, _entity, event: &SettingsEvent, cx| {
             match event {
-                SettingsEvent::Closed => this.dialogs.settings = None,
+                SettingsEvent::Closed => {
+                    this.dialogs.settings = None;
+                    this.extensions_page_closed();
+                }
                 SettingsEvent::KeybindingsChanged => {
                     cx.defer(crate::menu::apply_keybindings_change);
                 }

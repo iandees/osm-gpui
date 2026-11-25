@@ -20,6 +20,7 @@ use crate::http::{Body, HttpClient, HttpRequest, Method};
 
 /// Older API versions, adapted to the current one.
 mod v0_1;
+mod v0_2;
 
 mod bindings {
     wasmtime::component::bindgen!({
@@ -83,6 +84,11 @@ pub enum Effect {
     ShowPanel {
         id: String,
         panel: Option<Panel>,
+    },
+    /// Check or uncheck the menu command `command`.
+    CommandChecked {
+        command: String,
+        checked: bool,
     },
 }
 
@@ -410,6 +416,11 @@ impl host::Host for HostState {
         self.storage.set(key, value);
     }
 
+    fn set_command_checked(&mut self, command: String, checked: bool) {
+        self.effects
+            .push(Effect::CommandChecked { command, checked });
+    }
+
     fn log(&mut self, message: String) {
         eprintln!("[ext {}] {message}", self.manifest.id);
     }
@@ -417,11 +428,11 @@ impl host::Host for HostState {
 
 /// The current extension API version: the WIT package version of
 /// `crates/osm-gpui-extension-api/wit`, which the SDK builds against.
-pub const API_VERSION: &str = "0.2.0";
+pub const API_VERSION: &str = "0.3.0";
 
 /// Every API version this app runs extensions for, oldest first. Each older
-/// one has a module here (`v0_1`) that adapts it to the current host.
-pub const SUPPORTED_API_VERSIONS: &[&str] = &["0.1.0", API_VERSION];
+/// one has a module here (`v0_1`, `v0_2`) that adapts it to the current host.
+pub const SUPPORTED_API_VERSIONS: &[&str] = &["0.1.0", "0.2.0", API_VERSION];
 
 /// The extension API version `wasm` was built against, read from its import
 /// of `osm-gpui:extension/host@<version>`. `Err` when it is not a component
@@ -457,6 +468,7 @@ fn engine() -> &'static Engine {
 /// built against.
 enum Guest {
     Current(bindings::Extension),
+    V0_2(v0_2::Extension),
     V0_1(v0_1::Extension),
 }
 
@@ -466,6 +478,7 @@ macro_rules! dispatch {
     ($guest:expr, $store:expr, $f:ident($($args:expr),*)) => {
         match $guest {
             Guest::Current(b) => b.$f($store $(, $args)*),
+            Guest::V0_2(b) => b.$f($store $(, $args)*),
             Guest::V0_1(b) => b.$f($store $(, $args)*),
         }
     };
@@ -542,6 +555,8 @@ impl LoadedExtension {
         // versioned interface, so a guest links to the one it was built for.
         bindings::Extension::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)
             .map_err(|e| e.to_string())?;
+        v0_2::Extension::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)
+            .map_err(|e| e.to_string())?;
         v0_1::Extension::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)
             .map_err(|e| e.to_string())?;
         let version =
@@ -565,6 +580,9 @@ impl LoadedExtension {
             v if v == API_VERSION => Guest::Current(
                 bindings::Extension::instantiate(&mut store, &component, &linker)
                     .map_err(failed)?,
+            ),
+            "0.2.0" => Guest::V0_2(
+                v0_2::Extension::instantiate(&mut store, &component, &linker).map_err(failed)?,
             ),
             "0.1.0" => Guest::V0_1(
                 v0_1::Extension::instantiate(&mut store, &component, &linker).map_err(failed)?,
@@ -642,6 +660,7 @@ impl LoadedExtension {
     pub fn viewport_changed(&self, context: CallContext) -> Outcome<()> {
         self.call(context, |g, s| match g {
             Guest::Current(b) => b.call_viewport_changed(s),
+            Guest::V0_2(b) => b.call_viewport_changed(s),
             Guest::V0_1(_) => Ok(Ok(())),
         })
     }
@@ -650,7 +669,17 @@ impl LoadedExtension {
     pub fn selection_changed(&self, context: CallContext) -> Outcome<()> {
         self.call(context, |g, s| match g {
             Guest::Current(b) => b.call_selection_changed(s),
+            Guest::V0_2(b) => b.call_selection_changed(s),
             Guest::V0_1(_) => Ok(Ok(())),
+        })
+    }
+
+    /// The extension's section of Settings; `None` for one with nothing to
+    /// configure, and for one built before the API had `settings` (0.1, 0.2).
+    pub fn settings(&self, context: CallContext) -> Outcome<Option<Panel>> {
+        self.call(context, |g, s| match g {
+            Guest::Current(b) => b.call_settings(s).map(Ok),
+            Guest::V0_2(_) | Guest::V0_1(_) => Ok(Ok(None)),
         })
     }
 

@@ -186,15 +186,18 @@ pub enum SettingsPage {
     /// Custom imagery sources, the street-imagery tokens and the tile cache.
     Imagery,
     Shortcuts,
+    /// Installed and available extensions, and each one's own settings.
+    Extensions,
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 5] = [
+    pub const ALL: [SettingsPage; 6] = [
         Self::Account,
         Self::Appearance,
         Self::Editing,
         Self::Imagery,
         Self::Shortcuts,
+        Self::Extensions,
     ];
 
     /// Position of this page in the window's page list.
@@ -212,6 +215,7 @@ impl SettingsPage {
             Self::Editing => "settings.editing.title",
             Self::Imagery => "settings.imagery.title",
             Self::Shortcuts => "settings.shortcuts.title",
+            Self::Extensions => "settings.extensions.title",
         }
     }
 
@@ -252,6 +256,8 @@ impl PageSelection {
 }
 
 pub struct SettingsWindow {
+    /// The Extensions page's content, from the app.
+    extensions: Option<Entity<crate::ui::extensions_page::ExtensionsPage>>,
     /// Used for sign-in and for fetching a custom map style; the window is
     /// opened from a global action, so it takes the installed default client.
     http: Arc<dyn crate::http::HttpClient>,
@@ -329,6 +335,7 @@ impl SettingsWindow {
         window.focus(&focus_handle, cx);
 
         Self {
+            extensions: None,
             http: crate::http::default_client(),
             page: PageSelection::new(start_page),
             focus_handle,
@@ -853,6 +860,7 @@ impl SettingsWindow {
                 SettingsPage::Editing => self.editing_page(view.clone()),
                 SettingsPage::Imagery => self.imagery_page(view.clone()),
                 SettingsPage::Shortcuts => self.shortcuts_page(view.clone()),
+                SettingsPage::Extensions => self.extensions_page(),
             })
             .collect()
     }
@@ -1418,6 +1426,28 @@ impl SettingsWindow {
         SettingGroup::new()
             .title(tr!("settings.cache.group"))
             .items(items)
+    }
+
+    /// The extension manager, which the app owns and gives the window
+    /// ([`SettingsWindow::set_extensions_page`]).
+    fn extensions_page(&self) -> SettingPage {
+        let page = self.extensions.clone();
+        SettingPage::new(SettingsPage::Extensions.title()).group(SettingGroup::new().item(
+            SettingItem::render(move |_options, _window, _cx| match &page {
+                Some(page) => div().w_full().child(page.clone()).into_any_element(),
+                None => div().into_any_element(),
+            }),
+        ))
+    }
+
+    /// Show `page` on the Extensions page.
+    pub fn set_extensions_page(
+        &mut self,
+        page: Entity<crate::ui::extensions_page::ExtensionsPage>,
+        cx: &mut Context<Self>,
+    ) {
+        self.extensions = Some(page);
+        cx.notify();
     }
 
     fn shortcuts_page(&self, view: Entity<Self>) -> SettingPage {

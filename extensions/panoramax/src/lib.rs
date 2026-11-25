@@ -9,7 +9,7 @@
 
 use osm_gpui_extension_api::{self as osm, Extension, HttpRequest};
 use serde_json::Value;
-use street_photos::{mvt, Photo, Photos, Source, Tile};
+use street_photos::{mvt, Photo, Photos, Source, Tile, TOGGLE_COMMAND};
 
 const API: &str = "https://api.panoramax.xyz";
 
@@ -163,12 +163,11 @@ impl Extension for PanoramaxExtension {
 
     fn run_command(&mut self, id: &str) -> osm::Result<()> {
         match id {
-            "show-photos" => self.photos.show(),
-            "hide-photos" => {
+            TOGGLE_COMMAND if self.photos.shown() => {
                 self.photos.hide();
                 Ok(())
             }
-            "refresh-photos" => self.photos.refresh(),
+            TOGGLE_COMMAND => self.photos.show(),
             other => Err(format!("unknown command {other}")),
         }
     }

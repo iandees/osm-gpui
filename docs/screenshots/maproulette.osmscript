@@ -16,9 +16,9 @@ viewport 40.714147 -74.006000 17
 # Extensions load (compile) in the background after the first frame.
 wait_idle 5s
 
-# Extensions > MapRoulette > Show Tasks Here: the tasks in view as pins,
+# View > MapRoulette Tasks: the tasks in view as pins,
 # coloured by status.
-action RunExtensionCommand {"extension":"maproulette","command":"show-tasks"}
+action RunExtensionCommand {"extension":"maproulette","command":"tasks"}
 wait_idle 3s
 capture out/maproulette-01-tasks.png
 
@@ -28,15 +28,12 @@ click 488,388
 wait_idle 3s
 capture out/maproulette-02-task.png
 
-# Extensions > MapRoulette > API Key… opens a second panel beside the task.
-action RunExtensionCommand {"extension":"maproulette","command":"settings"}
+# Its API key is set in Settings > Extensions > MapRoulette.
+action ManageExtensions
 wait_idle 2s
-capture out/maproulette-03-two-panels.png
-
-# Each panel collapses on its own: fold the task to see the key panel.
-click 960,171
+capture out/maproulette-03-settings.png
+key escape
 wait_idle 1s
-capture out/maproulette-04-task-collapsed.png
 
 # Selecting a building (by its outline): its fields and tags come first,
 # the extension's panels stay below them.

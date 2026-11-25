@@ -639,47 +639,32 @@ pub(crate) fn in_window_menu_bar(cx: &App) -> Option<gpui::Entity<AppMenuBar>> {
 /// off macOS, and the rest moves to where Windows and Linux users look for it:
 /// Quit at the end of File, Settings at the end of Edit, About at the end of
 /// Help.
-/// The Extensions menu: a submenu per running extension with its commands,
-/// then Manage Extensions… and Install Dev Extension….
-fn extension_items() -> Vec<MenuItem> {
-    use crate::extensions_manage::{InstallDevExtension, ManageExtensions};
+/// The running extensions' commands for menu location `location` (see
+/// `osm_gpui::extensions::manifest::MENU_LOCATIONS`), with a separator
+/// before them when there are any.
+fn extension_commands(location: &str) -> Vec<MenuItem> {
     use crate::extensions_ui::RunExtensionCommand;
     let locale = osm_gpui::i18n::current_locale();
-    let mut items: Vec<MenuItem> = crate::extensions_ui::menu_snapshot()
-        .into_iter()
-        .filter(|ext| !ext.commands.is_empty())
-        .map(|ext| {
-            let sub: Vec<MenuItem> = ext
-                .commands
-                .iter()
-                .map(|c| {
-                    MenuItem::action(
-                        ext.command_label(c, &locale),
-                        RunExtensionCommand {
-                            extension: ext.id.clone(),
-                            command: c.id.clone(),
-                        },
-                    )
-                })
-                .collect();
-            MenuItem::submenu(Menu {
-                name: ext.name_in(&locale).into(),
-                items: sub,
-                disabled: false,
-            })
-        })
-        .collect();
-    if !items.is_empty() {
-        items.push(MenuItem::separator());
+    let mut items = Vec::new();
+    for ext in crate::extensions_ui::menu_snapshot() {
+        for c in ext.commands.iter().filter(|c| c.location() == location) {
+            let item = MenuItem::action(
+                ext.command_label(c, &locale),
+                RunExtensionCommand {
+                    extension: ext.id.clone(),
+                    command: c.id.clone(),
+                },
+            );
+            items.push(if c.toggle {
+                item.checked(ext.checked.contains(&c.id))
+            } else {
+                item
+            });
+        }
     }
-    items.push(MenuItem::action(
-        tr!("menu.extensions.manage"),
-        ManageExtensions,
-    ));
-    items.push(MenuItem::action(
-        tr!("menu.extensions.install_dev"),
-        InstallDevExtension,
-    ));
+    if !items.is_empty() {
+        items.insert(0, MenuItem::separator());
+    }
     items
 }
 
@@ -695,6 +680,7 @@ fn build_menus(
         MenuItem::action(tr!("menu.imagery.esri_add"), AddEsriImagery),
         MenuItem::action(tr!("menu.imagery.pmtiles_add"), AddPmtilesLayer),
     ];
+    custom_items.extend(extension_commands("imagery"));
     if !custom.is_empty() {
         custom_items.push(MenuItem::separator());
         for (idx, entry) in custom.iter().enumerate() {
@@ -772,12 +758,16 @@ fn build_menus(
         MenuItem::separator(),
         MenuItem::action(tr!("menu.file.download"), DownloadFromOsm),
         MenuItem::action(tr!("gps_traces.menu.download"), DownloadGpsTraces),
+    ];
+    file_items.extend(extension_commands("data"));
+    file_items.extend([
+        MenuItem::separator(),
         MenuItem::action(
             tr!("menu.file.revert_changeset"),
             RevertChangeset::default(),
         ),
         MenuItem::action(tr!("menu.file.upload"), UploadToOsm).disabled(!toggles.can_upload),
-    ];
+    ]);
     let mut edit_tail = vec![];
     let mut help_items = vec![
         MenuItem::action(tr!("menu.help.map_features_wiki"), OpenMapFeaturesWiki),
@@ -786,6 +776,7 @@ fn build_menus(
             OpenProjectPage,
         ),
     ];
+    help_items.extend(extension_commands("help"));
     // Minimize and Zoom work on every platform (GPUI implements both for
     // macOS, Windows and Linux/X11/Wayland), so the Window menu stays.
     let window_items = vec![
@@ -870,6 +861,7 @@ fn build_menus(
                     MenuItem::separator(),
                     MenuItem::action(tr!("notes.menu.new"), NewNote),
                 ])
+                .chain(extension_commands("tools"))
                 .collect(),
             disabled: false,
         },
@@ -888,7 +880,7 @@ fn build_menus(
         },
         Menu {
             name: tr!("menu.view.title"),
-            items: vec![
+            items: [
                 MenuItem::action(tr!("menu.view.zoom_in"), ZoomIn),
                 MenuItem::action(tr!("menu.view.zoom_out"), ZoomOut),
                 MenuItem::separator(),
@@ -901,6 +893,11 @@ fn build_menus(
                 MenuItem::action(tr!("todo.menu.show"), crate::todo_ui::ToggleTodoList)
                     .checked(toggles.show_todo),
                 MenuItem::action(tr!("notes.menu.refresh"), RefreshNotes),
+            ]
+            .into_iter()
+            // Overlays extensions draw over the map, with the app's own.
+            .chain(extension_commands("overlays"))
+            .chain([
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.view.show_labels"), ToggleLabels)
                     .checked(toggles.labels.labels),
@@ -912,12 +909,8 @@ fn build_menus(
                     .checked(toggles.labels.area_labels),
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.view.toggle_debug_overlay"), ToggleDebugOverlay),
-            ],
-            disabled: false,
-        },
-        Menu {
-            name: tr!("menu.extensions.title"),
-            items: extension_items(),
+            ])
+            .collect(),
             disabled: false,
         },
         Menu {
@@ -1446,7 +1439,7 @@ mod tests {
     fn menus_convert_to_owned_with_every_top_level_menu_and_the_file_items() {
         let menus = menus_for(true);
         let names: Vec<String> = menus.iter().map(|m| m.name.to_string()).collect();
-        assert_eq!(names.len(), 10, "{names:?}");
+        assert_eq!(names.len(), 9, "{names:?}");
         assert_eq!(names[0], APP_NAME);
         let file = menus
             .iter()

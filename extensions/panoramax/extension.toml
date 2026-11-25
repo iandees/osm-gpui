@@ -1,6 +1,6 @@
 id = "panoramax"
 name = "Panoramax"
-version = "0.1.0"
+version = "0.2.0"
 schema_version = 1
 authors = ["Ian Dees"]
 description = "Street-level photos from Panoramax on the map, with the photo and its details in the side panel."
@@ -43,13 +43,7 @@ http = [
 ]
 
 [[commands]]
-id = "show-photos"
-label = "Show Photos"
-
-[[commands]]
-id = "hide-photos"
-label = "Hide Photos"
-
-[[commands]]
-id = "refresh-photos"
-label = "Refresh Photos"
+id = "photos"
+label = "Panoramax Photos"
+menu = "overlays"
+toggle = true
