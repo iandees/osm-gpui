@@ -7,6 +7,29 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.15.0
+
+### Extensions
+
+- Extensions: sandboxed WebAssembly add-ons with their own menu commands, map markers and side-panel sections. Extensions > Manage Extensions… installs, updates, turns off and uninstalls them from the extension index, and Install Dev Extension… builds one from a folder. ([#370](https://github.com/iandees/osm-gpui/pull/370))
+- A MapRoulette extension shows tasks on the map with their instructions, loads their data and marks them done. ([#370](https://github.com/iandees/osm-gpui/pull/370))
+- Mapillary, Fotoshi and Panoramax photos are now extensions instead of being built in: install them from Extensions > Manage Extensions…. A saved Mapillary token or Fotoshi API key has to be entered again in the extension. ([#372](https://github.com/iandees/osm-gpui/pull/372))
+- Extensions built against an older extension API keep working, and the guide for writing extensions is in docs/extensions.md. ([#370](https://github.com/iandees/osm-gpui/pull/370)), ([#372](https://github.com/iandees/osm-gpui/pull/372))
+
+### Editing
+
+- A to-do list: add selected features, then visit them one at a time and mark them done. ([#371](https://github.com/iandees/osm-gpui/pull/371))
+- Scale Selection (`D`) resizes the selection about its centre, and Rotate (`W`) and Scale also work while their key is held. ([#361](https://github.com/iandees/osm-gpui/pull/361))
+- The Lanes editor handles per-lane access tags, shared centre lanes, contraflow cycling, parking lanes and left-hand traffic, and lanes can be reordered and their tags copied between roads. ([#362](https://github.com/iandees/osm-gpui/pull/362))
+- Replace Geometry gives one way the shape of another while keeping its id, tags and history. ([#366](https://github.com/iandees/osm-gpui/pull/366))
+- Join unites two overlapping closed ways into one outline. ([#365](https://github.com/iandees/osm-gpui/pull/365))
+- In Building mode, dragging draws the first side with a live preview instead of box-selecting. ([#363](https://github.com/iandees/osm-gpui/pull/363))
+- Improve Way mode previews the other ways that share a node it would move or delete. ([#364](https://github.com/iandees/osm-gpui/pull/364))
+
+### Fixes
+
+- Moving or deleting ways could crash the app (for example, Rotate on a selected way). ([#368](https://github.com/iandees/osm-gpui/pull/368))
+
 ## 0.14.0
 
 ### Editing
