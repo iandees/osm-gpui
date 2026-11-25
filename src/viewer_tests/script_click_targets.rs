@@ -290,6 +290,7 @@ fn more_actions_script_targets_hit_their_features_and_actions_apply() {
             active_layer: Some(LayerId(1)),
             layers,
             clipboards: &clipboards,
+            todo: &osm_gpui::todo::EMPTY,
         };
         assert!((action.is_applicable)(&env), "{id} not offered");
         action

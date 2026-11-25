@@ -454,6 +454,8 @@ pub(crate) fn rebuild_menus_for_live_viewer(cx: &mut App) {
 pub(crate) struct MenuToggles {
     pub(crate) show_downloaded_area: bool,
     pub(crate) show_notes: bool,
+    /// View > To-do List.
+    pub(crate) show_todo: bool,
     /// The View > Show Labels / POI Icons / Street Names / Area Labels checks.
     pub(crate) labels: osm_gpui::layers::labels::LabelVisibility,
     /// Indexed by `Provider::index`.
@@ -467,6 +469,7 @@ impl Default for MenuToggles {
         Self {
             show_downloaded_area: true,
             show_notes: false,
+            show_todo: false,
             labels: Default::default(),
             show_imagery: [false; 3],
             can_upload: false,
@@ -1005,6 +1008,8 @@ fn build_menus(
                 MenuItem::action(tr!("menu.view.show_downloaded_area"), ToggleDownloadedArea)
                     .checked(toggles.show_downloaded_area),
                 MenuItem::action(tr!("notes.menu.show"), ToggleNotes).checked(toggles.show_notes),
+                MenuItem::action(tr!("todo.menu.show"), crate::todo_ui::ToggleTodoList)
+                    .checked(toggles.show_todo),
                 MenuItem::action(tr!("notes.menu.refresh"), RefreshNotes),
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.view.show_labels"), ToggleLabels)
@@ -1218,6 +1223,7 @@ mod tests {
     fn the_view_menu_checkmarks_come_from_the_toggles_passed_in() {
         let on = view_checks(MenuToggles {
             show_notes: true,
+            show_todo: false,
             show_imagery: [false, true, false],
             ..MenuToggles::default()
         });

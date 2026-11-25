@@ -3,7 +3,7 @@
 //! that, and check the one upload guard in `run_selection_action`.
 
 use crate::clipboard_actions::ClipboardOp;
-use crate::selection_actions::{in_menu, Dialog, Interactive, MenuSlot, Run, ACTIONS};
+use crate::selection_actions::{in_menu, Dialog, Interactive, MenuSlot, Run, TodoOp, ACTIONS};
 use crate::test_support::{with_session, Build, W};
 use gpui::TestAppContext;
 use osm_gpui::transfer::{TransferHandle, TransferKind, TransferPhase};
@@ -24,6 +24,8 @@ fn every_action_has_the_run_kind_its_id_implies() {
             "parallel" => Some(Run::Dialog(Dialog::ParallelOffset)),
             "rotate" => Some(Run::Interactive(Interactive::Rotate)),
             "scale" => Some(Run::Interactive(Interactive::Scale)),
+            "todo_add" => Some(Run::Todo(TodoOp::Add)),
+            "todo_done" => Some(Run::Todo(TodoOp::Done)),
             _ => None,
         };
         match (action.run, expected) {
@@ -38,6 +40,7 @@ fn every_action_has_the_run_kind_its_id_implies() {
             (Run::Clipboard(a), Some(Run::Clipboard(b))) => assert_eq!(a, b, "{}", action.id),
             (Run::Dialog(a), Some(Run::Dialog(b))) => assert_eq!(a, b, "{}", action.id),
             (Run::Interactive(a), Some(Run::Interactive(b))) => assert_eq!(a, b, "{}", action.id),
+            (Run::Todo(a), Some(Run::Todo(b))) => assert_eq!(a, b, "{}", action.id),
             _ => panic!("{} has the wrong kind of Run", action.id),
         }
     }
@@ -55,13 +58,13 @@ fn action_ids_are_unique() {
 }
 
 #[test]
-fn only_copy_is_allowed_during_an_upload() {
+fn only_copy_and_the_to_do_actions_are_allowed_during_an_upload() {
     let readers: Vec<_> = ACTIONS
         .iter()
         .filter(|a| !a.run.edits())
         .map(|a| a.id)
         .collect();
-    assert_eq!(readers, ["copy_features"]);
+    assert_eq!(readers, ["copy_features", "todo_add", "todo_done"]);
 }
 
 #[test]
@@ -191,6 +194,7 @@ mod paste_applicability {
                 active_layer: Some(layer_id),
                 layers: &layers,
                 clipboards,
+                todo: &osm_gpui::todo::EMPTY,
             };
             let tags = applicable("paste_tags", &env);
             let features = applicable("paste_features", &env);

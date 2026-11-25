@@ -27,6 +27,9 @@ const NOT_STEPS: &[&str] = &[
     "parallel",
     "rotate",
     "scale",
+    // Change only the to-do list, which has no undo.
+    "todo_add",
+    "todo_done",
 ];
 
 fn point(id: i64, lat: f64, lon: f64) -> (i64, f64, f64) {

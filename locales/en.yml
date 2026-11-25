@@ -931,6 +931,12 @@ action:
       relation_in_relation: "Can't delete relation %{relation}: it is a member of relation %{parent}"
       relation_empty: "Can't delete %{what} %{id}: it is the only member of relation %{relation}"
       restriction_role: "Can't delete %{what} %{id}: turn restriction %{relation} would be left without a '%{role}' member"
+  todo_add:
+    label: "Add to To-do List"
+    hint: "Select features that aren't on the to-do list yet"
+  todo_done:
+    label: "Mark To-do Done"
+    hint: "Select a feature that is on the to-do list"
   purge:
     label: "Purge"
     hint: "Select something to purge from the layer"
@@ -1682,3 +1688,27 @@ extensions:
   panel:
     working: "Working…"
     close: "Close"
+todo:
+  title: "To-do"
+  menu:
+    show: "To-do List"
+  count:
+    one: "%{count} left"
+    other: "%{count} left"
+  empty: "Nothing to do. Select features and choose Add to To-do List."
+  add_selected: "Add the selected features"
+  done_next: "Done & Next"
+  done: "Done"
+  close: "Hide the to-do list (View > To-do List brings it back)"
+  row:
+    gone: "%{kind} %{id} (no longer in the data)"
+  status:
+    added:
+      one: "Added %{count} feature to the to-do list (%{total} in all)"
+      other: "Added %{count} features to the to-do list (%{total} in all)"
+    already: "Already on the to-do list"
+    left:
+      one: "%{count} to-do left"
+      other: "%{count} to-dos left"
+    all_done: "To-do list done"
+    gone: "That feature is no longer in the data; mark it done to remove it"
