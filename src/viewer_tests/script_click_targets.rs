@@ -15,7 +15,7 @@ use std::sync::Arc;
 fn screenshot_script_click_targets_hit_their_features() {
     let xml = std::fs::read_to_string("docs/screenshots/fixtures/selection-actions.osm")
         .expect("fixture");
-    let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+    let data = osm_gpui::osm::OsmParser::parse_str(&xml).unwrap();
     let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
     // The map area of a 1200x800 window, centred as the script does.
     let viewport = Viewport::new(
@@ -42,7 +42,7 @@ fn topology_script_targets_hit_their_features() {
     use osm_gpui::selection::FeatureKind::{Node, Way};
     let xml =
         std::fs::read_to_string("docs/screenshots/fixtures/topology-actions.osm").expect("fixture");
-    let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+    let data = osm_gpui::osm::OsmParser::parse_str(&xml).unwrap();
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
     // The script selects the open path before clicking its first node:
     // plain vertices are drawn (and clickable) only on a selected way.
@@ -96,7 +96,7 @@ fn relation_editor_script_targets_and_fixture() {
 
     let xml =
         std::fs::read_to_string("docs/screenshots/fixtures/relation-editor.osm").expect("fixture");
-    let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+    let data = osm_gpui::osm::OsmParser::parse_str(&xml).unwrap();
     let layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
     let viewport = Viewport::new(
         LatLon::new(40.7120, -74.0060),
@@ -136,7 +136,7 @@ fn relations_script_targets_hit_their_features_and_the_split_keeps_the_route() {
     use osm_gpui::selection::{resolve_hits, FeatureRef};
 
     let xml = std::fs::read_to_string("docs/screenshots/fixtures/relations.osm").expect("fixture");
-    let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+    let data = osm_gpui::osm::OsmParser::parse_str(&xml).unwrap();
     let mut layers = osm_gpui::layers::LayerManager::new();
     let mut layer = OsmLayer::new_with_data(LayerId(1), "L".to_string(), Arc::new(data));
     // The script selects the middle route way before clicking its middle
@@ -242,7 +242,7 @@ fn more_actions_script_targets_hit_their_features_and_actions_apply() {
 
     let xml = std::fs::read_to_string("docs/screenshots/fixtures/more-selection-actions.osm")
         .expect("fixture");
-    let data = osm_gpui::osm::OsmParser::new().parse_str(&xml).unwrap();
+    let data = osm_gpui::osm::OsmParser::parse_str(&xml).unwrap();
     let mut layers = osm_gpui::layers::LayerManager::new();
     layers.add_layer(Box::new(OsmLayer::new_with_data(
         LayerId(1),

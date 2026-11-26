@@ -1340,7 +1340,7 @@ mod tests {
         let mut selection = select(FeatureKind::Way, &[10]);
         selection.extend(select(FeatureKind::Relation, &[20]));
         let xml = copy(&layer, &selection).to_osm_xml();
-        let parsed = crate::osm::OsmParser::new().parse_str(&xml).unwrap();
+        let parsed = crate::osm::OsmParser::parse_str(&xml).unwrap();
         assert_eq!(parsed.nodes.len(), 3);
         assert_eq!(parsed.ways.len(), 1);
         assert_eq!(parsed.relations.len(), 1);

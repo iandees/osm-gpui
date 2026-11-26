@@ -215,9 +215,8 @@ fn script_export_writes_the_active_layer(cx: &mut TestAppContext) {
     assert!(xml.contains("<osm"), "{xml}");
     assert!(xml.contains("<way"), "{xml}");
     // The export loads back with the pending edit still pending.
-    let (data, edits) = osm_gpui::osm::OsmParser::new()
-        .parse_file_with_edits(path.to_str().unwrap())
-        .unwrap();
+    let (data, edits) =
+        osm_gpui::osm::OsmParser::parse_file_with_edits(path.to_str().unwrap()).unwrap();
     assert!(data.ways.contains_key(&WayId(10)));
     let _ = edits;
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());

@@ -799,9 +799,7 @@ impl RecoverableLayer {
     /// Parse the layer's data and its recorded pending edits.
     pub fn load(&self) -> Result<(OsmData, FileEdits), RecoverError> {
         let xml = std::fs::read_to_string(&self.osm_path).map_err(RecoverError::Read)?;
-        OsmParser::new()
-            .parse_str_with_edits(&xml)
-            .map_err(RecoverError::Parse)
+        OsmParser::parse_str_with_edits(&xml).map_err(RecoverError::Parse)
     }
 }
 

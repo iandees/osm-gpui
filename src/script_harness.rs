@@ -1614,11 +1614,8 @@ impl AppHandle for LiveApp {
             });
             return Ok(());
         }
-        let parser = OsmParser::new();
         let path_str = path.to_string_lossy().to_string();
-        let loaded = parser
-            .parse_file_with_edits(&path_str)
-            .map_err(|e| e.to_string())?;
+        let loaded = OsmParser::parse_file_with_edits(&path_str).map_err(|e| e.to_string())?;
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
