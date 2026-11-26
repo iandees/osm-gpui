@@ -106,8 +106,10 @@ pub(super) fn cursor(hovering: bool) -> CursorStyle {
     }
 }
 
-/// Nothing is previewed beyond the highlights every mode draws.
-pub(super) fn paint_preview(_view: &MapViewer, _frame: &PreviewFrame<'_>, _window: &mut Window) {}
+/// Midpoint handles on the selected ways, on top of the usual highlights.
+pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: &mut Window) {
+    view.paint_midpoints(frame, window);
+}
 
 #[cfg(test)]
 mod tests {

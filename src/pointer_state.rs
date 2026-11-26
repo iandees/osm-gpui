@@ -30,6 +30,8 @@ pub(crate) struct PointerState {
     /// and the node becomes the selection once the drag passes the threshold
     /// (a release without moving is a plain click and selects it that way).
     pub(crate) vertex_grab: Option<osm_gpui::selection::FeatureRef>,
+    /// A midpoint handle pressed on a selected way (see `modes::midpoint`).
+    pub(crate) midpoint_drag: Option<crate::modes::midpoint::MidpointDrag>,
     /// Improve Way mode: the node Shift has locked as the one being improved
     /// (layer, way, node), kept until Shift is released.
     pub(crate) improve_lock: Option<(osm_gpui::layers::LayerId, osm_gpui::ids::WayId, i64)>,
@@ -56,6 +58,7 @@ impl Default for PointerState {
             last_mouse_pos: None,
             hovered: None,
             vertex_grab: None,
+            midpoint_drag: None,
             improve_lock: None,
             transform_session: None,
             right_press: None,
