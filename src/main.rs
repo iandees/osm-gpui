@@ -7299,6 +7299,12 @@ fn main() {
             )
             .unwrap();
 
+        // Keep a script advancing while the window gets no frames (covered,
+        // minimised, on another Space).
+        if script_harness::script_mode() {
+            script_harness::spawn_frame_watchdog(map_window.into(), cx);
+        }
+
         let map_window_id = map_window.window_id();
         cx.on_window_closed(move |cx, window_id| {
             if window_id == map_window_id {
