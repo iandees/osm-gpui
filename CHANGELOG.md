@@ -177,7 +177,7 @@ file.
 ### Development
 
 - `examples/perf_bench.rs` has label cases (`labels`, `line_labels` and `area_labels` sections), the scripting harness can drive label stress runs and force a halo mode, and new screenshot scripts cover labels, area labels, street names and curved ways. ([#226](https://github.com/iandees/osm-gpui/pull/226)) ([#227](https://github.com/iandees/osm-gpui/pull/227)) ([#228](https://github.com/iandees/osm-gpui/pull/228)) ([#229](https://github.com/iandees/osm-gpui/pull/229))
-- `docs/improvement-suggestions.md` is brought up to date with the shipped work and lists the remaining label follow-ups. ([#223](https://github.com/iandees/osm-gpui/pull/223)) ([#230](https://github.com/iandees/osm-gpui/pull/230))
+- The improvement suggestions roadmap (since removed) is brought up to date with the shipped work and lists the remaining label follow-ups. ([#223](https://github.com/iandees/osm-gpui/pull/223)) ([#230](https://github.com/iandees/osm-gpui/pull/230))
 
 ## 0.8.0
 
