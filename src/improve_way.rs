@@ -4,8 +4,8 @@
 //!
 //! The plain click moves the vertex nearest the cursor onto the cursor; with
 //! the "add" modifier it puts a new vertex at the cursor instead, spliced into
-//! the way at the segment nearest the cursor; with Shift it deletes the
-//! nearest vertex.
+//! the way at the segment nearest the cursor; with Ctrl/Cmd and Alt together
+//! it deletes the nearest vertex.
 
 pub type Pt = (f64, f64);
 
@@ -18,9 +18,10 @@ pub enum Op {
 }
 
 impl Op {
-    /// Shift deletes, the add modifier (Ctrl/Cmd/Alt) inserts, none moves.
-    pub fn from_modifiers(shift: bool, add: bool) -> Op {
-        if shift {
+    /// `delete` (Ctrl/Cmd and Alt together) deletes, the add modifier
+    /// (Ctrl/Cmd/Alt) inserts, none moves.
+    pub fn from_modifiers(delete: bool, add: bool) -> Op {
+        if delete {
             Op::Delete
         } else if add {
             Op::Insert

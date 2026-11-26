@@ -67,7 +67,7 @@ Pick a mode from the toolbar, the **Mode** menu, or the keyboard. Each mode show
 | Building | `B` | Three clicks draw a rectangular building. With a squared way selected, it aligns the new building to it. |
 | Extrude | `X` | Drag a way segment to reshape the way: pull out an L or push in a notch. Cmd/Ctrl-drag moves the segment; Alt-drag makes a new way. |
 | Arc | `V` | Click the start, click the end, move the mouse to bend the arc, and click to finish. |
-| Improve Way | `I` | With a way selected, click to move the nearest node to the cursor. Cmd/Ctrl/Alt-click inserts a node, and Shift-click deletes the nearest node. |
+| Improve Way | `I` | With a way selected, click to move the nearest node to the cursor. Cmd/Ctrl/Alt-click inserts a node, and Cmd/Ctrl+Alt-click deletes the nearest node. Holding Shift locks the node being improved (and never picks another way) while you move the cursor. |
 
 Esc cancels what you are drawing or deselects. Delete or Backspace removes the selection.
 

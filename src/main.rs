@@ -3607,6 +3607,7 @@ impl MapViewer {
     /// next mouse move.
     fn handle_modifiers_changed(&mut self, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
         self.pointer.last_modifiers = modifiers;
+        self.update_improve_lock();
         if self.preview_depends_on_modifiers() {
             cx.notify();
         }
@@ -3628,6 +3629,7 @@ impl MapViewer {
         let left_pressed = event.pressed_button == Some(gpui::MouseButton::Left);
         self.pointer.last_mouse_pos = Some(adjusted_position);
         self.pointer.last_modifiers = event.modifiers;
+        self.update_improve_lock();
         // Rotating: the selection follows the pointer around its centre.
         if self.pointer.transform_session.is_some() {
             self.update_transform(adjusted_position, event.modifiers.shift);

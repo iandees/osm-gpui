@@ -187,7 +187,7 @@ status:
     arc_started: "Klicken, um das Bogenende zu setzen · Esc zum Abbrechen"
     arc_end_placed: "Bogen durch Bewegen formen, dann klicken zum Abschließen · Esc zum Abbrechen"
     improve_idle: "Weg zum Verbessern anklicken · Esc zum Beenden"
-    improve_way_chosen: "Klicken, um den nächsten Knoten zu verschieben · Cmd/Strg/Alt-Klick fügt einen Knoten hinzu · Umschalt-Klick löscht den nächsten Knoten · Esc, um einen anderen Weg zu wählen"
+    improve_way_chosen: "Klicken, um den nächsten Knoten zu verschieben · Cmd/Strg/Alt-Klick fügt einen Knoten hinzu · Cmd/Strg+Alt-Klick löscht den nächsten Knoten · Umschalt hält den Knoten fest · Esc, um einen anderen Weg zu wählen"
     adjust_offset: "Ziehen verschiebt das Luftbild · Pfeiltasten schieben (Umschalt: 10 px) · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
   pending_edits:
     one: "%{count} ungesicherte Änderung"

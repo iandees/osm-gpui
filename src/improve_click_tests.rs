@@ -1,6 +1,6 @@
 //! Improve Way mode: with a way selected, a click moves the nearest node to
 //! the cursor, a modifier-click inserts a node at the cursor into the way, and a
-//! Shift-click deletes the nearest node. Each is one undo step.
+//! Cmd/Ctrl+Alt-click deletes the nearest node; Shift locks the node. Each is one undo step.
 
 use super::*;
 use crate::test_support::*;
@@ -73,11 +73,12 @@ fn the_add_modifier_inserts_a_node_on_the_way(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn shift_deletes_the_nearest_node(cx: &mut TestAppContext) {
+fn ctrl_alt_deletes_the_nearest_node(cx: &mut TestAppContext) {
     with_osm(cx, data(), EditMode::Improve, |view, w, cx, layer| {
         select_way(view, layer);
         view.pointer.last_modifiers = gpui::Modifiers {
-            shift: true,
+            control: true,
+            alt: true,
             ..Default::default()
         };
         let c = view.viewport.geo_to_screen(LatLon::new(LAT, LON));
@@ -101,5 +102,45 @@ fn without_a_selected_way_a_click_picks_the_way_under_it(cx: &mut TestAppContext
         crate::modes::improve::click(view, c + point(px(0.0), px(2.0)), cx);
         assert_eq!(view.improve_target(), Some((layer, WayId(10))));
         assert_eq!(view.undo_stack.cursor, 0, "picking edits nothing");
+    });
+}
+
+#[gpui::test]
+fn shift_keeps_the_node_nearest_when_it_was_pressed(cx: &mut TestAppContext) {
+    with_osm(cx, data(), EditMode::Improve, |view, _w, cx, layer| {
+        select_way(view, layer);
+        let c = view.viewport.geo_to_screen(LatLon::new(LAT, LON));
+        // Shift goes down with the cursor nearest node 2.
+        view.pointer.last_mouse_pos = Some(c + point(px(-40.0), px(0.0)));
+        view.pointer.last_modifiers = gpui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        view.update_improve_lock();
+        // The cursor then drifts over to node 3; the click still moves node 2.
+        let click = c + point(px(40.0), px(30.0));
+        view.pointer.last_mouse_pos = Some(click);
+        view.update_improve_lock();
+        crate::modes::improve::click(view, click, cx);
+        assert_eq!(node_lat_lon(view, layer, 3).unwrap().lat, LAT);
+        assert_ne!(node_lat_lon(view, layer, 2).unwrap().lat, LAT);
+
+        // Releasing Shift lets the nearest node win again.
+        view.pointer.last_modifiers = gpui::Modifiers::default();
+        view.update_improve_lock();
+        assert!(view.pointer.improve_lock.is_none());
+    });
+}
+
+#[gpui::test]
+fn shift_never_picks_another_way(cx: &mut TestAppContext) {
+    with_osm(cx, data(), EditMode::Improve, |view, _w, cx, _layer| {
+        view.pointer.last_modifiers = gpui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        let c = view.viewport.geo_to_screen(LatLon::new(LAT, LON));
+        crate::modes::improve::click(view, c + point(px(0.0), px(2.0)), cx);
+        assert_eq!(view.improve_target(), None);
     });
 }

@@ -38,16 +38,54 @@ impl MapViewer {
         }
     }
 
-    /// The operation the held modifiers select in Improve Way mode: Shift
-    /// deletes, Ctrl/Cmd/Alt insert, none moves.
+    /// The operation the held modifiers select in Improve Way mode: Ctrl/Cmd
+    /// and Alt together delete, either alone inserts, none moves. Shift does
+    /// not change the operation; it locks the node being improved.
     fn improve_op(&self) -> osm_gpui::improve_way::Op {
         let m = self.pointer.last_modifiers;
-        osm_gpui::improve_way::Op::from_modifiers(m.shift, m.control || m.platform || m.alt)
+        let ctrl = m.control || m.platform;
+        osm_gpui::improve_way::Op::from_modifiers(ctrl && m.alt, ctrl || m.alt)
+    }
+
+    /// Hold the node Shift locked in place, or release it: while Shift is
+    /// held the node that would be improved is the one nearest the cursor
+    /// when the lock was taken, however the cursor moves afterwards.
+    pub(crate) fn update_improve_lock(&mut self) {
+        let wanted = self.mode() == EditMode::Improve && self.pointer.last_modifiers.shift;
+        let Some((layer_id, way_id)) = self.improve_target().filter(|_| wanted) else {
+            self.pointer.improve_lock = None;
+            return;
+        };
+        if self
+            .pointer
+            .improve_lock
+            .is_some_and(|(l, w, _)| (l, w) == (layer_id, way_id))
+        {
+            return;
+        }
+        use osm_gpui::improve_way::Plan;
+        self.pointer.improve_lock = self
+            .pointer
+            .last_mouse_pos
+            .and_then(|c| self.improve_plan_with(c, self.improve_op(), false))
+            .and_then(|ip| match ip.plan {
+                Plan::Move { node, .. } | Plan::Delete { node } => Some((layer_id, way_id, node)),
+                Plan::Insert { .. } => None,
+            });
     }
 
     /// What a click at `cursor` would do to the target way: its node ids,
     /// their screen positions and the planned edit (in screen space).
     pub(crate) fn improve_plan_at(&self, cursor: Point<Pixels>) -> Option<ImprovePlan> {
+        self.improve_plan_with(cursor, self.improve_op(), true)
+    }
+
+    fn improve_plan_with(
+        &self,
+        cursor: Point<Pixels>,
+        op: osm_gpui::improve_way::Op,
+        use_lock: bool,
+    ) -> Option<ImprovePlan> {
         let (layer_id, way_id) = self.improve_target()?;
         let editable = self.layer_manager.find_layer(layer_id)?.as_editable()?;
         let node_ids = editable.way_node_ids(way_id)?;
@@ -59,12 +97,20 @@ impl MapViewer {
                 Some((p.x.to_f64(), p.y.to_f64()))
             })
             .collect::<Option<_>>()?;
-        let plan = osm_gpui::improve_way::plan(
-            &points,
-            &ids,
-            (cursor.x.to_f64(), cursor.y.to_f64()),
-            self.improve_op(),
-        )?;
+        let cursor_pt = (cursor.x.to_f64(), cursor.y.to_f64());
+        let locked = self
+            .pointer
+            .improve_lock
+            .filter(|&(l, w, n)| use_lock && (l, w) == (layer_id, way_id) && ids.contains(&n));
+        let mut plan = osm_gpui::improve_way::plan(&points, &ids, cursor_pt, op)?;
+        // The locked node replaces whichever node the cursor is nearest to.
+        if let Some((_, _, locked)) = locked {
+            use osm_gpui::improve_way::Plan;
+            match &mut plan {
+                Plan::Move { node, .. } | Plan::Delete { node } => *node = locked,
+                Plan::Insert { .. } => {}
+            }
+        }
         Some(ImprovePlan {
             layer_id,
             way_id,
@@ -83,6 +129,10 @@ pub(crate) fn click(view: &mut MapViewer, screen_pt: Point<Pixels>, cx: &mut Con
     use osm_gpui::selection::{FeatureKind, FeatureRef};
 
     if view.improve_target().is_none() {
+        // Shift holds the selection: it never picks another way.
+        if view.pointer.last_modifiers.shift {
+            return;
+        }
         super::select::click(view, screen_pt, false, 1);
         if view.improve_target().is_none() {
             view.set_selection(Vec::new());
