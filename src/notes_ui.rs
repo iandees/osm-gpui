@@ -292,28 +292,16 @@ impl MapViewer {
     }
 
     /// Per-frame upkeep, called from `render`: follows the layer being
-    /// deleted from the Layers list, keeps the pins above the data, closes
-    /// the note panel when a feature is selected, and does what the last
-    /// click asked for.
+    /// deleted from the Layers list, closes the note panel when a feature is
+    /// selected, and does what the last click asked for. (The layer is added
+    /// on top and new data layers go under it, see
+    /// `LayerManager::placement`; where the user moves it, it stays.)
     pub(crate) fn notes_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.notes.layer {
-            match self
-                .layer_manager
-                .layers()
-                .iter()
-                .position(|l| l.id() == id)
-            {
-                None => {
-                    // Deleted from the Layers list.
-                    self.notes_off();
-                    self.refresh_menus_for_notes(cx);
-                }
-                Some(i) => {
-                    let last = self.layer_manager.layers().len() - 1;
-                    if i != last {
-                        self.layer_manager.move_layer(i, last);
-                    }
-                }
+            if self.layer_manager.find_layer(id).is_none() {
+                // Deleted from the Layers list.
+                self.notes_off();
+                self.refresh_menus_for_notes(cx);
             }
         }
         if !self.selected.is_empty() && self.notes.open.is_some() {

@@ -89,6 +89,8 @@ The parser is `src/script/parser.rs` (plus `src/script/note_ops.rs` for the note
 | `panel validation\|history expand\|collapse` | Expand or collapse a side panel section, as a click on its header does. |
 | `show_finding ROW\|CHECK_ID` | Click a validator finding in the Validation section: the Nth row (0 is the first) or the first finding of a check id such as `crossing_ways`. |
 | `show_history` | Open the object history view for the selected object and wait for its versions to arrive. |
+
+The Layers list's context-menu actions can be dispatched with `action`: `layers::MoveLayer {"index":I,"delta":D}`, `layers::DeleteLayer {"index":I}`, `layers::SetActiveLayer {"index":I}`, `layers::ToggleLayerVisibilityAction {"index":I}`, `layers::AdjustLayerImageryOffset {"index":I}` and `layers::ResetLayerImageryOffset {"index":I}`. `index` counts the layer stack from the bottom: 0 is the layer drawn first, the last row of the Layers list, and the first row has the highest index. A positive `delta` moves a layer up the list (drawn higher), a negative one down. New layers are placed by type (imagery at the bottom, data on top; see the user guide), so a script that adds imagery after loading data finds the imagery at index 0.
 | `load_history_file PATH` | Answer the next object history request from a local `/history` document instead of the server. |
 
 ## Editing

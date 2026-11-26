@@ -157,6 +157,48 @@ pub enum LayerKind {
     Extension,
 }
 
+impl LayerKind {
+    /// Imagery: drawn as image elements (`MapLayer::render_elements`), not on
+    /// a canvas, and placed at the bottom of the stack when added.
+    pub fn is_imagery(self) -> bool {
+        self == LayerKind::Tile
+    }
+
+    /// Pins drawn over the map (notes, extension markers), kept above the
+    /// data when a data layer is added.
+    fn is_pin(self) -> bool {
+        matches!(self, LayerKind::Notes | LayerKind::Extension)
+    }
+}
+
+/// A run of consecutive non-imagery layers in the stack, painted on one
+/// canvas, bottom first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CanvasRun {
+    /// Whether the downloaded-area wash is painted first, under the run's
+    /// layers. Exactly one run of a plan has it: the first one above the
+    /// topmost imagery layer drawn (or the bottom one, with no imagery).
+    pub wash: bool,
+    /// The layers, bottom first.
+    pub layers: Vec<LayerId>,
+}
+
+/// One step of drawing the layer stack; see `LayerManager::draw_plan`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrawStep {
+    /// An imagery layer, drawn as its `render_elements`.
+    Elements(LayerId),
+    /// Layers painted on a canvas with their `render_canvas`.
+    Canvas(CanvasRun),
+}
+
+/// `DrawStep` with the imagery's elements built; see
+/// `LayerManager::render_stack`.
+pub enum StackPart {
+    Elements(Vec<AnyElement>),
+    Canvas(CanvasRun),
+}
+
 /// What a layer found under a click, in the layer's own terms.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayerHit {
@@ -662,7 +704,13 @@ pub fn compute_layer_stats(layers: &[Box<dyn MapLayer>]) -> LayerStats {
     stats
 }
 
-/// Manager for all map layers
+/// Manager for all map layers: the layer stack.
+///
+/// `layers()` is in drawing order: index 0 is drawn first, at the bottom of
+/// the map, and the last layer on top. The Layers list shows the stack the
+/// other way up (see `top_first`), so its first row is the layer drawn on
+/// top. Index-based actions (`MoveLayer`, `DeleteLayer`, ...) take an index
+/// into `layers()`.
 pub struct LayerManager {
     layers: Vec<Box<dyn MapLayer>>,
     /// Monotonic counter backing `alloc_id`. Starts at 1 (0 is never handed
@@ -697,24 +745,60 @@ impl LayerManager {
         id
     }
 
+    /// Add a new layer to the stack where its kind belongs (see
+    /// `placement`). Layers already in the stack keep their order, however
+    /// the user arranged them.
     pub fn add_layer(&mut self, layer: Box<dyn MapLayer>) {
-        self.layers.push(layer);
+        let at = self.placement(layer.kind());
+        self.layers.insert(at, layer);
     }
 
-    /// Add a read-only reference layer (GPX, GeoJSON) above all imagery and
-    /// below the first data layer that sits above that imagery, so the data
-    /// being edited stays on top of the tracks it is traced from.
-    pub fn add_reference_layer(&mut self, layer: Box<dyn MapLayer>) {
+    /// Where `add_layer` puts a new layer of `kind`, as an index into
+    /// `layers()` (bottom first):
+    ///
+    /// - Imagery: just above the topmost imagery layer, or at the bottom when
+    ///   there is none, so it goes under everything that is not imagery.
+    /// - Reference layers (GPX, GeoJSON, GPS traces) and vector-tile
+    ///   overlays (PMTiles): above the topmost imagery and below the first
+    ///   OSM data layer above it, so the data being edited stays on top of
+    ///   what it is traced from; on top when there is no such data layer.
+    /// - OSM data: on top, but under the notes and extension-marker layers
+    ///   at the top of the stack, so pins stay visible over the data.
+    /// - Notes and extension markers: on top.
+    pub fn placement(&self, kind: LayerKind) -> usize {
+        let len = self.layers.len();
         let above_imagery = self
             .layers
             .iter()
-            .rposition(|l| l.kind() == LayerKind::Tile)
+            .rposition(|l| l.kind().is_imagery())
             .map_or(0, |i| i + 1);
-        let at = self.layers[above_imagery..]
+        match kind {
+            LayerKind::Tile => above_imagery,
+            LayerKind::Reference | LayerKind::VectorTile => self.layers[above_imagery..]
+                .iter()
+                .position(|l| l.kind() == LayerKind::Osm)
+                .map_or(len, |i| i + above_imagery),
+            LayerKind::Osm => {
+                let pins_on_top = self
+                    .layers
+                    .iter()
+                    .rev()
+                    .take_while(|l| l.kind().is_pin())
+                    .count();
+                len - pins_on_top
+            }
+            LayerKind::Notes | LayerKind::Extension => len,
+        }
+    }
+
+    /// The stack as the Layers list shows it: the layer drawn on top first,
+    /// each with its index in `layers()` (what index-based actions take).
+    pub fn top_first(&self) -> impl Iterator<Item = (usize, &dyn MapLayer)> {
+        self.layers
             .iter()
-            .position(|l| l.kind() == LayerKind::Osm)
-            .map_or(self.layers.len(), |i| i + above_imagery);
-        self.layers.insert(at, layer);
+            .enumerate()
+            .rev()
+            .map(|(i, l)| (i, l.as_ref()))
     }
 
     /// Remove the layer at `index`. Returns the removed layer, or `None` if
@@ -733,8 +817,9 @@ impl LayerManager {
         Some(std::mem::replace(slot, layer))
     }
 
-    /// Move the layer at `from` to position `to`. No-op if either index is
-    /// out of bounds or if `from == to`.
+    /// Move the layer at `from` to position `to` (indices into `layers()`, so
+    /// a larger `to` draws it higher up). No-op if either index is out of
+    /// bounds or if `from == to`.
     pub fn move_layer(&mut self, from: usize, to: usize) {
         let len = self.layers.len();
         if from >= len || to >= len || from == to {
@@ -793,33 +878,81 @@ impl LayerManager {
         }
     }
 
-    /// Render all visible layers as GPUI elements. With `show_imagery`
-    /// false the imagery (tile) layers are left out, as a stylesheet's
-    /// `canvas { show-imagery: no; }` asks.
-    pub fn render_all_elements(
+    /// How to draw the visible layers, bottom first, so the stack's order is
+    /// the drawing order whatever the kinds: each imagery layer is a step of
+    /// its own (image elements) and each run of consecutive other layers is
+    /// one canvas. With `show_imagery` false the imagery layers are left out,
+    /// as a stylesheet's `canvas { show-imagery: no; }` asks.
+    ///
+    /// The downloaded-area wash goes right above the topmost imagery layer
+    /// drawn (at the bottom without imagery): over imagery and under the
+    /// data in the usual arrangement, and still visible when imagery has
+    /// been moved above data. The plan always ends with a canvas step, on
+    /// which the overlays (highlights, labels, previews) are painted too.
+    pub fn draw_plan(&self, show_imagery: bool) -> Vec<DrawStep> {
+        let drawn: Vec<&dyn MapLayer> = self
+            .layers
+            .iter()
+            .filter(|l| l.is_visible() && (show_imagery || !l.kind().is_imagery()))
+            .map(|l| l.as_ref())
+            .collect();
+        let topmost_imagery = drawn.iter().rposition(|l| l.kind().is_imagery());
+        let mut steps = Vec::new();
+        let mut run = topmost_imagery.is_none().then_some(CanvasRun {
+            wash: true,
+            layers: Vec::new(),
+        });
+        for (i, layer) in drawn.iter().enumerate() {
+            if layer.kind().is_imagery() {
+                if let Some(run) = run.take() {
+                    steps.push(DrawStep::Canvas(run));
+                }
+                steps.push(DrawStep::Elements(layer.id()));
+                if Some(i) == topmost_imagery {
+                    run = Some(CanvasRun {
+                        wash: true,
+                        layers: Vec::new(),
+                    });
+                }
+            } else {
+                run.get_or_insert_with(CanvasRun::default)
+                    .layers
+                    .push(layer.id());
+            }
+        }
+        steps.push(DrawStep::Canvas(run.unwrap_or_default()));
+        steps
+    }
+
+    /// `draw_plan` with each imagery layer's elements built, ready to be laid
+    /// out in order as absolutely positioned children of the map.
+    pub fn render_stack(
         &self,
         viewport: &Viewport,
         show_imagery: bool,
         window: &mut Window,
         cx: &mut App,
-    ) -> Vec<AnyElement> {
-        let mut elements = Vec::new();
-
-        for layer in &self.layers {
-            if layer.is_visible() && (show_imagery || layer.kind() != LayerKind::Tile) {
-                elements.extend(layer.render_elements(viewport, window, cx));
-            }
-        }
-
-        elements
+    ) -> Vec<StackPart> {
+        self.draw_plan(show_imagery)
+            .into_iter()
+            .map(|step| match step {
+                DrawStep::Elements(id) => StackPart::Elements(
+                    self.find_layer(id)
+                        .map(|l| l.render_elements(viewport, window, cx))
+                        .unwrap_or_default(),
+                ),
+                DrawStep::Canvas(run) => StackPart::Canvas(run),
+            })
+            .collect()
     }
 
     /// Dim the part of the view outside every downloaded rectangle of every
     /// visible layer, and outline the edge of the downloaded area. One
     /// region for all layers: area downloaded into any visible layer counts
     /// as known, so a second layer never dims the first one's data. Nothing
-    /// is drawn while no visible layer knows its downloaded area. Call before
-    /// `render_all_canvas` so features paint on top of the wash.
+    /// is drawn while no visible layer knows its downloaded area. Painted
+    /// first on the canvas run `draw_plan` gives the wash, so that run's
+    /// features paint on top of it.
     pub fn render_all_download_bounds(
         &self,
         viewport: &Viewport,
@@ -915,14 +1048,17 @@ impl LayerManager {
         crate::frame_stats::lap("wash.total", fs_wash);
     }
 
-    pub fn render_all_canvas(
+    /// Paint the layers `ids` (bottom first, as a `CanvasRun` lists them)
+    /// with their `render_canvas`. Layers gone or hidden since are skipped.
+    pub fn render_canvas_run(
         &self,
+        ids: &[LayerId],
         viewport: &Viewport,
         bounds: Bounds<Pixels>,
         window: &mut Window,
     ) {
-        for layer in &self.layers {
-            if layer.is_visible() {
+        for id in ids {
+            if let Some(layer) = self.find_layer(*id).filter(|l| l.is_visible()) {
                 layer.render_canvas(viewport, bounds, window);
             }
         }
@@ -1163,20 +1299,35 @@ mod tests {
         manager
     }
 
-    #[test]
-    fn move_layer_down() {
-        let mut m = manager_with(&["a", "b", "c"]);
-        m.move_layer(0, 2);
-        let names: Vec<&str> = m.layers().iter().map(|l| l.name()).collect();
-        assert_eq!(names, vec!["b", "c", "a"]);
+    /// The Layers list's order: top of the stack first.
+    fn list_names(m: &LayerManager) -> Vec<&str> {
+        m.top_first().map(|(_, l)| l.name()).collect()
     }
 
     #[test]
-    fn move_layer_up() {
+    fn move_layer_to_a_higher_index_raises_it_to_the_top_of_the_list() {
+        let mut m = manager_with(&["a", "b", "c"]);
+        assert_eq!(list_names(&m), vec!["c", "b", "a"]);
+        m.move_layer(0, 2);
+        let names: Vec<&str> = m.layers().iter().map(|l| l.name()).collect();
+        assert_eq!(names, vec!["b", "c", "a"]);
+        assert_eq!(list_names(&m), vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn move_layer_to_a_lower_index_lowers_it_to_the_bottom_of_the_list() {
         let mut m = manager_with(&["a", "b", "c"]);
         m.move_layer(2, 0);
         let names: Vec<&str> = m.layers().iter().map(|l| l.name()).collect();
         assert_eq!(names, vec!["c", "a", "b"]);
+        assert_eq!(list_names(&m), vec!["b", "a", "c"]);
+    }
+
+    #[test]
+    fn top_first_pairs_each_row_with_its_index() {
+        let m = manager_with(&["a", "b", "c"]);
+        let rows: Vec<(usize, &str)> = m.top_first().map(|(i, l)| (i, l.name())).collect();
+        assert_eq!(rows, vec![(2, "c"), (1, "b"), (0, "a")]);
     }
 
     #[test]
@@ -1521,7 +1672,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn add_reference_layer_goes_above_imagery_and_below_the_first_data_layer(
+    fn a_reference_layer_goes_above_imagery_and_below_the_first_data_layer(
         cx: &mut gpui::TestAppContext,
     ) {
         let mut by_kind: std::collections::HashMap<&str, Box<dyn MapLayer>> =
@@ -1529,18 +1680,182 @@ mod tests {
         let mut m = LayerManager::new();
         m.add_layer(by_kind.remove("tile").unwrap());
         m.add_layer(by_kind.remove("osm").unwrap());
-        m.add_reference_layer(by_kind.remove("reference").unwrap());
+        m.add_layer(by_kind.remove("reference").unwrap());
         let ids: Vec<u64> = m.layers().iter().map(|l| l.id().0).collect();
         assert_eq!(ids, [1, 4, 2]);
     }
 
     #[test]
-    fn add_reference_layer_with_no_imagery_goes_below_the_first_data_layer() {
+    fn a_reference_layer_with_no_imagery_goes_below_the_first_data_layer() {
         let mut m = manager_with(&["a", "b"]);
         let id = m.alloc_id();
-        m.add_reference_layer(Box::new(gpx_layer(id)));
+        m.add_layer(Box::new(gpx_layer(id)));
         let names: Vec<&str> = m.layers().iter().map(|l| l.name()).collect();
         assert_eq!(names, ["ref", "a", "b"]);
+    }
+
+    /// A layer of `kind` with id `id`, for the placement and draw-plan tests.
+    /// Imagery needs a tile cache, which needs an executor.
+    fn layer_of(cx: &mut gpui::TestAppContext, kind: LayerKind, id: u64) -> Box<dyn MapLayer> {
+        use crate::layers::extension_layer::{ExtensionLayer, MarkerStore};
+        use crate::layers::notes_layer::NotesLayer;
+        use crate::layers::osm_layer::OsmLayer;
+        use crate::layers::tile_layer::TileLayer;
+        use crate::layers::vector_tile_layer::{VectorTileLayer, VectorTileStore};
+        use std::sync::{Arc, Mutex};
+
+        let id = LayerId(id);
+        match kind {
+            LayerKind::Tile => {
+                let cache = Arc::new(Mutex::new(crate::tile_cache::TileCache::new(
+                    cx.executor(),
+                    crate::idle_tracker::IdleTracker::new(),
+                )));
+                Box::new(TileLayer::new(id, cache))
+            }
+            LayerKind::Osm => Box::new(OsmLayer::new(id)),
+            LayerKind::Notes => Box::new(NotesLayer::new(
+                id,
+                "notes".into(),
+                crate::notes::NoteStore::default(),
+            )),
+            LayerKind::Reference => Box::new(gpx_layer(id)),
+            LayerKind::VectorTile => Box::new(VectorTileLayer::new(
+                id,
+                "pmtiles".into(),
+                0,
+                14,
+                VectorTileStore::default(),
+            )),
+            LayerKind::Extension => Box::new(ExtensionLayer::new(
+                id,
+                "ext".into(),
+                "ext".into(),
+                MarkerStore::default(),
+            )),
+        }
+    }
+
+    /// The ids of `m`'s layers, bottom first.
+    fn stack(m: &LayerManager) -> Vec<u64> {
+        m.layers().iter().map(|l| l.id().0).collect()
+    }
+
+    #[gpui::test]
+    fn new_layers_are_placed_by_kind(cx: &mut gpui::TestAppContext) {
+        let mut m = LayerManager::new();
+        // Data first, then imagery: the imagery still goes to the bottom.
+        m.add_layer(layer_of(cx, LayerKind::Osm, 1));
+        m.add_layer(layer_of(cx, LayerKind::Notes, 2));
+        m.add_layer(layer_of(cx, LayerKind::Tile, 3));
+        assert_eq!(stack(&m), [3, 1, 2]);
+        // A second imagery layer goes above the first, under the data.
+        m.add_layer(layer_of(cx, LayerKind::Tile, 4));
+        assert_eq!(stack(&m), [3, 4, 1, 2]);
+        // Reference and vector-tile overlays: above imagery, under the data.
+        m.add_layer(layer_of(cx, LayerKind::Reference, 5));
+        m.add_layer(layer_of(cx, LayerKind::VectorTile, 6));
+        assert_eq!(stack(&m), [3, 4, 5, 6, 1, 2]);
+        // New OSM data goes on top of the data, but under the pins.
+        m.add_layer(layer_of(cx, LayerKind::Osm, 7));
+        assert_eq!(stack(&m), [3, 4, 5, 6, 1, 7, 2]);
+        // Pins go on top.
+        m.add_layer(layer_of(cx, LayerKind::Extension, 8));
+        assert_eq!(stack(&m), [3, 4, 5, 6, 1, 7, 2, 8]);
+        // The Layers list shows it the other way up.
+        let list: Vec<u64> = m.top_first().map(|(_, l)| l.id().0).collect();
+        assert_eq!(list, [8, 2, 7, 1, 6, 5, 4, 3]);
+    }
+
+    #[gpui::test]
+    fn adding_a_layer_keeps_where_the_user_moved_the_others(cx: &mut gpui::TestAppContext) {
+        let mut m = LayerManager::new();
+        m.add_layer(layer_of(cx, LayerKind::Tile, 1));
+        m.add_layer(layer_of(cx, LayerKind::Osm, 2));
+        assert_eq!(stack(&m), [1, 2]);
+        // The user raises the imagery above the data.
+        m.move_layer(0, 1);
+        assert_eq!(stack(&m), [2, 1]);
+        // New data goes on top; the imagery stays where it was put.
+        m.add_layer(layer_of(cx, LayerKind::Osm, 3));
+        assert_eq!(stack(&m), [2, 1, 3]);
+        // New imagery goes just above the topmost imagery.
+        m.add_layer(layer_of(cx, LayerKind::Tile, 4));
+        assert_eq!(stack(&m), [2, 1, 4, 3]);
+    }
+
+    fn run(wash: bool, layers: &[u64]) -> DrawStep {
+        DrawStep::Canvas(CanvasRun {
+            wash,
+            layers: layers.iter().map(|&i| LayerId(i)).collect(),
+        })
+    }
+
+    #[gpui::test]
+    fn the_draw_plan_draws_imagery_under_data_with_the_wash_between(cx: &mut gpui::TestAppContext) {
+        let mut m = LayerManager::new();
+        m.add_layer(layer_of(cx, LayerKind::Tile, 1));
+        m.add_layer(layer_of(cx, LayerKind::Osm, 2));
+        m.add_layer(layer_of(cx, LayerKind::Notes, 3));
+        // One canvas for every non-imagery layer: no more than before.
+        assert_eq!(
+            m.draw_plan(true),
+            [DrawStep::Elements(LayerId(1)), run(true, &[2, 3])]
+        );
+        // Imagery hidden by the stylesheet: the wash goes to the bottom.
+        assert_eq!(m.draw_plan(false), [run(true, &[2, 3])]);
+    }
+
+    #[gpui::test]
+    fn the_draw_plan_follows_the_stack_when_imagery_is_moved_above_data(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut m = LayerManager::new();
+        m.add_layer(layer_of(cx, LayerKind::Tile, 1));
+        m.add_layer(layer_of(cx, LayerKind::Osm, 2));
+        m.move_layer(0, 1);
+        // The data, then the imagery over it, then the wash over that (on
+        // an otherwise empty last canvas, which also carries the overlays).
+        assert_eq!(
+            m.draw_plan(true),
+            [
+                run(false, &[2]),
+                DrawStep::Elements(LayerId(1)),
+                run(true, &[])
+            ]
+        );
+
+        // Imagery between two runs of data: each run is its own canvas.
+        m.add_layer(layer_of(cx, LayerKind::Osm, 3));
+        m.add_layer(layer_of(cx, LayerKind::Reference, 4));
+        assert_eq!(stack(&m), [2, 1, 4, 3]);
+        assert_eq!(
+            m.draw_plan(true),
+            [
+                run(false, &[2]),
+                DrawStep::Elements(LayerId(1)),
+                run(true, &[4, 3])
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn the_draw_plan_leaves_out_hidden_layers(cx: &mut gpui::TestAppContext) {
+        let mut m = LayerManager::new();
+        assert_eq!(m.draw_plan(true), [run(true, &[])]);
+        m.add_layer(layer_of(cx, LayerKind::Tile, 1));
+        m.add_layer(layer_of(cx, LayerKind::Tile, 2));
+        m.add_layer(layer_of(cx, LayerKind::Osm, 3));
+        m.find_layer_mut(LayerId(2)).unwrap().set_visible(false);
+        assert_eq!(
+            m.draw_plan(true),
+            [DrawStep::Elements(LayerId(1)), run(true, &[3])]
+        );
+        m.find_layer_mut(LayerId(3)).unwrap().set_visible(false);
+        assert_eq!(
+            m.draw_plan(true),
+            [DrawStep::Elements(LayerId(1)), run(true, &[])]
+        );
     }
 
     #[test]

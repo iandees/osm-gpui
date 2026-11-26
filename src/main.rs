@@ -261,7 +261,9 @@ struct AddSavedCustomImagery {
     index: usize,
 }
 
-/// Action to move the layer at `index` by `delta` positions (negative = up).
+/// Action to move the layer at `index` (into `LayerManager::layers()`, which
+/// counts from the bottom of the stack) by `delta` places in the drawing
+/// order: positive raises it (up the Layers list), negative lowers it.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = layers)]
 #[serde(deny_unknown_fields)]
@@ -270,7 +272,20 @@ struct MoveLayer {
     delta: i32,
 }
 
-/// Action to delete the layer at `index`.
+impl MoveLayer {
+    /// The Layers list's "Move Up": draw the layer one place higher.
+    fn up(index: usize) -> Self {
+        MoveLayer { index, delta: 1 }
+    }
+
+    /// The Layers list's "Move Down": draw the layer one place lower.
+    fn down(index: usize) -> Self {
+        MoveLayer { index, delta: -1 }
+    }
+}
+
+/// Action to delete the layer at `index`. Like every layer action's `index`
+/// it counts from the bottom of the stack (see `MoveLayer`).
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = layers)]
 #[serde(deny_unknown_fields)]
@@ -1267,6 +1282,75 @@ impl MapViewer {
 
     fn reorder_layer(&mut self, from: usize, to: usize) {
         self.layer_manager.move_layer(from, to);
+    }
+
+    /// The map's layers in stack order (`LayerManager::draw_plan`), as
+    /// children of the map's container, which paints them in order: each
+    /// imagery layer's tile elements, and a canvas per run of other layers.
+    /// The topmost run is returned rather than built: `render` paints it on
+    /// the canvas that carries the overlays (highlights, labels, mode
+    /// previews), so the usual imagery-plus-data map has one canvas.
+    fn render_map_layers(
+        &self,
+        show_imagery: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Vec<gpui::AnyElement>, osm_gpui::layers::CanvasRun) {
+        use osm_gpui::layers::StackPart;
+        let mut parts = self
+            .layer_manager
+            .render_stack(&self.viewport, show_imagery, window, cx);
+        // `render_stack` always ends with a canvas; anything else is kept.
+        let top_run = match parts.pop() {
+            Some(StackPart::Canvas(run)) => run,
+            other => {
+                parts.extend(other);
+                Default::default()
+            }
+        };
+        let mut children = Vec::new();
+        for part in parts {
+            match part {
+                StackPart::Elements(elements) => children.extend(elements),
+                StackPart::Canvas(run) => {
+                    let viewport = self.viewport.clone();
+                    let entity = cx.entity();
+                    children.push(
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, cx| {
+                                entity
+                                    .read(cx)
+                                    .paint_layer_run(&run, &viewport, bounds, window);
+                            },
+                        )
+                        .absolute()
+                        .size_full()
+                        .into_any_element(),
+                    );
+                }
+            }
+        }
+        (children, top_run)
+    }
+
+    /// Paint one canvas run of the layer stack: the downloaded-area wash if
+    /// the run carries it (and it is shown), then the run's layers.
+    fn paint_layer_run(
+        &self,
+        run: &osm_gpui::layers::CanvasRun,
+        viewport: &Viewport,
+        bounds: Bounds<gpui::Pixels>,
+        window: &mut Window,
+    ) {
+        if run.wash && self.show_downloaded_area {
+            self.layer_manager
+                .render_all_download_bounds(viewport, bounds, window);
+        }
+        let fs_layers = osm_gpui::frame_stats::start();
+        self.layer_manager
+            .render_canvas_run(&run.layers, viewport, bounds, window);
+        osm_gpui::frame_stats::lap("layers.canvas", fs_layers);
     }
 
     /// Handle the `MoveLayer` context-menu action.
@@ -4348,7 +4432,7 @@ impl MapViewer {
         let layer_id = self.layer_manager.alloc_id();
         let layer =
             osm_gpui::layers::reference_layer::ReferenceLayer::new(layer_id, candidate, data);
-        self.layer_manager.add_reference_layer(Box::new(layer));
+        self.layer_manager.add_layer(Box::new(layer));
         if let Some(extent) = extent {
             self.fit_to_extent(extent);
         }
@@ -6470,6 +6554,7 @@ impl Render for MapViewer {
         // The stylesheet can set the map's background colour and hide the
         // imagery (`canvas { fill-color: ..; show-imagery: no; }`).
         let canvas_style = osm_gpui::style::custom::active_stylesheet().canvas_style();
+        let (map_layers, top_run) = self.render_map_layers(canvas_style.show_imagery, window, cx);
         let main_row = div()
             .flex_1()
             .min_h_0()
@@ -6604,14 +6689,11 @@ impl Render for MapViewer {
                             .relative()
                             .overflow_hidden()
                             .when_some(canvas_style.background, |d, color| d.bg(rgb(color)))
-                            // Render all layer elements (raster content like tiles)
-                            .children(self.layer_manager.render_all_elements(
-                                &self.viewport,
-                                canvas_style.show_imagery,
-                                window,
-                                cx,
-                            ))
-                            // Render canvas layers (vector content)
+                            // The layer stack below its topmost canvas run, in
+                            // drawing order (see `render_map_layers`).
+                            .children(map_layers)
+                            // The topmost run of canvas layers, then the
+                            // overlays above every layer.
                             .child(
                                 canvas(|_, _, _| {}, {
                                     let viewport_clone = self.viewport.clone();
@@ -6637,22 +6719,12 @@ impl Render for MapViewer {
                                         );
                                         osm_gpui::frame_stats::interval("frame.interval");
                                         let this = entity.read(cx);
-                                        // Downloaded-area wash first: above imagery,
-                                        // below every layer's features.
-                                        if this.show_downloaded_area {
-                                            this.layer_manager.render_all_download_bounds(
-                                                &viewport_clone,
-                                                bounds,
-                                                window,
-                                            );
-                                        }
-                                        let fs_layers = osm_gpui::frame_stats::start();
-                                        this.layer_manager.render_all_canvas(
+                                        this.paint_layer_run(
+                                            &top_run,
                                             &viewport_clone,
                                             bounds,
                                             window,
                                         );
-                                        osm_gpui::frame_stats::lap("layers.canvas", fs_layers);
                                         // A selection of tens of thousands (Edit >
                                         // Find) highlights only its first
                                         // `MAX_SELECTION_HIGHLIGHTS`; features off

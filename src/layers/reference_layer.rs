@@ -687,8 +687,8 @@ mod tests {
     fn reference_layers_go_below_the_data_layers() {
         let mut m = LayerManager::new();
         m.add_layer(Box::new(osm_layer(1)));
-        m.add_reference_layer(Box::new(line_layer(2, Format::Gpx)));
-        m.add_reference_layer(Box::new(line_layer(3, Format::GeoJson)));
+        m.add_layer(Box::new(line_layer(2, Format::Gpx)));
+        m.add_layer(Box::new(line_layer(3, Format::GeoJson)));
         let ids: Vec<u64> = m.layers().iter().map(|l| l.id().0).collect();
         assert_eq!(ids, vec![2, 3, 1]);
     }
@@ -701,7 +701,7 @@ mod tests {
             "notes".into(),
             crate::notes::NoteStore::default(),
         )));
-        m.add_reference_layer(Box::new(line_layer(2, Format::Gpx)));
+        m.add_layer(Box::new(line_layer(2, Format::Gpx)));
         let ids: Vec<u64> = m.layers().iter().map(|l| l.id().0).collect();
         assert_eq!(ids, vec![1, 2]);
     }
