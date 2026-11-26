@@ -1,4 +1,5 @@
 use super::*;
+use gpui_component::ActiveTheme;
 
 impl OsmLayer {
     /// The screen-space offset to apply to `node_id`'s projected position
@@ -18,6 +19,7 @@ impl OsmLayer {
         window: &mut Window,
         feature: &FeatureRef,
         kind: HighlightKind,
+        cx: &App,
     ) {
         if feature.layer_id != self.id {
             return;
@@ -25,7 +27,7 @@ impl OsmLayer {
         let Some(ref osm_data) = self.store.osm_data else {
             return;
         };
-        let (halo, core) = highlight_colors(kind);
+        let (halo, core) = highlight_colors(kind, cx.theme().selection);
 
         match feature.kind {
             FeatureKind::Node => {
@@ -136,7 +138,7 @@ impl OsmLayer {
                         way_stroke::Shape::FULL,
                     );
                     if let Some(path) = batch.finish() {
-                        window.paint_path(path, rgb(color));
+                        window.paint_path(path, color);
                     }
                 }
 
@@ -169,7 +171,7 @@ impl OsmLayer {
                             }
                         }
                         if let Some(path) = batch.finish() {
-                            window.paint_path(path, rgb(color));
+                            window.paint_path(path, color);
                         }
                     }
                 }
@@ -223,7 +225,14 @@ impl OsmLayer {
                         kind,
                         id,
                     };
-                    self.render_highlight(viewport, bounds, window, &member, HighlightKind::Member);
+                    self.render_highlight_of(
+                        viewport,
+                        bounds,
+                        window,
+                        &member,
+                        HighlightKind::Member,
+                        cx,
+                    );
                 }
             }
         }

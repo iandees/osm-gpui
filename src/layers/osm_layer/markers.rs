@@ -148,7 +148,13 @@ pub(super) fn paint_restriction_marker(window: &mut Window, center: Point<Pixels
             BorderStyle::Solid,
         ));
     } else {
-        paint_ring(window, center, d - 2.0, 2.5, RESTRICTION_NO_COLOUR);
+        paint_ring(
+            window,
+            center,
+            d - 2.0,
+            2.5,
+            rgb(RESTRICTION_NO_COLOUR).into(),
+        );
     }
 }
 
@@ -158,26 +164,28 @@ pub(super) fn paint_ring(
     center: Point<Pixels>,
     diameter: f32,
     width: f32,
-    color: u32,
+    color: Hsla,
 ) {
     window.paint_quad(quad(
         circle_bounds(center, diameter),
         px(diameter / 2.0),
         gpui::transparent_black(),
         px(width),
-        rgb(color),
+        color,
         BorderStyle::Solid,
     ));
 }
 
 /// The `(halo, core)` colors of a highlight: a wide outer stroke and a
 /// narrower inner one. The pairs are chosen so one of the two always
-/// contrasts with whatever is underneath.
-pub(super) fn highlight_colors(kind: HighlightKind) -> (u32, u32) {
+/// contrasts with whatever is underneath. `selection` is the theme's
+/// selection color, the core of a selected feature's highlight.
+pub(super) fn highlight_colors(kind: HighlightKind, selection: Hsla) -> (Hsla, Hsla) {
+    let white = rgb(0xFFFFFF).into();
     match kind {
-        HighlightKind::Selected => (0xFFFFFF, SELECTION_ACCENT),
-        HighlightKind::Hovered => (CASING_COLOR, 0xFFFFFF),
-        HighlightKind::Member => (0xFFFFFF, RELATION_MEMBER_ACCENT),
+        HighlightKind::Selected => (white, selection),
+        HighlightKind::Hovered => (rgb(CASING_COLOR).into(), white),
+        HighlightKind::Member => (white, rgb(RELATION_MEMBER_ACCENT).into()),
     }
 }
 

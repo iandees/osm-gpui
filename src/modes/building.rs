@@ -216,6 +216,7 @@ pub(super) fn paint_preview(view: &MapViewer, frame: &PreviewFrame<'_>, window: 
             frame.viewport,
             frame.bounds,
             window,
+            frame.cx,
         );
     }
     let Some(progress) = view.building_progress().copied() else {
