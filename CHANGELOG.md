@@ -7,6 +7,32 @@ Each release's section is written just before tagging, with one line per
 change and a link to its pull request. Feature pull requests do not edit this
 file.
 
+## 0.16.0
+
+### Editing
+
+- Selected ways show a handle at the middle of each segment; dragging one adds a vertex there, and it snaps onto other nodes and ways like any dragged vertex. ([#403](https://github.com/iandees/osm-gpui/pull/403))
+- In Improve Way mode, holding Shift locks the node being improved and keeps another way from being picked. Deleting the nearest node moves from Shift-click to Cmd/Ctrl+Alt-click. ([#404](https://github.com/iandees/osm-gpui/pull/404))
+- Settings > Editing > Download data automatically fetches the visible area once the map settles at zoom 16 or more. It is off by default. ([#382](https://github.com/iandees/osm-gpui/pull/382))
+
+### Interface
+
+- The Layers list now matches the map's drawing order (top of the list is on top), and new layers are placed by kind. ([#401](https://github.com/iandees/osm-gpui/pull/401))
+- Custom imagery sources are added and edited in one shared dialog, and the Settings rows are a compact one-line summary. ([#402](https://github.com/iandees/osm-gpui/pull/402))
+- The selection highlight takes its colour from the theme. ([#395](https://github.com/iandees/osm-gpui/pull/395))
+
+### Map style
+
+- MapCSS zoom selectors now apply to node styles. ([#380](https://github.com/iandees/osm-gpui/pull/380))
+- MapCSS `direction-style` (`arrow`, `chevron` or `none`) and `direction-spacing` control one-way marks. ([#381](https://github.com/iandees/osm-gpui/pull/381))
+- Street names sit evenly off every road class. ([#397](https://github.com/iandees/osm-gpui/pull/397))
+- Point and area labels switch to the cheaper backing halo at 20 labels instead of 40, which lowers label paint time. ([#400](https://github.com/iandees/osm-gpui/pull/400))
+
+### Fixes
+
+- Changing app shortcuts no longer clears text-input editing and other component shortcuts. ([#378](https://github.com/iandees/osm-gpui/pull/378))
+- Scrolling a field dropdown list no longer also scrolls the inspector behind it. ([#379](https://github.com/iandees/osm-gpui/pull/379))
+
 ## 0.15.0
 
 ### Extensions
