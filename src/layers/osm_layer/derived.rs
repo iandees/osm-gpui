@@ -87,7 +87,7 @@ pub(super) fn compute_node_cache(data: &OsmData, stylesheet: &Stylesheet) -> Nod
             let Mercator { x, y } = lat_lon_to_mercator(at);
             index_by_id.insert(node.id, flat.len());
             flat.push((node.id, x, y));
-            styles.push(stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM));
+            styles.push(stylesheet.node_style_cached(&node.tags));
         }
     }
     NodeCache {
@@ -350,7 +350,7 @@ pub(super) fn apply_style_refresh(
                 return;
             };
             if let Some(&idx) = node_cache.index_by_id.get(&NodeId(id)) {
-                node_cache.styles[idx] = stylesheet.node_style(&node.tags, NODE_STYLE_ZOOM);
+                node_cache.styles[idx] = stylesheet.node_style_cached(&node.tags);
             }
         }
         FeatureKind::Way => {
@@ -500,10 +500,7 @@ impl OsmLayer {
             return;
         };
         let Mercator { x: mx, y: my } = lat_lon_to_mercator(at);
-        let style = self
-            .store
-            .stylesheet
-            .node_style(&node.tags, NODE_STYLE_ZOOM);
+        let style = self.store.stylesheet.node_style_cached(&node.tags);
         if let Some(&idx) = self.derived.node_cache.index_by_id.get(&id) {
             let (_, old_mx, old_my) = self.derived.node_cache.flat[idx];
             self.derived

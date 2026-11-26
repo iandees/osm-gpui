@@ -400,7 +400,7 @@ impl OsmLayer {
             {
                 continue;
             }
-            let style = self.derived.node_cache.styles[idx];
+            let style = self.node_style_at(idx, zoom);
             if !style.tagged {
                 continue;
             }
@@ -511,7 +511,7 @@ impl OsmLayer {
                     let icon = if p.icon {
                         label.icon.clone().map(|choice| labels::PlacedIcon {
                             choice,
-                            fill: self.derived.node_cache.styles[*idx].color,
+                            fill: self.node_style_at(*idx, zoom).color,
                         })
                     } else {
                         None
@@ -723,8 +723,9 @@ impl OsmLayer {
                 continue;
             }
             let line = cache.shapes.get(window, text, label.look.font_px);
-            let reach = Self::label_marker_radius(self.derived.node_cache.styles[idx], zoom)
-                .max((self.derived.node_cache.styles[idx].size + 2.0) / 2.0);
+            let node_style = self.node_style_at(idx, zoom);
+            let reach =
+                Self::label_marker_radius(node_style, zoom).max((node_style.size + 2.0) / 2.0);
             let item = forced_item(
                 (labels::KIND_NODE, f.id),
                 reach,

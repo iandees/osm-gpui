@@ -206,6 +206,21 @@ impl OsmLayer {
         pins
     }
 
+    /// The Arc'd per-signature node styles at `zoom`, or `None` when no rule
+    /// has a zoom range (cached styles then hold at every zoom).
+    pub(super) fn node_zoom_table(&self, zoom: f64) -> Option<Arc<Vec<NodeStyle>>> {
+        self.store
+            .stylesheet
+            .is_zoom_dependent()
+            .then(|| self.store.stylesheet.zoom_node_styles(zoom))
+    }
+
+    /// The style of the node at `idx` in the node cache, at `zoom`.
+    pub(super) fn node_style_at(&self, idx: usize, zoom: f64) -> NodeStyle {
+        let table = self.node_zoom_table(zoom);
+        self.derived.node_cache.styles[idx].at_zoom(table.as_deref().map(Vec::as_slice))
+    }
+
     /// How node `id` (at `idx` in the node cache) is shown at `zoom`: the
     /// one answer behind drawing, hover, click and box select.
     pub(super) fn node_form_at(&self, pins: &Pins, idx: usize, id: NodeId, zoom: f64) -> NodeForm {
@@ -218,7 +233,7 @@ impl OsmLayer {
         let pinned = pins.nodes.contains(&id)
             || (!pins.ways.is_empty() && in_way(&|w| pins.ways.contains(w)));
         let previewed = pins.preview.is_some_and(|p| in_way(&|w| *w == p));
-        let style = self.derived.node_cache.styles[idx];
+        let style = self.node_style_at(idx, zoom);
         let tagged = style.tagged;
         let form = node_markers::node_form_previewed(
             tagged,

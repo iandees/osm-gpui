@@ -50,7 +50,10 @@ impl OsmLayer {
                 {
                     return;
                 }
-                let node_style = self.store.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM);
+                let node_style = self
+                    .store
+                    .stylesheet
+                    .node_style(&n.tags, viewport.zoom_level());
                 let center = point(sp.x + bounds.origin.x, sp.y + bounds.origin.y);
                 // The marker itself, in full: the zoom rule may have hidden
                 // it or drawn it small.
@@ -85,7 +88,9 @@ impl OsmLayer {
                                 sp += self.drag_preview_offset(*node_id);
                                 pts.push(point(sp.x + origin_x, sp.y + origin_y));
                                 node_styles.push(
-                                    self.store.stylesheet.node_style(&n.tags, NODE_STYLE_ZOOM),
+                                    self.store
+                                        .stylesheet
+                                        .node_style(&n.tags, viewport.zoom_level()),
                                 );
                             }
                         }
