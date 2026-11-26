@@ -220,7 +220,6 @@ Single-line messages in imperative present tense, e.g. "Add tag-edit dialog" rat
 ### Design and architecture
 
 - If your change alters app state flow, module boundaries, or the renderer hot path, open an issue or discussion first.
-- For large features, see the [improvement-suggestions.md](docs/improvement-suggestions.md) roadmap.
 
 ## Releases
 
