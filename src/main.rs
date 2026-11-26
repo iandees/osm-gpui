@@ -838,6 +838,8 @@ struct MapViewer {
     /// The side panel's Validation section, once Tools > Validate has run
     /// (see `validation_panel.rs`).
     validation: Option<validation_panel::ValidationPanel>,
+    /// Debounce state for automatic downloads (`Settings > Editing`).
+    auto_fetch: osm_gpui::auto_fetch::AutoFetch,
     /// The changeset comment typed in the upload dialog, kept when the dialog
     /// closes without uploading (Cancel, or Show on a conflict) and put back
     /// when it reopens. Cleared after a successful upload.
@@ -1073,6 +1075,7 @@ impl MapViewer {
             find_history: Default::default(),
             find_mode: Default::default(),
             validation: None,
+            auto_fetch: Default::default(),
             upload_comment_draft: String::new(),
             last_uploaded_changeset: None,
             upload_source_draft: None,
@@ -6042,6 +6045,85 @@ impl MapViewer {
         .detach();
     }
 
+    /// Called every frame: when automatic downloading is on, start a settle
+    /// timer whenever the view changes (see `osm_gpui::auto_fetch`).
+    fn auto_fetch_frame(&mut self, cx: &mut Context<Self>) {
+        let on = settings_store::snapshot().auto_fetch_data;
+        let view = on.then(|| {
+            osm_gpui::auto_fetch::ViewKey::new(
+                self.viewport.visible_bounds(),
+                self.viewport.zoom_level(),
+            )
+        });
+        if let Some(started) = self.auto_fetch.frame(view) {
+            self.start_auto_fetch_timer(started, cx);
+        }
+    }
+
+    fn start_auto_fetch_timer(
+        &mut self,
+        started: osm_gpui::auto_fetch::ViewKey,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(osm_gpui::auto_fetch::SETTLE_DELAY)
+                .await;
+            let _ = this.update(cx, |this, cx| this.auto_fetch_settled(started, cx));
+        })
+        .detach();
+    }
+
+    /// The settle timer fired: if the view held still, download it when the
+    /// layer does not already hold it.
+    fn auto_fetch_settled(
+        &mut self,
+        started: osm_gpui::auto_fetch::ViewKey,
+        cx: &mut Context<Self>,
+    ) {
+        use osm_gpui::auto_fetch::{should_fetch, Settled};
+        let view = match self.auto_fetch.timer_fired(started) {
+            Settled::Nothing => return,
+            Settled::Wait(view) => {
+                self.start_auto_fetch_timer(view, cx);
+                return;
+            }
+            Settled::Check(view) => view,
+        };
+        if !settings_store::snapshot().auto_fetch_data {
+            return;
+        }
+        // The layer a download would merge into: the active one if it is an
+        // OSM layer, otherwise the download creates one.
+        let known: Option<Vec<osm_gpui::download_bounds::MercRect>> = self
+            .active_layer
+            .and_then(|id| self.layer_manager.find_layer(id))
+            .and_then(|layer| layer.as_osm())
+            .map(|osm| osm.download_rects().to_vec());
+        if !should_fetch(&view, known.as_deref()) {
+            return;
+        }
+        // Not while something else is being transferred, and quietly not
+        // when the server is offline or would refuse the area: this is not
+        // something the user asked for, so it should not nag.
+        if self.transfer.is_some() {
+            // Try again at the next view change, or when this one is
+            // retried after the transfer ends.
+            self.auto_fetch = Default::default();
+            return;
+        }
+        let base_url = settings_store::api_base_url();
+        osm_gpui::capabilities::ensure_fetched(self.http.clone(), &base_url);
+        if osm_gpui::capabilities::for_server(&base_url).is_offline()
+            || osm_api::check_area(&view.bounds(), &base_url).is_err()
+        {
+            self.auto_fetch.attempted(view);
+            return;
+        }
+        self.auto_fetch.attempted(view);
+        self.request_download_of(view.bounds(), cx);
+    }
+
     /// File > "Revert Changeset…": ask which changeset (`render` opens the
     /// dialog, which needs the window).
     ///
@@ -6366,6 +6448,7 @@ impl Render for MapViewer {
             window_size.height - px(status_bar::STATUS_BAR_HEIGHT) - menu::top_chrome_height(),
         );
         self.viewport.update_size(map_size);
+        self.auto_fetch_frame(cx);
 
         self.show_save_failures();
         self.expire_status();

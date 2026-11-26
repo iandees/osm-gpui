@@ -7,6 +7,7 @@ pub mod appearance;
 pub mod arc;
 pub mod assets;
 pub mod auth;
+pub mod auto_fetch;
 pub mod autosave;
 pub mod building;
 pub mod capabilities;
