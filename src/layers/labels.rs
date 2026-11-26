@@ -1503,8 +1503,11 @@ pub const HALO_ENV: &str = "OSM_GPUI_LABEL_HALO";
 
 /// The outline (`Offsets`) is the most legible but paints every glyph several
 /// times, so it is used only while there are few labels; with more than
-/// [`OUTLINE_MAX_LABELS`] placed, the much cheaper backing quad takes over.
-pub const OUTLINE_MAX_LABELS: usize = 40;
+/// [`OUTLINE_MAX_LABELS`] text labels placed, the much cheaper backing quad
+/// takes over. The outline adds about 15 to 45 us per text label (M4 Pro,
+/// `docs/perf/2026-11-label-paint.md`); at 20 the label paint stays near the
+/// 0.8 ms goal, where 40 measured 1.2 to 1.8 ms.
+pub const OUTLINE_MAX_LABELS: usize = 20;
 
 /// What a layer's labels are tuned with: overrides for measuring, never
 /// changed by normal use. Owned by the layer's [`LabelCache`] and passed
@@ -1565,11 +1568,31 @@ impl LabelTuning {
         }
     }
 
-    /// Apply a `LabelBench` spec (see [`parse_bench`]).
+    /// Apply a `LabelBench` spec: the street-name tokens of [`parse_bench`],
+    /// plus `points=offsets|shadow|quad|off|auto` (the point and area label
+    /// halo; `auto` picks by count) and `outline_max=N` (see
+    /// [`LabelTuning::halo_for`]). Point tokens left out keep their value.
     pub fn set_bench(&mut self, spec: &str) -> Result<(), String> {
-        let mut k = parse_bench(spec)?;
+        let mut halo = self.halo_override;
+        let mut outline_max = self.outline_max_labels;
+        let mut rest = Vec::new();
+        for tok in spec.split_whitespace() {
+            match tok.split_once('=') {
+                Some(("points", "auto")) => halo = None,
+                Some(("points", m)) => {
+                    halo = Some(HaloMode::from_name(m).ok_or(format!("bad points {m}"))?)
+                }
+                Some(("outline_max", n)) => {
+                    outline_max = n.parse().map_err(|_| format!("bad outline_max {n}"))?
+                }
+                _ => rest.push(tok),
+            }
+        }
+        let mut k = parse_bench(&rest.join(" "))?;
         k.repeat = k.repeat.clamp(1, 255);
         self.bench = k;
+        self.halo_override = halo;
+        self.outline_max_labels = outline_max;
         Ok(())
     }
 
@@ -2768,6 +2791,24 @@ mod tests {
         same.set_bench("on halo=coarse repeat=1").unwrap();
         assert_eq!(same.stamp(), base.stamp());
         assert!(LabelTuning::default().set_bench("halo=wat").is_err());
+    }
+
+    #[test]
+    fn the_bench_spec_sets_the_point_halo_and_outline_budget() {
+        let mut t = LabelTuning::default();
+        t.set_bench("on points=quad outline_max=7 halo=none")
+            .unwrap();
+        assert_eq!(t.halo_override, Some(HaloMode::Quad));
+        assert_eq!(t.outline_max_labels, 7);
+        assert_eq!(t.bench.halo, crate::layers::line_labels::MeshHalo::None);
+        // Point tokens left out keep their value; `auto` clears the override.
+        t.set_bench("off").unwrap();
+        assert_eq!(t.halo_override, Some(HaloMode::Quad));
+        assert_eq!(t.outline_max_labels, 7);
+        t.set_bench("points=auto").unwrap();
+        assert_eq!(t.halo_override, None);
+        assert!(t.set_bench("points=wat").is_err());
+        assert!(t.set_bench("outline_max=x").is_err());
     }
 
     #[test]

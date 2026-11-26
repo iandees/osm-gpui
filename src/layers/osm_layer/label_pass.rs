@@ -532,6 +532,7 @@ impl OsmLayer {
         crate::frame_stats::lap("labels.place", fs);
         crate::frame_stats::count("labels.candidates", items.len());
         crate::frame_stats::count("labels.placed", placed.len());
+        crate::frame_stats::count("labels.text", n_text);
         labels::Placement {
             cam,
             revision: self.store.revision,
