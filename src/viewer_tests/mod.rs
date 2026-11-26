@@ -12,6 +12,7 @@ mod file_drop;
 mod find;
 mod junction_edits;
 mod lane_edits;
+mod move_layer;
 mod preset_fields;
 mod relation_edits;
 mod relation_members;
