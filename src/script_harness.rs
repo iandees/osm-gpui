@@ -594,16 +594,15 @@ impl MapViewer {
                 ScriptCommand::Action { name } => {
                     use script::action::{resolve_action, unhandled_message, ActionTarget};
                     let result = match resolve_action(&name, cx.all_action_names()) {
-                        // Benchmark knobs for the labels, e.g.
-                        // `action LabelBench:on,halo=none,repeat=4,points=quad` (see
-                        // `labels::LabelTuning::set_bench`).
+                        // Benchmark knob for the street-name labels, e.g.
+                        // `action LabelBench:on,halo=none,repeat=4` (see
+                        // `line_labels::parse_bench`).
                         Ok(ActionTarget::LabelBench) => {
                             // The script parser wants one token: `LabelBench:on,halo=none`.
                             let spec = name
                                 .trim_start_matches("LabelBench")
                                 .replace([':', ','], " ");
-                            let result = osm_gpui::layers::labels::LabelTuning::default()
-                                .set_bench(&spec)
+                            let result = osm_gpui::layers::line_labels::parse_bench(&spec)
                                 .and_then(|_| {
                                     self.layer_manager
                                         .layers_mut()
