@@ -863,16 +863,19 @@ impl OsmLayer {
             let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             (f32::from(sp.x), f32::from(sp.y))
         };
-        match self.render.line_labels.lock() {
-            Ok(mut lc) => lc.prepare(
+        // The line-label cache only memoises meshes and layouts keyed by what
+        // they were built from, so one left behind by a panic is still sound.
+        self.render
+            .line_labels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prepare(
                 cands,
                 cam.zoom,
                 &cache.tuning.line_knobs(),
                 to_screen,
                 &prev,
-            ),
-            Err(_) => (Vec::new(), 0),
-        }
+            )
     }
 
     /// Keep the street names `place_with_lines` accepted (`ok[i]` for
@@ -891,26 +894,29 @@ impl OsmLayer {
             let sp = viewport.mercator_to_screen(Mercator::new(mx, my));
             (f32::from(sp.x), f32::from(sp.y))
         };
-        let (placed, boxes): (Vec<_>, Vec<_>) = match self.render.line_labels.lock() {
-            Ok(lc) => slots
-                .iter()
-                .zip(ok)
-                .filter(|(_, &ok)| ok)
-                .map(|(s, _)| {
-                    let p = lc.finish(&cands[s.ci], s, to_screen);
-                    // Boxes relative to the anchor, to re-project when kept.
-                    let (ax, ay) = to_screen(p.mx, p.my);
-                    let offs = s
-                        .rects
-                        .iter()
-                        .map(|r| labels::Rect::new(r.x0 - ax, r.y0 - ay, r.x1 - ax, r.y1 - ay))
-                        .collect();
-                    let anchor = (p.mx, p.my);
-                    (p, (anchor.0, anchor.1, offs))
-                })
-                .unzip(),
-            Err(_) => (Vec::new(), Vec::new()),
-        };
+        let lc = self
+            .render
+            .line_labels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (placed, boxes): (Vec<_>, Vec<_>) = slots
+            .iter()
+            .zip(ok)
+            .filter(|(_, &ok)| ok)
+            .map(|(s, _)| {
+                let p = lc.finish(&cands[s.ci], s, to_screen);
+                // Boxes relative to the anchor, to re-project when kept.
+                let (ax, ay) = to_screen(p.mx, p.my);
+                let offs = s
+                    .rects
+                    .iter()
+                    .map(|r| labels::Rect::new(r.x0 - ax, r.y0 - ay, r.x1 - ax, r.y1 - ay))
+                    .collect();
+                let anchor = (p.mx, p.my);
+                (p, (anchor.0, anchor.1, offs))
+            })
+            .unzip();
+        drop(lc);
         crate::frame_stats::count("linelabels.candidates", cands.len());
         crate::frame_stats::count("linelabels.placed", placed.len());
         self.render
@@ -1023,8 +1029,11 @@ impl OsmLayer {
         let proj = viewport.projector();
         let origin = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let view = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-        if let Ok(mut cache) = self.render.line_labels.lock() {
-            cache.frame(
+        self.render
+            .line_labels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frame(
                 &cands,
                 zoom,
                 |mx, my| proj.to_screen(mx, my),
@@ -1032,7 +1041,6 @@ impl OsmLayer {
                 view,
                 &mut out,
             );
-        }
         out
     }
 }
@@ -1105,5 +1113,61 @@ mod tests {
             crate::layers::line_labels::BenchKnobs::default()
         );
         assert!(a.set_label_bench("halo=wat").is_err());
+    }
+
+    /// A panic while the line-label cache was held must not leave every later
+    /// frame without street names.
+    #[test]
+    fn street_names_are_still_placed_after_the_line_label_cache_is_poisoned() {
+        use crate::coordinates::LatLon;
+        use crate::ids::{NodeId, WayId};
+        use crate::osm::{OsmData, OsmNode, OsmWay};
+        use crate::tags::Tags;
+        use crate::viewport::Viewport;
+        use gpui::{point, px, size, Bounds};
+        use std::sync::Arc;
+
+        let nodes = (0..=16i64)
+            .map(|i| {
+                let n = OsmNode {
+                    id: NodeId(i + 1),
+                    lat: 40.0,
+                    lon: -74.002 + i as f64 * 0.00025,
+                    tags: Tags::new(),
+                    version: 1,
+                };
+                (n.id, n)
+            })
+            .collect();
+        let mut tags = Tags::new();
+        tags.insert("highway", "residential");
+        tags.insert("name", "Main Street");
+        let way = OsmWay {
+            id: WayId(1),
+            nodes: (1..=17).map(NodeId).collect(),
+            tags,
+            version: 1,
+        };
+        let data = Arc::new(OsmData {
+            nodes,
+            ways: [(way.id, way)].into_iter().collect(),
+            relations: Vec::new(),
+            bounds: Vec::new(),
+        });
+        let layer = OsmLayer::new_with_data(LayerId(1), "streets", data);
+        let vp = Viewport::new(LatLon::new(40.0, -74.0), 17.0, size(px(1600.0), px(1000.0)));
+        let bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(1600.0), px(1000.0)),
+        };
+        assert!(layer.line_label_frame(&vp, bounds).labels > 0);
+
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = layer.render.line_labels.lock().unwrap();
+            panic!("poison the line-label cache");
+        }));
+        assert!(poisoned.is_err());
+        assert!(layer.render.line_labels.is_poisoned());
+        assert!(layer.line_label_frame(&vp, bounds).labels > 0);
     }
 }

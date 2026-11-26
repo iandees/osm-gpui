@@ -287,6 +287,23 @@ pub(crate) static SCRIPT_BUS: std::sync::OnceLock<Arc<ScriptBus>> = std::sync::O
 pub(crate) static KEYSTROKE_QUEUE: std::sync::OnceLock<Arc<Mutex<Vec<Keystroke>>>> =
     std::sync::OnceLock::new();
 
+/// Append `item` to `queue`, even if a thread panicked while holding it: a
+/// `Vec` push or drain cannot leave it half-updated, and dropping keystrokes
+/// would leave a script waiting on input that never arrives.
+fn push_queued<T>(queue: &Mutex<Vec<T>>, item: T) {
+    queue.lock().unwrap_or_else(|e| e.into_inner()).push(item);
+}
+
+/// Take everything in `queue` without blocking: empty if another thread holds
+/// it right now (it is drained again next frame), recovered if poisoned.
+fn try_drain_queued<T>(queue: &Mutex<Vec<T>>) -> Vec<T> {
+    match queue.try_lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(std::sync::TryLockError::Poisoned(e)) => std::mem::take(&mut *e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => Vec::new(),
+    }
+}
+
 impl MapViewer {
     /// Window pixels for a script position (see `script::Where`).
     pub(crate) fn script_window_point(&self, at: script::Where) -> gpui::Point<gpui::Pixels> {
@@ -1403,15 +1420,13 @@ impl MapViewer {
         // which would double-lease it if dispatched synchronously from
         // inside `render`.
         if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
-            if let Ok(mut guard) = ks_queue.try_lock() {
-                let pending: Vec<_> = guard.drain(..).collect();
-                if !pending.is_empty() {
-                    window.defer(cx, move |window, cx| {
-                        for ks in pending {
-                            window.dispatch_keystroke(ks, cx);
-                        }
-                    });
-                }
+            let pending = try_drain_queued(ks_queue);
+            if !pending.is_empty() {
+                window.defer(cx, move |window, cx| {
+                    for ks in pending {
+                        window.dispatch_keystroke(ks, cx);
+                    }
+                });
             }
         }
 
@@ -1573,9 +1588,7 @@ impl AppHandle for LiveApp {
             key_char,
         };
         if let Some(q) = KEYSTROKE_QUEUE.get() {
-            if let Ok(mut guard) = q.lock() {
-                guard.push(ks);
-            }
+            push_queued(q, ks);
         }
         // The keystroke is queued from this thread, so the frame in flight
         // may already be past the point where the queue is drained: it goes
@@ -1659,9 +1672,7 @@ impl AppHandle for LiveApp {
             }
             let ks = keystroke_for_char(ch);
             if let Some(q) = KEYSTROKE_QUEUE.get() {
-                if let Ok(mut guard) = q.lock() {
-                    guard.push(ks);
-                }
+                push_queued(q, ks);
             }
             // One character per frame, like a person typing, so each lands
             // before the next and the input can be watched filling in.
@@ -1837,5 +1848,35 @@ impl AppHandle for LiveApp {
 
     fn sign_in_failure(&mut self) -> Option<String> {
         SIGN_IN_FAILURE.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{push_queued, try_drain_queued};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn a_poisoned_queue_still_takes_and_hands_out_items() {
+        let queue = Arc::new(Mutex::new(vec![1]));
+        let q = queue.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = q.lock().unwrap();
+            panic!("poison the queue");
+        })
+        .join();
+        assert!(queue.is_poisoned());
+        push_queued(&queue, 2);
+        assert_eq!(try_drain_queued(&queue), [1, 2]);
+        assert!(try_drain_queued(&queue).is_empty());
+    }
+
+    #[test]
+    fn a_held_queue_is_left_for_the_next_drain() {
+        let queue = Mutex::new(vec![1]);
+        let guard = queue.lock().unwrap();
+        assert!(try_drain_queued(&queue).is_empty());
+        drop(guard);
+        assert_eq!(try_drain_queued(&queue), [1]);
     }
 }
