@@ -39,8 +39,6 @@ The first time the app starts, a welcome card offers **Download OSM data here** 
 
 Each downloaded or opened file becomes a layer in the side panel, where you can show, hide, reorder and delete layers. Edits go into the **active layer**.
 
-The Layers list is the order the map is drawn in: the top row is drawn on top of everything below it. Right-click a layer and choose **Move Up** to draw it higher or **Move Down** to draw it lower; moving imagery above a data layer draws the imagery over that data. New layers are placed by type: imagery goes under everything that is not imagery (above any imagery already there), GPX, GeoJSON, GPS traces and PMTiles overlays go above the imagery and below your OSM data, OSM data goes on top, and notes and extension markers (such as street photos) go above that. A layer you have moved stays where you put it. Selection and hover highlights and labels are drawn over every layer. The dimming of areas you have not downloaded sits just above the topmost imagery layer, under the layers above it.
-
 ## 3. Add imagery
 
 Imagery gives you something to trace over. The **Imagery** menu has:
@@ -152,7 +150,7 @@ You can also **File > Export…** (`⌘E`) to save your work, including pending 
 
 ## 8. GPS traces, GPX and GeoJSON
 
-These show up as read-only reference layers: you can trace over them but not edit them, and they are never uploaded. They are added above imagery and below your OSM data; you can move them in the Layers list.
+These show up as read-only reference layers: you can trace over them but not edit them, and they are never uploaded. They draw above imagery and below your OSM data.
 
 ### Public GPS traces from OSM
 
