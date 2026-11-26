@@ -182,7 +182,12 @@ impl CustomImageryDialog {
             modal::ModalKey::Escape => self.cancel(cx),
             // Enter belongs to the multi-line URL box.
             modal::ModalKey::Enter => {
-                if !self.url_template.read(cx).focus_handle(cx).is_focused(window) {
+                if !self
+                    .url_template
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+                {
                     self.submit(cx)
                 }
             }

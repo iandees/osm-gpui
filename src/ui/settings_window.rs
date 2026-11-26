@@ -1210,28 +1210,28 @@ impl SettingsWindow {
             let is_confirming_delete = self.confirm_delete_index == Some(idx);
 
             let mut item = {
-            let entry_view = view.clone();
-            let entry_summary = tr!(
-                "settings.imagery.entry_summary",
-                url = truncate_middle(&entry.url_template, URL_PREVIEW_CHARS),
-                min = entry.min_zoom,
-                max = entry.max_zoom
-            );
-            let entry_name = entry.name.clone();
-            SettingItem::new(
-                title,
-                SettingField::render(move |_options, window, cx| {
-                    render_entry_row(
-                        entry_view.clone(),
-                        idx,
-                        entry_name.clone(),
-                        is_confirming_delete,
-                        window,
-                        cx,
-                    )
-                }),
-            )
-            .description(entry_summary)
+                let entry_view = view.clone();
+                let entry_summary = tr!(
+                    "settings.imagery.entry_summary",
+                    url = truncate_middle(&entry.url_template, URL_PREVIEW_CHARS),
+                    min = entry.min_zoom,
+                    max = entry.max_zoom
+                );
+                let entry_name = entry.name.clone();
+                SettingItem::new(
+                    title,
+                    SettingField::render(move |_options, window, cx| {
+                        render_entry_row(
+                            entry_view.clone(),
+                            idx,
+                            entry_name.clone(),
+                            is_confirming_delete,
+                            window,
+                            cx,
+                        )
+                    }),
+                )
+                .description(entry_summary)
             };
 
             item = item.keywords([entry.name.clone(), entry.url_template.clone()]);
@@ -1966,10 +1966,10 @@ impl Render for SettingsWindow {
 mod tests {
     // Not `super::*`: it carries `gpui::*`, whose `test` macro shadows `#[test]`.
     use super::{
-        truncate_middle, acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
-        parse_custom_api_url, parse_map_style_location, rejection_message, CacheBudget,
-        ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, PageSelection, SettingsPage,
-        MIN_CACHE_BUDGET_MB,
+        acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
+        parse_custom_api_url, parse_map_style_location, rejection_message, truncate_middle,
+        CacheBudget, ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, PageSelection,
+        SettingsPage, MIN_CACHE_BUDGET_MB,
     };
     use crate::auth::StoredToken;
     use crate::settings_store::{ApiServerChoice, AppSettings, DEV_API_URL, PRIMARY_API_URL};
