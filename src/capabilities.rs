@@ -219,19 +219,25 @@ impl CapabilitiesCache {
     /// The capabilities known for `base_url`, or the defaults if none have
     /// been fetched (yet).
     pub fn for_server(&self, base_url: &str) -> Capabilities {
-        self.servers
-            .lock()
-            .ok()
-            .and_then(|g| g.get(&key(base_url)).and_then(|e| e.caps.clone()))
+        self.servers()
+            .get(&key(base_url))
+            .and_then(|e| e.caps.clone())
             .unwrap_or_default()
     }
 
     /// Why the latest fetch for `base_url` failed, if it did.
     pub fn last_error(&self, base_url: &str) -> Option<CapabilitiesError> {
-        self.servers
-            .lock()
-            .ok()
-            .and_then(|g| g.get(&key(base_url)).and_then(|e| e.last_error.clone()))
+        self.servers()
+            .get(&key(base_url))
+            .and_then(|e| e.last_error.clone())
+    }
+
+    /// The per-server entries, recovered if a thread panicked holding them:
+    /// each update is a few field writes with no I/O in between, so an entry
+    /// is never left half-written, and refusing the lock would stop every
+    /// server's capabilities from ever being fetched again.
+    fn servers(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
+        self.servers.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Whether the server at `base_url` accepts a download of `bounds`.
@@ -244,9 +250,7 @@ impl CapabilitiesCache {
     /// was offline (possibly stale), is retried at most once per cooldown; a
     /// healthy cached entry is never refetched.
     fn begin_attempt(&self, base_url: &str, now: Instant) -> bool {
-        let Ok(mut g) = self.servers.lock() else {
-            return false;
-        };
+        let mut g = self.servers();
         let e = g.entry(key(base_url)).or_default();
         if e.in_flight {
             return false;
@@ -266,9 +270,7 @@ impl CapabilitiesCache {
     }
 
     fn finish_attempt(&self, base_url: &str, result: Result<Capabilities, CapabilitiesError>) {
-        let Ok(mut g) = self.servers.lock() else {
-            return;
-        };
+        let mut g = self.servers();
         let e = g.entry(key(base_url)).or_default();
         e.in_flight = false;
         match result {
