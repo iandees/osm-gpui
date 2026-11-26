@@ -59,11 +59,6 @@ const RELATION_MEMBER_ACCENT: u32 = 0x7C4DFF;
 /// imagery.
 const CASING_COLOR: u32 = 0x1C1C1E;
 
-/// The zoom at which node styles are resolved into the per-node cache.
-/// Node rules with zoom ranges are evaluated at this zoom only (way styles
-/// are re-resolved per zoom bucket; nodes are not).
-const NODE_STYLE_ZOOM: f64 = 18.0;
-
 /// Below this zoom turn-restriction markers aren't drawn or clickable.
 /// (Which node markers are shown is decided by `node_markers`.)
 const VERTEX_MIN_ZOOM: f64 = 16.0;
@@ -577,6 +572,7 @@ impl MapLayer for OsmLayer {
         let mut styled: HashMap<u32, MarkerBatch> = HashMap::new();
         let mut simple: Option<Path<Pixels>> = None;
         let mut simple_bounds = EMPTY_BOUNDS;
+        let node_zoom_table = self.node_zoom_table(zoom);
         for (idx, &(id, mx, my)) in self.derived.node_cache.flat.iter().enumerate() {
             if mx < vmin_x || mx > vmax_x || my < vmin_y || my > vmax_y {
                 continue;
@@ -584,7 +580,8 @@ impl MapLayer for OsmLayer {
             nodes_in_view += 1;
             // Selected and hovered nodes and selected ways' nodes are painted
             // in full by `render_highlight`, so only the zoom rule applies.
-            let style = self.derived.node_cache.styles[idx];
+            let style = self.derived.node_cache.styles[idx]
+                .at_zoom(node_zoom_table.as_deref().map(Vec::as_slice));
             // An untagged vertex of a way is never drawn here (only the
             // highlight pass draws it, when selected): the way lookup runs
             // only for untagged nodes at zooms where a standalone one shows.

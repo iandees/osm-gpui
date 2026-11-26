@@ -445,6 +445,13 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Turn automatic downloading on or off. Written straight to the store,
+    /// which the main window reads every frame.
+    fn set_auto_fetch_data(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.commit(|s| s.auto_fetch_data = on);
+        cx.notify();
+    }
+
     /// Reverse (or restore) the scroll-zoom direction. Written straight to the
     /// store, which the main window reads on every scroll.
     fn set_invert_scroll_zoom(&mut self, invert: bool, cx: &mut Context<Self>) {
@@ -1134,6 +1141,17 @@ impl SettingsWindow {
             ),
         )
         .description(tr!("settings.editing.taginfo_description"));
+        let auto_fetch_view = view.clone();
+        let auto_fetch_item = SettingItem::new(
+            tr!("settings.editing.auto_fetch"),
+            SettingField::switch(
+                |_cx: &App| settings_store::snapshot().auto_fetch_data,
+                move |on: bool, cx: &mut App| {
+                    auto_fetch_view.update(cx, |this, cx| this.set_auto_fetch_data(on, cx));
+                },
+            ),
+        )
+        .description(tr!("settings.editing.auto_fetch_description"));
         let simplify_view = view.clone();
         let simplify_input = self.edit_simplify_tolerance.clone();
         let simplify_error = self.simplify_tolerance_error.clone();
@@ -1168,6 +1186,9 @@ impl SettingsWindow {
                 SettingGroup::new()
                     .title(tr!("settings.editing.autosave_group"))
                     .item(item),
+                SettingGroup::new()
+                    .title(tr!("settings.editing.auto_fetch_group"))
+                    .item(auto_fetch_item),
                 SettingGroup::new()
                     .title(tr!("settings.editing.taginfo_group"))
                     .item(taginfo_item),
