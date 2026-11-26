@@ -8,5 +8,6 @@ pub mod custom;
 pub mod mapcss;
 
 pub use mapcss::{
-    Direction, Fill, NodeStyle, ParseError, Stylesheet, TextPosition, TextStyle, WayStyle,
+    Direction, DirectionStyle, Fill, NodeStyle, ParseError, Stylesheet, TextPosition, TextStyle,
+    WayStyle,
 };

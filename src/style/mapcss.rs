@@ -223,6 +223,26 @@ pub enum Direction {
     Reverse,
 }
 
+/// How a way's one-way direction is drawn (`direction-style`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DirectionStyle {
+    /// A filled triangle.
+    #[default]
+    Arrow,
+    /// An open `>` mark, in the casing colour.
+    Chevron,
+    /// Nothing, even on a one-way.
+    None,
+}
+
+/// Path length between direction marks along a way when `direction-spacing`
+/// is not set, in pixels.
+pub const DEFAULT_DIRECTION_SPACING: f32 = 96.0;
+
+/// Smallest accepted `direction-spacing`, in pixels: closer marks would
+/// merge into a solid line.
+pub const MIN_DIRECTION_SPACING: f32 = 24.0;
+
 impl Direction {
     /// The direction implied by a way's tags: an explicit `oneway`, a
     /// roundabout, or a flowing waterway.
@@ -257,6 +277,11 @@ pub struct WayStyle {
     /// than MapCSS, for the same cache-freshness reason as
     /// [`NodeStyle::tagged`].
     pub direction: Direction,
+    /// How the direction is drawn (`direction-style`).
+    pub direction_style: DirectionStyle,
+    /// Path length between direction marks, in pixels
+    /// (`direction-spacing`).
+    pub direction_spacing: f32,
     /// Extra width on each side of the stroke drawn as a casing beneath it
     /// (`casing-width`); 0 means no explicit casing.
     pub casing_width: f32,
@@ -283,6 +308,8 @@ impl Default for WayStyle {
             width: DEFAULT_WAY_WIDTH,
             fill: None,
             direction: Direction::None,
+            direction_style: DirectionStyle::Arrow,
+            direction_spacing: DEFAULT_DIRECTION_SPACING,
             casing_width: 0.0,
             casing_color: DEFAULT_CASING_COLOR,
             z_index: 0.0,
@@ -363,6 +390,8 @@ impl TextStyle {
             | Declaration::ZIndex(_)
             | Declaration::Opacity(_)
             | Declaration::Dashes(_)
+            | Declaration::DirectionStyle(_)
+            | Declaration::DirectionSpacing(_)
             | Declaration::SymbolShape(_)
             | Declaration::ShowImagery(_) => {}
         }
@@ -485,6 +514,10 @@ enum Declaration {
     Opacity(f32),
     /// `dashes: dash, gap`; `None` for `dashes: none`.
     Dashes(Option<(f32, f32)>),
+    /// `direction-style: arrow | chevron | none`.
+    DirectionStyle(DirectionStyle),
+    /// `direction-spacing`: path length between direction marks, pixels.
+    DirectionSpacing(f32),
     /// `text: <tag key>`; `None` for `text: none`.
     Text(Option<String>),
     FontSize(f32),
@@ -532,7 +565,9 @@ impl Declaration {
             | Declaration::CasingColor(_)
             | Declaration::ZIndex(_)
             | Declaration::Opacity(_)
-            | Declaration::Dashes(_) => DeclTarget::Stroke,
+            | Declaration::Dashes(_)
+            | Declaration::DirectionStyle(_)
+            | Declaration::DirectionSpacing(_) => DeclTarget::Stroke,
             Declaration::FillColor(_) | Declaration::FillOpacity(_) => DeclTarget::Fill,
             Declaration::Text(_)
             | Declaration::FontSize(_)
@@ -868,6 +903,8 @@ impl Stylesheet {
                     | Declaration::ZIndex(_)
                     | Declaration::Opacity(_)
                     | Declaration::Dashes(_)
+                    | Declaration::DirectionStyle(_)
+                    | Declaration::DirectionSpacing(_)
                     | Declaration::ShowImagery(_)
                     | Declaration::Text(_)
                     | Declaration::FontSize(_)
@@ -1033,6 +1070,8 @@ impl Stylesheet {
                     Declaration::ZIndex(z) => s.z_index = *z,
                     Declaration::Opacity(o) => s.opacity = *o,
                     Declaration::Dashes(d) => s.dashes = *d,
+                    Declaration::DirectionStyle(d) => s.direction_style = *d,
+                    Declaration::DirectionSpacing(v) => s.direction_spacing = *v,
                     // Node markers, labels and canvas settings do not
                     // style a way's stroke or fill.
                     Declaration::SymbolSize(_)
@@ -1084,6 +1123,8 @@ fn resolve_canvas(rules: &[Rule]) -> CanvasStyle {
                 | Declaration::ZIndex(_)
                 | Declaration::Opacity(_)
                 | Declaration::Dashes(_)
+                | Declaration::DirectionStyle(_)
+                | Declaration::DirectionSpacing(_)
                 | Declaration::SymbolShape(_)
                 | Declaration::Text(_)
                 | Declaration::FontSize(_)
@@ -1483,6 +1524,18 @@ impl<'a> Parser<'a> {
                             *warned = true;
                         }
                     }
+                },
+                "direction-style" => match value.trim().to_ascii_lowercase().as_str() {
+                    "arrow" => decls.push(Declaration::DirectionStyle(DirectionStyle::Arrow)),
+                    "chevron" => decls.push(Declaration::DirectionStyle(DirectionStyle::Chevron)),
+                    "none" => decls.push(Declaration::DirectionStyle(DirectionStyle::None)),
+                    _ => warn_once(warned, "direction-style", &value),
+                },
+                "direction-spacing" => match parse_positive(&value) {
+                    Some(v) => {
+                        decls.push(Declaration::DirectionSpacing(v.max(MIN_DIRECTION_SPACING)))
+                    }
+                    None => warn_once(warned, "direction-spacing", &value),
                 },
                 "text" => {
                     let v = unquote(&value);
@@ -2388,6 +2441,56 @@ mod tests {
         let s = Stylesheet::parse("node|z17- { symbol-size: 12; }").unwrap();
         assert_eq!(s.node_style(&tags(&[]), 16.0).size, DEFAULT_NODE_SIZE);
         assert_eq!(s.node_style(&tags(&[]), 17.0).size, 12.0);
+    }
+
+    #[test]
+    fn direction_style_and_spacing_come_from_the_stylesheet() {
+        let s = Stylesheet::parse(
+            "way[highway] { direction-style: chevron; direction-spacing: 150; } \
+             way[waterway] { direction-style: none; } \
+             way[railway] { direction-spacing: 5; }",
+        )
+        .unwrap();
+        let plain = s.way_style(&tags(&[("building", "yes")]), true, 17.0);
+        assert_eq!(plain.direction_style, DirectionStyle::Arrow);
+        assert_eq!(plain.direction_spacing, DEFAULT_DIRECTION_SPACING);
+        let road = s.way_style(
+            &tags(&[("highway", "residential"), ("oneway", "yes")]),
+            false,
+            17.0,
+        );
+        assert_eq!(road.direction, Direction::Forward);
+        assert_eq!(road.direction_style, DirectionStyle::Chevron);
+        assert_eq!(road.direction_spacing, 150.0);
+        let river = s.way_style(&tags(&[("waterway", "river")]), false, 17.0);
+        assert_eq!(river.direction_style, DirectionStyle::None);
+        // Too tight a spacing is raised to the minimum.
+        let rail = s.way_style(&tags(&[("railway", "rail")]), false, 17.0);
+        assert_eq!(rail.direction_spacing, MIN_DIRECTION_SPACING);
+    }
+
+    #[test]
+    fn invalid_direction_properties_are_ignored() {
+        let s =
+            Stylesheet::parse("way[highway] { direction-style: zigzag; direction-spacing: wide; }")
+                .unwrap();
+        let st = s.way_style(&tags(&[("highway", "residential")]), false, 17.0);
+        assert_eq!(st.direction_style, DirectionStyle::Arrow);
+        assert_eq!(st.direction_spacing, DEFAULT_DIRECTION_SPACING);
+    }
+
+    #[test]
+    fn direction_style_honors_zoom_ranges_through_the_cached_table() {
+        let s = Stylesheet::parse("way|z17-[highway] { direction-style: chevron; }").unwrap();
+        let cached = s.way_style_cached(&tags(&[("highway", "residential")]), false, false);
+        assert_eq!(
+            s.zoom_styles(16.0)[cached.sig as usize].direction_style,
+            DirectionStyle::Arrow
+        );
+        assert_eq!(
+            s.zoom_styles(17.0)[cached.sig as usize].direction_style,
+            DirectionStyle::Chevron
+        );
     }
 
     #[test]

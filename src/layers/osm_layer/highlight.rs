@@ -143,21 +143,29 @@ impl OsmLayer {
                 // The strokes above cover the way's own direction arrows, so
                 // draw them again on top: core-colored, each outlined in the
                 // halo color.
-                if way_style.direction != Direction::None && viewport.zoom_level() >= ARROW_MIN_ZOOM
+                if way_style.direction != Direction::None
+                    && way_style.direction_style != DirectionStyle::None
+                    && viewport.zoom_level() >= ARROW_MIN_ZOOM
                 {
                     let reverse = way_style.direction == Direction::Reverse;
                     let half_base = (way_style.width + 3.0) / 2.0 + ARROW_OVERHANG;
+                    let chevron = way_style.direction_style == DirectionStyle::Chevron;
                     for (grow, color) in [(1.5, halo), (0.0, core)] {
                         let mut batch = PathBatch::new();
-                        for i in arrow_segments(&pts) {
-                            if let Some([tip, left, right]) = arrow_triangle(
+                        for i in arrow_segments(&pts, way_style.direction_spacing) {
+                            if let Some(tri) = arrow_triangle(
                                 pts[i],
                                 pts[i + 1],
                                 reverse,
                                 ARROW_HALF_LENGTH + 1.0 + 1.5 * grow,
                                 half_base + grow,
                             ) {
-                                batch.triangle(tip, left, right);
+                                if chevron {
+                                    emit_chevron(&mut batch.sink(), tri, CHEVRON_HALF_WIDTH + grow);
+                                } else {
+                                    let [tip, left, right] = tri;
+                                    batch.triangle(tip, left, right);
+                                }
                             }
                         }
                         if let Some(path) = batch.finish() {

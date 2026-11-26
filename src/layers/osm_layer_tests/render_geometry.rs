@@ -78,20 +78,49 @@ fn decimate_segments_empty_or_single_point_emits_nothing() {
 
 #[test]
 fn arrow_segments_space_arrows_along_the_path_and_skip_short_segments() {
+    use crate::style::mapcss::DEFAULT_DIRECTION_SPACING as SPACING;
     let at = |x: f32| point(px(x), px(0.0));
+    let segments = |pts: &[_]| super::super::arrow_segments(pts, SPACING);
     // A short way still gets one arrow, on its only segment.
-    assert_eq!(super::super::arrow_segments(&[at(0.0), at(60.0)]), vec![0]);
+    assert_eq!(segments(&[at(0.0), at(60.0)]), vec![0]);
     // Too short to hold an arrow at all.
-    assert!(super::super::arrow_segments(&[at(0.0), at(5.0)]).is_empty());
+    assert!(segments(&[at(0.0), at(5.0)]).is_empty());
     // 100px segments: an arrow on each (spacing is under 100px).
     assert_eq!(
-        super::super::arrow_segments(&[at(0.0), at(100.0), at(200.0), at(300.0)]),
+        segments(&[at(0.0), at(100.0), at(200.0), at(300.0)]),
         vec![0, 1, 2]
     );
     // 30px segments: one arrow, then roughly every fourth segment.
     let dense: Vec<_> = (0..12).map(|i| at(i as f32 * 30.0)).collect();
-    assert_eq!(super::super::arrow_segments(&dense), vec![1, 5, 9]);
-    assert!(super::super::arrow_segments(&[]).is_empty());
+    assert_eq!(segments(&dense), vec![1, 5, 9]);
+    assert!(segments(&[]).is_empty());
+    // A wider `direction-spacing` thins them out; a narrower one adds more.
+    assert_eq!(super::super::arrow_segments(&dense, 200.0), vec![3, 10]);
+    assert_eq!(
+        super::super::arrow_segments(&dense, 40.0),
+        vec![0, 2, 4, 6, 8, 10]
+    );
+}
+
+#[test]
+fn a_chevron_is_two_legs_meeting_at_the_arrow_tip() {
+    struct Tris(Vec<[(f32, f32); 3]>);
+    impl crate::layers::way_stroke::TriSink for Tris {
+        fn tri(&mut self, a: (f32, f32), b: (f32, f32), c: (f32, f32)) {
+            self.0.push([a, b, c]);
+        }
+    }
+    let (p0, p1) = (point(px(0.0), px(0.0)), point(px(20.0), px(0.0)));
+    let tri = super::super::arrow_triangle(p0, p1, false, 5.0, 3.0).unwrap();
+    let mut sink = Tris(Vec::new());
+    super::super::emit_chevron(&mut sink, tri, 1.0);
+    // Two rectangles of two triangles each.
+    assert_eq!(sink.0.len(), 4);
+    // Every vertex lies within the arrow's box (tip at x=15, base at x=5)
+    // widened by the leg half-width, and the tip end reaches x=15.
+    let xs: Vec<f32> = sink.0.iter().flatten().map(|p| p.0).collect();
+    assert!(xs.iter().all(|x| (4.0..=16.0).contains(x)), "{xs:?}");
+    assert!(xs.iter().any(|x| (*x - 15.0).abs() < 1.5));
 }
 
 #[test]
