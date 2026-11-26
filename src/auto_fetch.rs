@@ -28,7 +28,11 @@ pub const MIN_ZOOM: f64 = 16.0;
 /// even in dense cities.
 pub const TILE_ZOOM: u32 = 16;
 
-/// The most tiles queued for one view; the ones nearest its centre win.
+/// The most tiles a view may touch before nothing is fetched for it. A view
+/// that spans more is zoomed out too far (or on a very large window) to
+/// download tile by tile without a burst of requests, so it waits until the
+/// user zooms in. The whole view is skipped, not just its far tiles, so a
+/// pan across a too-large view never trickles requests either.
 pub const MAX_TILES: usize = 36;
 
 /// How long the view must stay unchanged before a fetch starts.
@@ -128,8 +132,9 @@ pub fn tiles_to_fetch(view: &ViewKey, known: Option<&[MercRect]>) -> Vec<GeoBoun
     let max_index = (1i64 << TILE_ZOOM) - 1;
     let (x0, x1) = (x0.clamp(0, max_index), x1.clamp(0, max_index));
     let (y0, y1) = (y0.clamp(0, max_index), y1.clamp(0, max_index));
-    // A view this large is not something to fetch tile by tile.
-    if (x1 - x0 + 1) * (y1 - y0 + 1) > 4 * MAX_TILES as i64 {
+    // Judged on every tile the view touches, held or not, so whether a view
+    // is fetched does not flicker as coverage grows.
+    if (x1 - x0 + 1) * (y1 - y0 + 1) > MAX_TILES as i64 {
         return Vec::new();
     }
     let centre = ((b.min_lat + b.max_lat) / 2.0, (b.min_lon + b.max_lon) / 2.0);
@@ -146,7 +151,6 @@ pub fn tiles_to_fetch(view: &ViewKey, known: Option<&[MercRect]>) -> Vec<GeoBoun
         }
     }
     tiles.sort_by(|a, b| a.0.total_cmp(&b.0));
-    tiles.truncate(MAX_TILES);
     tiles.into_iter().map(|(_, t)| t).collect()
 }
 
@@ -314,6 +318,19 @@ mod tests {
                 .iter()
                 .any(|h| (h.min_x - r.min_x).abs() < 1e-6 && (h.min_y - r.min_y).abs() < 1e-6));
         }
+    }
+
+    #[test]
+    fn a_view_touching_more_than_the_limit_is_skipped_even_when_mostly_held() {
+        // About 12 x 6 tiles at this latitude.
+        let v = ViewKey::new(GeoBounds::new(50.0, 50.02, 10.0, 10.07), 16.0);
+        assert!(tiles_to_fetch(&v, None).is_empty());
+        let all = ViewKey::new(GeoBounds::new(40.0, 60.0, 0.0, 20.0), 16.0);
+        let held = [rect(GeoBounds::new(40.0, 60.0, 0.0, 20.0))];
+        assert!(tiles_to_fetch(&all, Some(&held)).is_empty());
+        // One screenful fits.
+        let ok = ViewKey::new(GeoBounds::new(50.0, 50.01, 10.0, 10.02), 16.0);
+        assert!(!tiles_to_fetch(&ok, None).is_empty());
     }
 
     #[test]
