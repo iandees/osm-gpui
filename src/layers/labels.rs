@@ -1504,7 +1504,7 @@ pub const HALO_ENV: &str = "OSM_GPUI_LABEL_HALO";
 /// The outline (`Offsets`) is the most legible but paints every glyph several
 /// times, so it is used only while there are few labels; with more than
 /// [`OUTLINE_MAX_LABELS`] placed, the much cheaper backing quad takes over.
-pub const OUTLINE_MAX_LABELS: usize = 40;
+pub const OUTLINE_MAX_LABELS: usize = 20;
 
 /// What a layer's labels are tuned with: overrides for measuring, never
 /// changed by normal use. Owned by the layer's [`LabelCache`] and passed
