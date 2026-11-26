@@ -9,7 +9,7 @@ use std::sync::Arc;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::InputState,
+    input::{Input, InputState},
     label::Label,
     radio::{Radio, RadioGroup},
     setting::{SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
@@ -271,6 +271,9 @@ pub struct SettingsWindow {
     edit_min_zoom: Option<Entity<InputState>>,
     edit_max_zoom: Option<Entity<InputState>>,
     edit_error: Option<SharedString>,
+    /// Whether the large URL editor popup is open, and the URL as it was when
+    /// the popup opened (restored on Cancel).
+    url_popup: Option<String>,
 
     app_settings: AppSettings,
     custom_api_url_input: Entity<InputState>,
@@ -347,6 +350,7 @@ impl SettingsWindow {
             edit_min_zoom: None,
             edit_max_zoom: None,
             edit_error: None,
+            url_popup: None,
 
             app_settings,
             custom_api_url_input,
@@ -743,6 +747,8 @@ impl SettingsWindow {
         });
         let url = cx.new(|cx| {
             InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(3, 8)
                 .placeholder("https://…/{z}/{x}/{y}.png")
                 .default_value(entry.url_template.clone())
         });
@@ -764,7 +770,31 @@ impl SettingsWindow {
         self.edit_error = None;
     }
 
+    fn open_url_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(url) = self.edit_url.clone() else {
+            return;
+        };
+        self.url_popup = Some(url.read(cx).value().to_string());
+        url.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Close the URL popup, keeping the text (`keep`) or restoring the URL it
+    /// opened with.
+    fn close_url_popup(&mut self, keep: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(original) = self.url_popup.take() {
+            if !keep {
+                if let Some(url) = self.edit_url.as_ref() {
+                    url.update(cx, |state, cx| state.set_value(original, window, cx));
+                }
+            }
+        }
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
     fn clear_editing(&mut self) {
+        self.url_popup = None;
         self.edit_name = None;
         self.edit_url = None;
         self.edit_min_zoom = None;
@@ -791,7 +821,13 @@ impl SettingsWindow {
         };
 
         let name_val = name.read(cx).value().to_string();
-        let url_val = url.read(cx).value().to_string();
+        // The popup editor wraps long URLs; a URL has no line breaks.
+        let url_val: String = url
+            .read(cx)
+            .value()
+            .chars()
+            .filter(|c| !matches!(c, '\n' | '\r'))
+            .collect();
         let min_val = min_z.read(cx).value().to_string();
         let max_val = max_z.read(cx).value().to_string();
 
@@ -1316,7 +1352,7 @@ impl SettingsWindow {
                 let entry_view = view.clone();
                 let entry_summary = tr!(
                     "settings.imagery.entry_summary",
-                    url = entry.url_template,
+                    url = truncate_middle(&entry.url_template, URL_PREVIEW_CHARS),
                     min = entry.min_zoom,
                     max = entry.max_zoom
                 );
@@ -1984,31 +2020,64 @@ fn render_entry_edit_form(
         return div().into_any_element();
     };
 
+    let url_preview = truncate_middle(
+        &edit_url.read(cx).value().replace(['\n', '\r'], ""),
+        URL_PREVIEW_CHARS,
+    );
+    let url_view = view.clone();
     let mut content = v_flex()
         .gap_2()
-        .child(field_row(
-            tr!("dialog.custom_imagery.name"),
-            &edit_name,
-            muted,
-        ))
-        .child(field_row(
-            tr!("dialog.custom_imagery.url_template"),
-            &edit_url,
-            muted,
-        ))
         .child(
             h_flex()
                 .gap_2()
-                .child(div().flex_1().child(field_row(
+                .items_end()
+                .child(div().flex_1().min_w(px(0.)).child(field_row(
+                    tr!("dialog.custom_imagery.name"),
+                    &edit_name,
+                    muted,
+                )))
+                .child(div().w(px(72.)).child(field_row(
                     tr!("dialog.custom_imagery.min_zoom"),
                     &edit_min_zoom,
                     muted,
                 )))
-                .child(div().flex_1().child(field_row(
+                .child(div().w(px(72.)).child(field_row(
                     tr!("dialog.custom_imagery.max_zoom"),
                     &edit_max_zoom,
                     muted,
                 ))),
+        )
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    Label::new(tr!("dialog.custom_imagery.url_template"))
+                        .text_size(crate::ui::style::muted_text_size())
+                        .text_color(muted),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(url_preview),
+                        )
+                        .child(
+                            Button::new(("edit-url", idx))
+                                .label(tr!("settings.imagery.edit_url"))
+                                .ghost()
+                                .compact()
+                                .on_click(move |_ev, window, cx| {
+                                    url_view.update(cx, |this, cx| this.open_url_popup(window, cx));
+                                }),
+                        ),
+                ),
         );
 
     if let Some(err) = edit_error {
@@ -2041,6 +2110,25 @@ fn render_entry_edit_form(
         .into_any_element()
 }
 
+/// How many characters of a tile URL a row shows before eliding the middle.
+const URL_PREVIEW_CHARS: usize = 34;
+
+/// `text` shortened to at most `max` characters by replacing its middle with
+/// an ellipsis, so both the host and the placeholders at the end stay visible.
+fn truncate_middle(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max || max < 3 {
+        return text.to_string();
+    }
+    let keep = max - 1;
+    let head = keep.div_ceil(2);
+    let tail = keep - head;
+    let mut out: String = chars[..head].iter().collect();
+    out.push('…');
+    out.extend(chars[chars.len() - tail..].iter());
+    out
+}
+
 /// The settings card's size in a window of `w` x `h`: most of it, within
 /// limits.
 fn card_size(w: f32, h: f32) -> (f32, f32) {
@@ -2048,6 +2136,49 @@ fn card_size(w: f32, h: f32) -> (f32, f32) {
         (w - 96.0).clamp(480.0, 980.0),
         (h - 96.0).clamp(360.0, 760.0),
     )
+}
+
+impl SettingsWindow {
+    /// The larger URL editor, drawn over the settings card.
+    fn url_popup_view(&self, url: Entity<InputState>, cx: &mut Context<Self>) -> Div {
+        let done = cx.listener(|this, _, window, cx| this.close_url_popup(true, window, cx));
+        let cancel = cx.listener(|this, _, window, cx| this.close_url_popup(false, window, cx));
+        let body = v_flex()
+            .gap_2()
+            .child(Input::new(&url))
+            .child(
+                Label::new(tr!("settings.imagery.url_popup_hint"))
+                    .text_size(crate::ui::style::muted_text_size())
+                    .text_color(cx.theme().muted_foreground),
+            );
+        let frame = crate::ui::modal::dialog_frame(
+            cx,
+            px(560.),
+            tr!("dialog.custom_imagery.url_template"),
+            body,
+            crate::ui::modal::footer_row(
+                "url-popup-cancel",
+                tr!("dialog.cancel"),
+                cancel,
+                "url-popup-done",
+                tr!("settings.imagery.url_done"),
+                done,
+            ),
+        );
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(crate::ui::style::scrim_color())
+            .flex()
+            .justify_center()
+            .items_center()
+            .child(
+                div()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(frame),
+            )
+    }
 }
 
 impl Render for SettingsWindow {
@@ -2065,6 +2196,10 @@ impl Render for SettingsWindow {
                 });
             }
             settings
+        };
+        let url_popup = match (self.url_popup.is_some(), self.edit_url.as_ref()) {
+            (true, Some(url)) => Some(self.url_popup_view(url.clone(), cx)),
+            _ => None,
         };
         let theme = cx.theme();
         let card = v_flex()
@@ -2104,9 +2239,14 @@ impl Render for SettingsWindow {
             .child(div().flex_1().min_h(px(0.)).child(settings));
         crate::ui::modal::scrim(
             &self.focus_handle,
-            cx.listener(|_, ev: &gpui::KeyDownEvent, _, cx| {
+            cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 if crate::ui::modal::classify_key(ev) == crate::ui::modal::ModalKey::Escape {
-                    cx.emit(SettingsEvent::Closed);
+                    // Escape closes the URL popup first, then Settings.
+                    if this.url_popup.is_some() {
+                        this.close_url_popup(false, window, cx);
+                    } else {
+                        cx.emit(SettingsEvent::Closed);
+                    }
                 }
             }),
             // Clicks on the card stay on it.
@@ -2114,6 +2254,7 @@ impl Render for SettingsWindow {
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(card),
         )
+        .children(url_popup)
     }
 }
 
@@ -2121,7 +2262,7 @@ impl Render for SettingsWindow {
 mod tests {
     // Not `super::*`: it carries `gpui::*`, whose `test` macro shadows `#[test]`.
     use super::{
-        acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
+        truncate_middle, acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
         parse_custom_api_url, parse_map_style_location, rejection_message, CacheBudget,
         ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, PageSelection, SettingsPage,
         MIN_CACHE_BUDGET_MB,
@@ -2150,6 +2291,17 @@ mod tests {
     /// A token store holding one login, keyed by OAuth base URL.
     fn store_with(oauth_base: &'static str) -> impl Fn(&str) -> Option<StoredToken> {
         move |base| (base == oauth_base).then(|| token("mapper"))
+    }
+
+    #[test]
+    fn truncate_middle_keeps_short_text_and_both_ends_of_long_text() {
+        assert_eq!(truncate_middle("short", 10), "short");
+        let url = "https://tiles.example.com/some/long/path/{z}/{x}/{y}.png";
+        let out = truncate_middle(url, 20);
+        assert_eq!(out.chars().count(), 20);
+        assert!(out.starts_with("https://"));
+        assert!(out.ends_with("{y}.png"));
+        assert!(out.contains('…'));
     }
 
     #[test]
