@@ -8,6 +8,7 @@ use gpui::{
 use osm_gpui::coordinates::{LatLon, Mercator};
 use osm_gpui::ids::{NodeId, WayId};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use osm_gpui::idle_tracker::IdleTracker;
 use osm_gpui::layers::tile_layer::TileLayer;
@@ -48,6 +49,11 @@ pub(crate) fn script_mode() -> bool {
 // MapViewer's render fn drains this queue each frame and processes the commands
 // directly, then signals completion. A second condvar signals "a frame was
 // rendered" so `wait_frame` can wake up.
+//
+// Frames normally come from the platform, but it stops sending them to a
+// window that cannot be seen, so `spawn_frame_watchdog` draws the window
+// itself when they stop; and the runner gives up with an error, rather than
+// waiting forever, if no frame comes for `FRAME_TIMEOUT`.
 
 #[derive(Debug)]
 pub(crate) enum ScriptCommand {
@@ -159,6 +165,107 @@ pub(crate) enum ScriptCommand {
     NoteOp(script::NoteOp),
 }
 
+/// How long the runner waits for the main thread to render a frame (or to
+/// take a submitted command, which it does while rendering) before it gives
+/// up and fails the run. Generous: loading a large file or a Keychain prompt
+/// can hold up the main thread for a while.
+const FRAME_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How often the frame watchdog looks at the frame count.
+const WATCHDOG_TICK: Duration = Duration::from_millis(20);
+
+/// How long without a frame before the watchdog draws the window itself. A
+/// window that is visible but not focused is held to about 30 frames a
+/// second, so this is comfortably longer than a normal gap between frames.
+const FRAME_STALL: Duration = Duration::from_millis(50);
+
+fn frame_timeout_message(timeout: Duration) -> String {
+    format!(
+        "no frame was rendered for {}s; the app's main thread is blocked or \
+         the window cannot draw",
+        timeout.as_secs()
+    )
+}
+
+/// Ends a scripted run whose window has stopped rendering. A panic would only
+/// end the runner thread and leave the app open, still waiting.
+fn fail_run_on_frame_timeout(message: &str) -> ! {
+    SCRIPT_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    eprintln!("script error: {message}");
+    std::process::exit(1);
+}
+
+/// Decides when the harness has to draw the window itself.
+///
+/// Script commands are processed in `MapViewer::render`, and the platform
+/// only asks for frames while the window can be seen: macOS stops a window's
+/// display link once it is fully covered, minimised or on another Space, and
+/// then nothing renders and the runner waits forever. The watchdog notices
+/// that no frame has been drawn for `stall` and says to draw one.
+#[derive(Debug)]
+pub(crate) struct FrameWatchdog {
+    last_count: u64,
+    last_change: Instant,
+    stall: Duration,
+}
+
+impl FrameWatchdog {
+    pub(crate) fn new(count: u64, now: Instant, stall: Duration) -> Self {
+        Self {
+            last_count: count,
+            last_change: now,
+            stall,
+        }
+    }
+
+    /// Record the frame count seen at `now`. True when it has not moved for
+    /// `stall`; the wait then starts over, so while frames stay stopped this
+    /// is true once every `stall`.
+    pub(crate) fn should_draw(&mut self, count: u64, now: Instant) -> bool {
+        if count != self.last_count {
+            self.last_count = count;
+            self.last_change = now;
+            return false;
+        }
+        if now.saturating_duration_since(self.last_change) >= self.stall {
+            self.last_change = now;
+            return true;
+        }
+        false
+    }
+}
+
+/// While a script runs, draw `window` whenever the platform has stopped
+/// asking for frames (see `FrameWatchdog`), so the script keeps advancing
+/// when the window is covered. The drawn frame is not presented, which a
+/// hidden window does not need; `capture` reads the drawn scene directly.
+pub(crate) fn spawn_frame_watchdog(window: gpui::AnyWindowHandle, cx: &mut gpui::App) {
+    let Some(bus) = SCRIPT_BUS.get().cloned() else {
+        return;
+    };
+    cx.spawn(async move |cx| {
+        let mut watchdog = FrameWatchdog::new(bus.frames(), Instant::now(), FRAME_STALL);
+        loop {
+            cx.background_executor().timer(WATCHDOG_TICK).await;
+            let draw = watchdog.should_draw(bus.frames(), Instant::now());
+            if !draw || !SCRIPT_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
+            }
+            let drawn = window.update(cx, |_, window, cx| {
+                // `refresh` so the views render again rather than reuse the
+                // last frame's output: `MapViewer::render` has to run.
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            if drawn.is_err() {
+                // The window is gone.
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
 /// Shared state between the script-runner thread and the gpui main thread.
 pub(crate) struct ScriptBus {
     /// Pending command for this frame. None when idle.
@@ -191,24 +298,59 @@ impl ScriptBus {
     }
 
     /// Submit a command and block until the main thread has processed it.
+    /// Ends the run with an error if that takes longer than `FRAME_TIMEOUT`.
     fn submit(&self, cmd: ScriptCommand) {
+        if let Err(e) = self.try_submit(cmd, FRAME_TIMEOUT) {
+            fail_run_on_frame_timeout(&e);
+        }
+    }
+
+    /// Submit a command and block until the main thread has processed it,
+    /// or until `timeout` passes without that happening.
+    fn try_submit(&self, cmd: ScriptCommand, timeout: Duration) -> Result<(), String> {
         {
             let mut lock = self.pending.lock().unwrap();
             *lock = Some(cmd);
         }
-        let _guard = self
+        let (_guard, result) = self
             .done_cv
-            .wait_while(self.pending.lock().unwrap(), |opt| opt.is_some())
+            .wait_timeout_while(self.pending.lock().unwrap(), timeout, |opt| opt.is_some())
             .unwrap();
+        if result.timed_out() {
+            Err(frame_timeout_message(timeout))
+        } else {
+            Ok(())
+        }
     }
 
-    /// Wait until at least one more render frame has completed.
+    /// Wait until at least one more render frame has completed. Ends the run
+    /// with an error if none does within `FRAME_TIMEOUT`.
     fn wait_frame(&self) {
+        if let Err(e) = self.try_wait_frame(FRAME_TIMEOUT) {
+            fail_run_on_frame_timeout(&e);
+        }
+    }
+
+    /// Wait until at least one more render frame has completed, or until
+    /// `timeout` passes without one.
+    fn try_wait_frame(&self, timeout: Duration) -> Result<(), String> {
         let current = *self.frame_count.lock().unwrap();
-        let _guard = self
+        let (_guard, result) = self
             .frame_cv
-            .wait_while(self.frame_count.lock().unwrap(), |fc| *fc <= current)
+            .wait_timeout_while(self.frame_count.lock().unwrap(), timeout, |fc| {
+                *fc <= current
+            })
             .unwrap();
+        if result.timed_out() {
+            Err(frame_timeout_message(timeout))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// How many frames have been rendered so far.
+    pub(crate) fn frames(&self) -> u64 {
+        *self.frame_count.lock().unwrap()
     }
 
     /// Called by MapViewer::render to drain and process the pending command.
@@ -1840,5 +1982,83 @@ impl AppHandle for LiveApp {
 
     fn sign_in_failure(&mut self) -> Option<String> {
         SIGN_IN_FAILURE.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn the_watchdog_stays_quiet_while_frames_arrive() {
+        let start = Instant::now();
+        let mut dog = FrameWatchdog::new(0, start, 50 * MS);
+        for i in 1..=20u64 {
+            // A frame every 30ms: never 50ms without one.
+            assert!(!dog.should_draw(i, start + 30 * MS * i as u32));
+        }
+    }
+
+    #[test]
+    fn the_watchdog_draws_once_per_stall_while_frames_are_stopped() {
+        let start = Instant::now();
+        let mut dog = FrameWatchdog::new(7, start, 50 * MS);
+        assert!(!dog.should_draw(7, start + 20 * MS));
+        assert!(!dog.should_draw(7, start + 40 * MS));
+        assert!(dog.should_draw(7, start + 60 * MS));
+        // The wait starts over after a draw.
+        assert!(!dog.should_draw(7, start + 80 * MS));
+        assert!(dog.should_draw(7, start + 110 * MS));
+        // The forced draw rendered a frame: the count moved, so wait again.
+        assert!(!dog.should_draw(8, start + 120 * MS));
+        assert!(!dog.should_draw(8, start + 160 * MS));
+        assert!(dog.should_draw(8, start + 170 * MS));
+    }
+
+    #[test]
+    fn waiting_for_a_frame_times_out_when_none_comes() {
+        let bus = ScriptBus::new();
+        let err = bus.try_wait_frame(20 * MS).unwrap_err();
+        assert!(err.contains("no frame was rendered"), "{err}");
+    }
+
+    #[test]
+    fn waiting_for_a_frame_returns_when_one_is_rendered() {
+        let bus = ScriptBus::new();
+        let renderer = bus.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(20 * MS);
+            renderer.signal_done_and_frame();
+        });
+        bus.try_wait_frame(Duration::from_secs(10)).unwrap();
+        assert_eq!(bus.frames(), 1);
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn a_submitted_command_times_out_when_nothing_takes_it() {
+        let bus = ScriptBus::new();
+        let err = bus
+            .try_submit(ScriptCommand::Note("hello".into()), 20 * MS)
+            .unwrap_err();
+        assert!(err.contains("no frame was rendered"), "{err}");
+    }
+
+    #[test]
+    fn a_submitted_command_returns_once_a_frame_takes_it() {
+        let bus = ScriptBus::new();
+        let renderer = bus.clone();
+        let t = std::thread::spawn(move || loop {
+            if let Some(cmd) = renderer.take_pending() {
+                renderer.signal_done_and_frame();
+                return cmd;
+            }
+            std::thread::sleep(MS);
+        });
+        bus.try_submit(ScriptCommand::Note("hello".into()), Duration::from_secs(10))
+            .unwrap();
+        assert!(matches!(t.join().unwrap(), ScriptCommand::Note(m) if m == "hello"));
     }
 }

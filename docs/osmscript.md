@@ -6,6 +6,10 @@ An `.osmscript` file is a line-oriented script that `--script <file>` runs again
 cargo run -- --script docs/screenshots/smoke.osmscript --window-size 1200x800
 ```
 
+## A covered or hidden window
+
+The window keeps working through a script when it cannot be seen. macOS stops sending frames to a window that is fully covered, minimised or on another Space, so when no frame has come for 50ms the harness draws the window itself, and the script carries on (more slowly) with `capture` still showing the window's contents. If no frame at all can be drawn for 120s (the app's main thread is stuck), the run fails with `script error: no frame was rendered for 120s ...` instead of hanging.
+
 ## Running offline
 
 A scripted run uses the network like a normal run (map tiles, imagery index, name suggestions, server capabilities). To make it deterministic, add `--offline`: only fixtures answer: every other HTTP request is denied with an error that names the method, host and full URL (`no fixture matches ...`), never reaches the real network, and fails the way a lost connection does (failed tiles show their placeholder, startup fetches log and carry on). `--offline` is only meaningful with `--script`. Without `--offline` a scripted run is not strict: `--http-fixtures` rules are tried first and everything else still goes to the real network, so use `--offline` for deterministic runs.
