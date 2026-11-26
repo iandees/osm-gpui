@@ -47,7 +47,7 @@ impl OsmLayer {
         bounds: Bounds<Pixels>,
         window: &mut Window,
         entry: &MpEntry,
-        color: u32,
+        color: Hsla,
         kind: HighlightKind,
     ) {
         if !entry.bbox.intersects(viewport.mercator_view_bounds()) {
@@ -103,8 +103,7 @@ impl OsmLayer {
         }
         if let Some(mut path) = path {
             set_path_bounds(&mut path, min_max);
-            let a = (alpha * 255.0) as u32;
-            window.paint_path(path, rgba((color << 8) | a));
+            window.paint_path(path, color.opacity(alpha));
         }
     }
 

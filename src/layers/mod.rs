@@ -457,6 +457,8 @@ pub trait EditableLayer {
     fn feature_is_closed_way(&self, feature: &crate::selection::FeatureRef) -> bool;
 
     /// Draw a highlight overlay for `feature` if it belongs to this layer.
+    /// `cx` supplies the theme, whose selection color a selected feature's
+    /// highlight uses.
     fn render_highlight(
         &self,
         viewport: &Viewport,
@@ -464,6 +466,7 @@ pub trait EditableLayer {
         window: &mut Window,
         feature: &crate::selection::FeatureRef,
         kind: HighlightKind,
+        cx: &App,
     );
 
     /// Set a transient screen-space offset to apply when rendering the given
@@ -1102,12 +1105,13 @@ impl LayerManager {
         viewport: &Viewport,
         bounds: Bounds<Pixels>,
         window: &mut Window,
+        cx: &App,
     ) {
         let fs_phase = crate::frame_stats::start();
         if let Some(layer) = self.find_layer(feature.layer_id) {
             if layer.is_visible() {
                 if let Some(editable) = layer.as_editable() {
-                    editable.render_highlight(viewport, bounds, window, feature, kind);
+                    editable.render_highlight(viewport, bounds, window, feature, kind, cx);
                     crate::frame_stats::lap(
                         match kind {
                             HighlightKind::Hovered => "highlight.hovered",

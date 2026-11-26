@@ -1,7 +1,7 @@
 //! Drawing helpers shared by the modes' live previews, so every rubber band,
 //! outline and marker is built the same way and the colours live in one place.
 
-use gpui::{fill, point, px, size, Bounds, PathBuilder, Pixels, Point, Rgba, Window};
+use gpui::{fill, point, px, size, App, Bounds, PathBuilder, Pixels, Point, Rgba, Window};
 use osm_gpui::coordinates::LatLon;
 use osm_gpui::viewport::Viewport;
 
@@ -26,10 +26,12 @@ pub(super) fn line_width() -> Pixels {
 }
 
 /// Where and how the map is being painted: the viewport and the map area's
-/// bounds, whose origin turns map-local points into window points.
+/// bounds, whose origin turns map-local points into window points, and the
+/// app for theme colors.
 pub(crate) struct PreviewFrame<'a> {
     pub(crate) viewport: &'a Viewport,
     pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) cx: &'a App,
 }
 
 impl PreviewFrame<'_> {

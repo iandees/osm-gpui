@@ -6664,6 +6664,7 @@ impl Render for MapViewer {
                                                 &viewport_clone,
                                                 bounds,
                                                 window,
+                                                cx,
                                             );
                                         }
 
@@ -6676,6 +6677,7 @@ impl Render for MapViewer {
                                                 &viewport_clone,
                                                 bounds,
                                                 window,
+                                                cx,
                                             );
                                         }
 
@@ -6693,6 +6695,7 @@ impl Render for MapViewer {
                                             &modes::PreviewFrame {
                                                 viewport: &viewport_clone,
                                                 bounds,
+                                                cx,
                                             },
                                             window,
                                         );
@@ -6737,9 +6740,11 @@ impl Render for MapViewer {
                                 .top(rect.origin.y)
                                 .w(rect.size.width)
                                 .h(rect.size.height)
-                                .bg(cx.theme().accent)
+                                // The same theme color as the selection
+                                // highlight it will become.
+                                .bg(cx.theme().selection)
                                 .border_1()
-                                .border_color(cx.theme().accent)
+                                .border_color(cx.theme().selection)
                                 .opacity(0.35)
                                 .into_any_element()
                         } else {
