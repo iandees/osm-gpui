@@ -87,11 +87,29 @@ node|z17-[public_transport]  { icon-image: preset; icon-width: 12; }
    a white halo, lifted off the line by `text-offset` pixels (positive is above
    the text, negative below; the renderer pushes it further out for wide roads).
    Drawn from z16, where labels start. Add `way|z17-[railway]` or others the same
-   way; ways without a name get no label. */
+   way; ways without a name get no label.
+   The offset follows each class's drawn width so every name sits the same 1.5 px
+   (one halo radius) beyond the road's edge: offset = 0.35 x font-size (half the
+   x-height, 4.2 at 12 px) + width / 2 + 1 (the casing drawn from z16) + 1.5. Keep
+   these in step with the widths above. */
 way|z16-[highway]  { text: name; text-position: line; font-size: 12; text-color: #1f2937;
-                     text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; text-offset: 6.2; }
+                     text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; text-offset: 8.2; }
+way|z18-[highway]  { text-offset: 9.2; }
+way|z16-[highway=motorway], way|z16-[highway=motorway_link],
+way|z16-[highway=trunk], way|z16-[highway=trunk_link],
+way|z16-[highway=primary], way|z16-[highway=primary_link]     { text-offset: 8.7; }
+way|z17-[highway=motorway], way|z17-[highway=motorway_link],
+way|z17-[highway=trunk], way|z17-[highway=trunk_link],
+way|z17-[highway=primary], way|z17-[highway=primary_link]     { text-offset: 9.7; }
+way|z16-[highway=secondary], way|z16-[highway=secondary_link],
+way|z16-[highway=tertiary], way|z16-[highway=tertiary_link]   { text-offset: 8.45; }
+way|z17-[highway=secondary], way|z17-[highway=secondary_link],
+way|z17-[highway=tertiary], way|z17-[highway=tertiary_link]   { text-offset: 9.2; }
+way|z16-[highway=track], way|z16-[highway=footway], way|z16-[highway=path],
+way|z16-[highway=pedestrian], way|z16-[highway=steps], way|z16-[highway=bridleway],
+way|z16-[highway=cycleway]   { text-offset: 7.45; }
 way|z16-[waterway] { text: name; text-position: line; font-size: 12; text-color: #1d4f91;
-                     text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; text-offset: 6.2; }
+                     text-halo-color: rgba(255,255,255,0.9); text-halo-radius: 1.5; text-offset: 7.7; }
 
 /* Area labels (closed ways and multipolygons). Placed at the area's pole of
    inaccessibility and shown only where the text fits inside the shape (shrunk
