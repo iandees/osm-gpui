@@ -206,7 +206,7 @@ Note: labels already fade in (point, area and street labels share `labels::fade_
 - `check_area`: ✅ Done — now delegates to `capabilities::allows_download` using the server's limits (#121).
 - `IdleTracker` (`src/idle_tracker.rs`): ✅ Done — `tile_fetch_finished`/`image_decode_finished` decrement saturating at zero, keep the `debug_assert!`, and warn once on stderr in release when an underflow is prevented.
 - `side_panel_open`: ✅ Done as a fixed-size `[bool; 8]` set; an enum-indexed wrapper would still be tidier (low priority).
-- `OsmParser` (`src/osm.rs`): ✅ Done — the stateless unit struct's methods are associated functions (`OsmParser::parse_str(..)`); `new` and `Default` are gone (#385).
+- `OsmParser` (`src/osm.rs`): still open — a stateless unit struct with `&self` methods (callers use `OsmParser::new().parse_str(..)`); convert to associated functions (low priority).
 - Date arithmetic: ✅ Done — one `src/civil_date.rs` replaces the three copies of the days/civil conversion in `notes.rs`, `object_history.rs` and `street_imagery.rs`.
 - `OsmLayer` constructors: ✅ Done — `new_styled`, `new_with_data_styled` and `new_with_edits_styled` take the stylesheet; the app passes `style::custom::active_stylesheet()`, and the plain `new`/`new_with_data`/`new_with_edits` use the built-in sheet for tests, examples and benches.
 
