@@ -3669,6 +3669,10 @@ impl MapViewer {
             return;
         }
 
+        if self.midpoint_move(adjusted_position, left_pressed) {
+            return;
+        }
+
         if let Interaction::MoveDrag { down, targets } = &self.pointer.interaction {
             if let Some(delta_pt) =
                 interaction::move_drag_delta(*down, to_pt(adjusted_position), left_pressed)
@@ -3739,6 +3743,10 @@ impl MapViewer {
 
         if self.offset_adjust_mouse_up() {
             cx.notify();
+            return;
+        }
+
+        if self.midpoint_release(event, up_pos, cx) {
             return;
         }
 
