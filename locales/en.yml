@@ -548,7 +548,6 @@ settings:
     new_source: "New Source"
     # `%{url}` is the tile URL template; zoom levels are numbers.
     entry_summary: "zoom %{min}–%{max} · %{url}"
-    edit_source: "Edit Source"
     add_source: "Add Source"
     edit: "Edit"
     delete: "Delete"
@@ -1195,6 +1194,8 @@ dialog:
       too_deep: "nested too deeply"
   custom_imagery:
     title: "Custom Imagery"
+    title_edit: "Edit Custom Imagery"
+    confirm_edit: "Save"
     name: "Name"
     name_placeholder: "My imagery"
     url_template: "URL template"

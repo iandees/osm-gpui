@@ -528,7 +528,6 @@ settings:
     new_source: "Neue Quelle"
     # `%{url}` ist die Kachel-URL-Vorlage; Zoomstufen sind Zahlen.
     entry_summary: "Zoom %{min}–%{max} · %{url}"
-    edit_source: "Quelle bearbeiten"
     add_source: "Quelle hinzufügen"
     edit: "Bearbeiten"
     delete: "Löschen"
@@ -1149,6 +1148,8 @@ dialog:
       too_deep: "zu tief verschachtelt"
   custom_imagery:
     title: "Eigenes Hintergrundbild"
+    title_edit: "Eigenes Hintergrundbild bearbeiten"
+    confirm_edit: "Speichern"
     name: "Name"
     name_placeholder: "Mein Hintergrundbild"
     url_template: "URL-Vorlage"

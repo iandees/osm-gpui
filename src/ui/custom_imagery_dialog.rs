@@ -1,5 +1,6 @@
-//! Modal dialog to add a user-defined custom imagery layer, plus the validation
-//! helpers the dialog and its tests share.
+//! Modal dialog to add or edit a user-defined custom imagery source, plus the
+//! validation helpers the dialog and its tests share. The Imagery menu and the
+//! Settings window both use it.
 
 use crate::custom_imagery_store::CustomImageryEntry;
 use crate::tr;
@@ -87,6 +88,9 @@ pub struct CustomImageryDialog {
     max_zoom: Entity<InputState>,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
+    /// The entry being edited, whose attribution and tile size the form does
+    /// not show and so keeps; `None` when adding.
+    editing: Option<CustomImageryEntry>,
 }
 
 impl EventEmitter<DialogEvent> for CustomImageryDialog {}
@@ -96,8 +100,12 @@ impl CustomImageryDialog {
         let name = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr!("dialog.custom_imagery.name_placeholder"))
         });
-        let url_template =
-            cx.new(|cx| InputState::new(window, cx).placeholder("https://…/{z}/{x}/{y}.png"));
+        let url_template = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(3, 8)
+                .placeholder("https://…/{z}/{x}/{y}.png")
+        });
         let min_zoom = cx.new(|cx| InputState::new(window, cx).placeholder("0"));
         let max_zoom = cx.new(|cx| InputState::new(window, cx).placeholder("19"));
         let focus_handle = cx.focus_handle();
@@ -109,16 +117,47 @@ impl CustomImageryDialog {
             max_zoom,
             error: None,
             focus_handle,
+            editing: None,
         }
+    }
+
+    /// The dialog filled in with `entry`, to change it.
+    pub fn edit(entry: &CustomImageryEntry, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut dialog = Self::new(window, cx);
+        dialog.name.update(cx, |state, cx| {
+            state.set_value(entry.name.clone(), window, cx)
+        });
+        dialog.url_template.update(cx, |state, cx| {
+            state.set_value(entry.url_template.clone(), window, cx)
+        });
+        dialog.min_zoom.update(cx, |state, cx| {
+            state.set_value(entry.min_zoom.to_string(), window, cx)
+        });
+        dialog.max_zoom.update(cx, |state, cx| {
+            state.set_value(entry.max_zoom.to_string(), window, cx)
+        });
+        dialog.editing = Some(entry.clone());
+        dialog
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
         let name = self.name.read(cx).value().to_string();
-        let tmpl = self.url_template.read(cx).value().to_string();
+        // A URL has no line breaks; the box wraps long ones for editing.
+        let tmpl: String = self
+            .url_template
+            .read(cx)
+            .value()
+            .chars()
+            .filter(|c| !matches!(c, '\n' | '\r'))
+            .collect();
         let minz = self.min_zoom.read(cx).value().to_string();
         let maxz = self.max_zoom.read(cx).value().to_string();
         match validate(&name, &tmpl, &minz, &maxz) {
-            Ok(entry) => {
+            Ok(mut entry) => {
+                if let Some(old) = &self.editing {
+                    entry.attribution = old.attribution.clone();
+                    entry.tile_size = old.tile_size;
+                }
                 self.error = None;
                 cx.emit(DialogEvent::Submitted(entry));
             }
@@ -129,14 +168,24 @@ impl CustomImageryDialog {
         }
     }
 
-    fn cancel(&mut self, cx: &mut Context<Self>) {
+    /// The name box, so the host can put the keyboard focus in it.
+    pub fn name_input(&self) -> Entity<InputState> {
+        self.name.clone()
+    }
+
+    pub fn cancel(&mut self, cx: &mut Context<Self>) {
         cx.emit(DialogEvent::Cancelled);
     }
 
-    fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         match modal::classify_key(ev) {
             modal::ModalKey::Escape => self.cancel(cx),
-            modal::ModalKey::Enter => self.submit(cx),
+            // Enter belongs to the multi-line URL box.
+            modal::ModalKey::Enter => {
+                if !self.url_template.read(cx).focus_handle(cx).is_focused(window) {
+                    self.submit(cx)
+                }
+            }
             modal::ModalKey::Other => {}
         }
     }
@@ -212,14 +261,22 @@ impl Render for CustomImageryDialog {
             tr!("dialog.cancel"),
             cx.listener(|this, _, _w, cx| this.cancel(cx)),
             "add",
-            tr!("dialog.custom_imagery.confirm"),
+            if self.editing.is_some() {
+                tr!("dialog.custom_imagery.confirm_edit")
+            } else {
+                tr!("dialog.custom_imagery.confirm")
+            },
             cx.listener(|this, _, _w, cx| this.submit(cx)),
         );
 
         let frame = modal::dialog_frame(
             cx,
-            gpui::px(420.0),
-            tr!("dialog.custom_imagery.title"),
+            gpui::px(560.0),
+            if self.editing.is_some() {
+                tr!("dialog.custom_imagery.title_edit")
+            } else {
+                tr!("dialog.custom_imagery.title")
+            },
             body,
             footer,
         );
