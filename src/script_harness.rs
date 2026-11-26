@@ -785,7 +785,7 @@ impl MapViewer {
                     bus.set_assert_result(result);
                 }
                 ScriptCommand::SetPanelOpen(section, open) => {
-                    self.side_panel_open[panel_section_index(section)] = open;
+                    self.side_panel_open.set(side_panel_section(section), open);
                     cx.notify();
                     bus.set_assert_result(Ok(()));
                 }
@@ -1169,7 +1169,7 @@ impl MapViewer {
                 }
             }
             Check::PanelOpen(section, want) => {
-                let open = self.side_panel_open[panel_section_index(*section)];
+                let open = self.side_panel_open.is_open(side_panel_section(*section));
                 if open == *want {
                     Ok(())
                 } else if *want {
@@ -1459,11 +1459,11 @@ pub(crate) fn keystroke_for_char(ch: char) -> Keystroke {
     }
 }
 
-/// The `side_panel_open` slot of a section a script can open or close.
-fn panel_section_index(section: script::PanelSection) -> usize {
+/// The side-panel section a script can open or close.
+fn side_panel_section(section: script::PanelSection) -> crate::side_panel::SidePanelSection {
     match section {
-        script::PanelSection::Validation => crate::validation_panel::SECTION,
-        script::PanelSection::History => crate::side_panel::HISTORY_SECTION,
+        script::PanelSection::Validation => crate::side_panel::SidePanelSection::Validation,
+        script::PanelSection::History => crate::side_panel::SidePanelSection::History,
     }
 }
 

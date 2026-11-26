@@ -23,12 +23,10 @@ use osm_gpui::ui::style::{interactive_row, muted_text_size, PANEL_ROW_HEIGHT};
 use osm_gpui::ui::validation_list::note_row;
 use osm_gpui::{tr, tr_count};
 
+use crate::side_panel::SidePanelSection;
 use crate::MapViewer;
 
 actions!(osm_gpui, [ToggleTodoList]);
-
-/// Index of the To-do section in `MapViewer::side_panel_open`.
-pub(crate) const SECTION: usize = 10;
 
 /// About how tall one entry's row is.
 const ROW_HEIGHT_ESTIMATE: f32 = PANEL_ROW_HEIGHT + 4.0;
@@ -50,7 +48,7 @@ impl MapViewer {
     /// it is not showing.
     pub(crate) fn todo_want(&self) -> Option<crate::side_panel_layout::Want> {
         self.todo.shown.then(|| crate::side_panel_layout::Want {
-            open: self.side_panel_open[SECTION],
+            open: self.side_panel_open.is_open(SidePanelSection::Todo),
             content: self.todo.list.len().max(1) as f32 * ROW_HEIGHT_ESTIMATE,
         })
     }
@@ -73,7 +71,7 @@ impl MapViewer {
     ) {
         let shown = !self.todo.shown;
         if shown {
-            self.side_panel_open[SECTION] = true;
+            self.side_panel_open.set(SidePanelSection::Todo, true);
         }
         self.set_todo_shown(shown, cx);
     }
@@ -101,7 +99,7 @@ impl MapViewer {
         } else {
             tr_count!("todo.status.added", added, total = total)
         });
-        self.side_panel_open[SECTION] = true;
+        self.side_panel_open.set(SidePanelSection::Todo, true);
         self.set_todo_shown(true, cx);
         cx.notify();
     }
@@ -200,7 +198,7 @@ impl MapViewer {
             return None;
         }
         let theme = cx.theme().clone();
-        let open = self.side_panel_open[SECTION];
+        let open = self.side_panel_open.is_open(SidePanelSection::Todo);
         let count = self.todo.list.len();
         let can_add = self.selected.iter().any(|f| !self.todo.list.contains(f));
 
@@ -314,7 +312,7 @@ impl MapViewer {
         Some(
             self.collapsible_section_with(
                 tr!("todo.title"),
-                SECTION,
+                SidePanelSection::Todo,
                 open,
                 Some(trailing.into_any_element()),
                 div()
