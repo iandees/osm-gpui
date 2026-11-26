@@ -7,7 +7,7 @@ use osm_gpui::osm_export::to_osm_xml;
 use osm_gpui::tags::Tags;
 
 fn parse(xml: &str) -> Result<OsmData, osm_gpui::osm::OsmParseError> {
-    OsmParser::new().parse_str(xml)
+    OsmParser::parse_str(xml)
 }
 
 #[test]
@@ -32,16 +32,15 @@ fn negative_ids_are_read_as_given_and_references_resolve() {
 
 #[test]
 fn deleted_elements_are_kept_apart_from_the_data_and_modified_ones_noted() {
-    let (data, edits) = OsmParser::new()
-        .parse_str_with_edits(
-            r#"<osm version="0.6">
+    let (data, edits) = OsmParser::parse_str_with_edits(
+        r#"<osm version="0.6">
   <node id="1" version="2" lat="1" lon="2" action="delete"/>
   <node id="2" version="4" lat="1" lon="2" action="modify"><tag k="a" v="b"/></node>
   <way id="3" version="1" action="delete"><nd ref="1"/><nd ref="2"/></way>
   <relation id="4" version="1" action="delete"><member type="node" ref="2" role="x"/></relation>
 </osm>"#,
-        )
-        .unwrap();
+    )
+    .unwrap();
     assert!(!data.nodes.contains_key(&NodeId(1)) && data.nodes.contains_key(&NodeId(2)));
     assert!(data.ways.is_empty() && data.relations.is_empty());
     assert!(edits.deleted_nodes.contains_key(&NodeId(1)));
@@ -148,7 +147,7 @@ fn pending_edits_round_trip_through_the_action_attributes() {
         role: "x".into(),
     });
     let xml = to_osm_xml(&original, &current);
-    let (data, edits) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+    let (data, edits) = OsmParser::parse_str_with_edits(&xml).unwrap();
     assert!(edits.modified_nodes.contains(&NodeId(1)));
     assert!(edits.deleted_nodes.contains_key(&NodeId(3)));
     assert!(edits.modified_ways.contains(&WayId(10)) && edits.modified_ways.contains(&WayId(-1)));

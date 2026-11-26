@@ -406,9 +406,7 @@ mod tests {
     }
 
     fn setup(cx: &mut TestAppContext) -> gpui::WindowHandle<MapViewer> {
-        let data = OsmParser::new()
-            .parse_file(path(OSM).to_str().unwrap())
-            .unwrap();
+        let data = OsmParser::parse_file(path(OSM).to_str().unwrap()).unwrap();
         cx.update(gpui_component::init);
         let window = cx.add_window(MapViewer::new);
         window

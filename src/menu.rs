@@ -101,13 +101,10 @@ async fn load_osm_path(path: std::path::PathBuf, cx: &mut gpui::AsyncApp) {
                     osm_gpui::reference::load_file(&bg_path, format).map_err(|e| e.to_string()),
                 );
             }
-            let parser = OsmParser::new();
             // With edits: a file saved by File > Export… (or JOSM) may
             // carry pending local changes, which must stay pending.
             Loaded::Osm(Box::new(
-                parser
-                    .parse_file_with_edits(&path_str)
-                    .map_err(|e| e.to_string()),
+                OsmParser::parse_file_with_edits(&path_str).map_err(|e| e.to_string()),
             ))
         })
         .await;
