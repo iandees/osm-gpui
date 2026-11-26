@@ -13,7 +13,7 @@ file.
 
 - Selected ways show a handle at the middle of each segment; dragging one adds a vertex there, and it snaps onto other nodes and ways like any dragged vertex. ([#403](https://github.com/iandees/osm-gpui/pull/403))
 - In Improve Way mode, holding Shift locks the node being improved and keeps another way from being picked. Deleting the nearest node moves from Shift-click to Cmd/Ctrl+Alt-click. ([#404](https://github.com/iandees/osm-gpui/pull/404))
-- Settings > Editing > Download data automatically fetches the visible area once the map settles at zoom 16 or more. It is off by default. ([#382](https://github.com/iandees/osm-gpui/pull/382))
+- Settings > Editing > Download data automatically fetches the visible area once the map settles at zoom 16 or more. It is off by default. It downloads a fixed grid of small tiles, only the ones not already loaded, so panning never fetches the same ground twice, and it does nothing while the window shows more than 36 tiles. ([#382](https://github.com/iandees/osm-gpui/pull/382)), ([#406](https://github.com/iandees/osm-gpui/pull/406))
 
 ### Interface
 
