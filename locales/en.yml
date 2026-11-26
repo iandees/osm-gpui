@@ -192,7 +192,7 @@ status:
     arc_started: "Click to place the arc's end · Esc to cancel"
     arc_end_placed: "Move to bend the arc, then click to finish · Esc to cancel"
     improve_idle: "Click a way to improve · Esc to exit"
-    improve_way_chosen: "Click to move the nearest node · Cmd/Ctrl/Alt-click to add a node · Shift-click to delete the nearest node · Esc to pick another way"
+    improve_way_chosen: "Click to move the nearest node · Cmd/Ctrl/Alt-click to add a node · Cmd/Ctrl+Alt-click to delete the nearest node · hold Shift to lock the node · Esc to pick another way"
     adjust_offset: "Drag to move the imagery · arrow keys nudge (Shift for 10 px) · Space-drag to pan · Enter to keep · Esc to cancel"
   pending_edits:
     one: "%{count} unsaved edit"

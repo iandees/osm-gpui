@@ -30,6 +30,9 @@ pub(crate) struct PointerState {
     /// and the node becomes the selection once the drag passes the threshold
     /// (a release without moving is a plain click and selects it that way).
     pub(crate) vertex_grab: Option<osm_gpui::selection::FeatureRef>,
+    /// Improve Way mode: the node Shift has locked as the one being improved
+    /// (layer, way, node), kept until Shift is released.
+    pub(crate) improve_lock: Option<(osm_gpui::layers::LayerId, osm_gpui::ids::WayId, i64)>,
     /// The interactive Rotate in progress, if any (see `TransformSession`).
     pub(crate) transform_session: Option<TransformSession>,
     /// Window position of the last right-button press on the map, kept until
@@ -53,6 +56,7 @@ impl Default for PointerState {
             last_mouse_pos: None,
             hovered: None,
             vertex_grab: None,
+            improve_lock: None,
             transform_session: None,
             right_press: None,
             menu_swallow_press: false,
