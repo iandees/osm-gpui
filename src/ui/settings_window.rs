@@ -9,7 +9,7 @@ use std::sync::Arc;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::InputState,
     label::Label,
     radio::{Radio, RadioGroup},
     setting::{SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
@@ -271,9 +271,6 @@ pub struct SettingsWindow {
     edit_min_zoom: Option<Entity<InputState>>,
     edit_max_zoom: Option<Entity<InputState>>,
     edit_error: Option<SharedString>,
-    /// Whether the large URL editor popup is open, and the URL as it was when
-    /// the popup opened (restored on Cancel).
-    url_popup: Option<String>,
 
     app_settings: AppSettings,
     custom_api_url_input: Entity<InputState>,
@@ -350,7 +347,6 @@ impl SettingsWindow {
             edit_min_zoom: None,
             edit_max_zoom: None,
             edit_error: None,
-            url_popup: None,
 
             app_settings,
             custom_api_url_input,
@@ -763,6 +759,7 @@ impl SettingsWindow {
                 .default_value(entry.max_zoom.to_string())
         });
 
+        name.update(cx, |state, cx| state.focus(window, cx));
         self.edit_name = Some(name);
         self.edit_url = Some(url);
         self.edit_min_zoom = Some(min_zoom);
@@ -770,31 +767,7 @@ impl SettingsWindow {
         self.edit_error = None;
     }
 
-    fn open_url_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(url) = self.edit_url.clone() else {
-            return;
-        };
-        self.url_popup = Some(url.read(cx).value().to_string());
-        url.update(cx, |state, cx| state.focus(window, cx));
-        cx.notify();
-    }
-
-    /// Close the URL popup, keeping the text (`keep`) or restoring the URL it
-    /// opened with.
-    fn close_url_popup(&mut self, keep: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(original) = self.url_popup.take() {
-            if !keep {
-                if let Some(url) = self.edit_url.as_ref() {
-                    url.update(cx, |state, cx| state.set_value(original, window, cx));
-                }
-            }
-        }
-        window.focus(&self.focus_handle, cx);
-        cx.notify();
-    }
-
     fn clear_editing(&mut self) {
-        self.url_popup = None;
         self.edit_name = None;
         self.edit_url = None;
         self.edit_min_zoom = None;
@@ -1321,56 +1294,31 @@ impl SettingsWindow {
             } else {
                 entry.name.clone().into()
             };
-            let is_editing = self.editing_index == Some(idx);
             let is_confirming_delete = self.confirm_delete_index == Some(idx);
 
-            let mut item = if is_editing {
-                let entry_view = view.clone();
-                let edit_name = self.edit_name.clone();
-                let edit_url = self.edit_url.clone();
-                let edit_min_zoom = self.edit_min_zoom.clone();
-                let edit_max_zoom = self.edit_max_zoom.clone();
-                let edit_error = self.edit_error.clone();
-                SettingItem::new(
-                    title,
-                    SettingField::render(move |_options, window, cx| {
-                        render_entry_edit_form(
-                            entry_view.clone(),
-                            idx,
-                            edit_name.clone(),
-                            edit_url.clone(),
-                            edit_min_zoom.clone(),
-                            edit_max_zoom.clone(),
-                            edit_error.clone(),
-                            window,
-                            cx,
-                        )
-                    }),
-                )
-                .layout(Axis::Vertical)
-            } else {
-                let entry_view = view.clone();
-                let entry_summary = tr!(
-                    "settings.imagery.entry_summary",
-                    url = truncate_middle(&entry.url_template, URL_PREVIEW_CHARS),
-                    min = entry.min_zoom,
-                    max = entry.max_zoom
-                );
-                let entry_name = entry.name.clone();
-                SettingItem::new(
-                    title,
-                    SettingField::render(move |_options, window, cx| {
-                        render_entry_row(
-                            entry_view.clone(),
-                            idx,
-                            entry_name.clone(),
-                            is_confirming_delete,
-                            window,
-                            cx,
-                        )
-                    }),
-                )
-                .description(entry_summary)
+            let mut item = {
+            let entry_view = view.clone();
+            let entry_summary = tr!(
+                "settings.imagery.entry_summary",
+                url = truncate_middle(&entry.url_template, URL_PREVIEW_CHARS),
+                min = entry.min_zoom,
+                max = entry.max_zoom
+            );
+            let entry_name = entry.name.clone();
+            SettingItem::new(
+                title,
+                SettingField::render(move |_options, window, cx| {
+                    render_entry_row(
+                        entry_view.clone(),
+                        idx,
+                        entry_name.clone(),
+                        is_confirming_delete,
+                        window,
+                        cx,
+                    )
+                }),
+            )
+            .description(entry_summary)
             };
 
             item = item.keywords([entry.name.clone(), entry.url_template.clone()]);
@@ -1999,117 +1947,6 @@ fn render_shortcut_row(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_entry_edit_form(
-    view: Entity<SettingsWindow>,
-    idx: usize,
-    edit_name: Option<Entity<InputState>>,
-    edit_url: Option<Entity<InputState>>,
-    edit_min_zoom: Option<Entity<InputState>>,
-    edit_max_zoom: Option<Entity<InputState>>,
-    edit_error: Option<SharedString>,
-    _window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let muted = cx.theme().muted_foreground;
-    let danger = cx.theme().danger;
-
-    let (Some(edit_name), Some(edit_url), Some(edit_min_zoom), Some(edit_max_zoom)) =
-        (edit_name, edit_url, edit_min_zoom, edit_max_zoom)
-    else {
-        return div().into_any_element();
-    };
-
-    let url_preview = truncate_middle(
-        &edit_url.read(cx).value().replace(['\n', '\r'], ""),
-        URL_PREVIEW_CHARS,
-    );
-    let url_view = view.clone();
-    let mut content = v_flex()
-        .gap_2()
-        .child(
-            h_flex()
-                .gap_2()
-                .items_end()
-                .child(div().flex_1().min_w(px(0.)).child(field_row(
-                    tr!("dialog.custom_imagery.name"),
-                    &edit_name,
-                    muted,
-                )))
-                .child(div().w(px(72.)).child(field_row(
-                    tr!("dialog.custom_imagery.min_zoom"),
-                    &edit_min_zoom,
-                    muted,
-                )))
-                .child(div().w(px(72.)).child(field_row(
-                    tr!("dialog.custom_imagery.max_zoom"),
-                    &edit_max_zoom,
-                    muted,
-                ))),
-        )
-        .child(
-            v_flex()
-                .gap_1()
-                .child(
-                    Label::new(tr!("dialog.custom_imagery.url_template"))
-                        .text_size(crate::ui::style::muted_text_size())
-                        .text_color(muted),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(url_preview),
-                        )
-                        .child(
-                            Button::new(("edit-url", idx))
-                                .label(tr!("settings.imagery.edit_url"))
-                                .ghost()
-                                .compact()
-                                .on_click(move |_ev, window, cx| {
-                                    url_view.update(cx, |this, cx| this.open_url_popup(window, cx));
-                                }),
-                        ),
-                ),
-        );
-
-    if let Some(err) = edit_error {
-        content = content.child(Label::new(err).text_color(danger));
-    }
-
-    let save_view = view.clone();
-    let cancel_view = view;
-    content
-        .child(
-            h_flex()
-                .gap_2()
-                .child(
-                    Button::new(("save", idx))
-                        .label(tr!("settings.save"))
-                        .primary()
-                        .on_click(move |_ev, _window, cx| {
-                            save_view.update(cx, |this, cx| this.save_entry(idx, cx));
-                        }),
-                )
-                .child(
-                    Button::new(("cancel", idx))
-                        .label(tr!("dialog.cancel"))
-                        .ghost()
-                        .on_click(move |_ev, _window, cx| {
-                            cancel_view.update(cx, |this, cx| this.cancel_edit(idx, cx));
-                        }),
-                ),
-        )
-        .into_any_element()
-}
-
 /// How many characters of a tile URL a row shows before eliding the middle.
 const URL_PREVIEW_CHARS: usize = 34;
 
@@ -2139,32 +1976,72 @@ fn card_size(w: f32, h: f32) -> (f32, f32) {
 }
 
 impl SettingsWindow {
-    /// The larger URL editor, drawn over the settings card.
-    fn url_popup_view(&self, url: Entity<InputState>, cx: &mut Context<Self>) -> Div {
-        let done = cx.listener(|this, _, window, cx| this.close_url_popup(true, window, cx));
-        let cancel = cx.listener(|this, _, window, cx| this.close_url_popup(false, window, cx));
-        let body = v_flex()
-            .gap_2()
-            .child(Input::new(&url))
+    /// The dialog for adding or editing the custom imagery source at `idx`,
+    /// drawn over the settings card.
+    fn edit_dialog_view(&self, idx: usize, cx: &mut Context<Self>) -> Option<Div> {
+        let (name, url, min_zoom, max_zoom) = (
+            self.edit_name.as_ref()?,
+            self.edit_url.as_ref()?,
+            self.edit_min_zoom.as_ref()?,
+            self.edit_max_zoom.as_ref()?,
+        );
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let is_new = self
+            .entries
+            .get(idx)
+            .is_some_and(|e| e.name.is_empty() && e.url_template.is_empty());
+        let title = if is_new {
+            tr!("settings.imagery.new_source")
+        } else {
+            tr!("settings.imagery.edit_source")
+        };
+        let mut body = v_flex()
+            .gap_3()
+            .child(field_row(
+                tr!("dialog.custom_imagery.name"),
+                name,
+                muted,
+            ))
             .child(
-                Label::new(tr!("settings.imagery.url_popup_hint"))
-                    .text_size(crate::ui::style::muted_text_size())
-                    .text_color(cx.theme().muted_foreground),
-            );
+                h_flex()
+                    .gap_2()
+                    .child(div().flex_1().child(field_row(
+                        tr!("dialog.custom_imagery.min_zoom"),
+                        min_zoom,
+                        muted,
+                    )))
+                    .child(div().flex_1().child(field_row(
+                        tr!("dialog.custom_imagery.max_zoom"),
+                        max_zoom,
+                        muted,
+                    ))),
+            )
+            .child(field_row(
+                tr!("dialog.custom_imagery.url_template"),
+                url,
+                muted,
+            ));
+        if let Some(err) = self.edit_error.clone() {
+            body = body.child(Label::new(err).text_color(danger));
+        }
+        let save = cx.listener(move |this, _, _, cx| this.save_entry(idx, cx));
+        let cancel = cx.listener(move |this, _, _, cx| this.cancel_edit(idx, cx));
         let frame = crate::ui::modal::dialog_frame(
             cx,
             px(560.),
-            tr!("dialog.custom_imagery.url_template"),
+            title,
             body,
             crate::ui::modal::footer_row(
-                "url-popup-cancel",
+                "edit-source-cancel",
                 tr!("dialog.cancel"),
                 cancel,
-                "url-popup-done",
-                tr!("settings.imagery.url_done"),
-                done,
+                "edit-source-save",
+                tr!("settings.save"),
+                save,
             ),
         );
+        Some(
         div()
             .absolute()
             .inset_0()
@@ -2177,7 +2054,8 @@ impl SettingsWindow {
                 div()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(frame),
-            )
+            ),
+        )
     }
 }
 
@@ -2197,10 +2075,9 @@ impl Render for SettingsWindow {
             }
             settings
         };
-        let url_popup = match (self.url_popup.is_some(), self.edit_url.as_ref()) {
-            (true, Some(url)) => Some(self.url_popup_view(url.clone(), cx)),
-            _ => None,
-        };
+        let edit_dialog = self
+            .editing_index
+            .and_then(|idx| self.edit_dialog_view(idx, cx));
         let theme = cx.theme();
         let card = v_flex()
             .w(px(w))
@@ -2239,11 +2116,11 @@ impl Render for SettingsWindow {
             .child(div().flex_1().min_h(px(0.)).child(settings));
         crate::ui::modal::scrim(
             &self.focus_handle,
-            cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+            cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 if crate::ui::modal::classify_key(ev) == crate::ui::modal::ModalKey::Escape {
-                    // Escape closes the URL popup first, then Settings.
-                    if this.url_popup.is_some() {
-                        this.close_url_popup(false, window, cx);
+                    // Escape closes the source dialog first, then Settings.
+                    if let Some(idx) = this.editing_index {
+                        this.cancel_edit(idx, cx);
                     } else {
                         cx.emit(SettingsEvent::Closed);
                     }
@@ -2254,7 +2131,7 @@ impl Render for SettingsWindow {
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(card),
         )
-        .children(url_popup)
+        .children(edit_dialog)
     }
 }
 

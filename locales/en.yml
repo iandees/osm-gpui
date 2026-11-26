@@ -548,9 +548,7 @@ settings:
     new_source: "New Source"
     # `%{url}` is the tile URL template; zoom levels are numbers.
     entry_summary: "zoom %{min}–%{max} · %{url}"
-    edit_url: "Edit…"
-    url_done: "Done"
-    url_popup_hint: "Line breaks are removed when the source is saved."
+    edit_source: "Edit Source"
     add_source: "Add Source"
     edit: "Edit"
     delete: "Delete"

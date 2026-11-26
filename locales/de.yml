@@ -528,9 +528,7 @@ settings:
     new_source: "Neue Quelle"
     # `%{url}` ist die Kachel-URL-Vorlage; Zoomstufen sind Zahlen.
     entry_summary: "Zoom %{min}–%{max} · %{url}"
-    edit_url: "Bearbeiten …"
-    url_done: "Fertig"
-    url_popup_hint: "Zeilenumbrüche werden beim Speichern entfernt."
+    edit_source: "Quelle bearbeiten"
     add_source: "Quelle hinzufügen"
     edit: "Bearbeiten"
     delete: "Löschen"
