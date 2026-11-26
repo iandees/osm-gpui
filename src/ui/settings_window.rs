@@ -20,6 +20,7 @@ use crate::auth::{self, StoredToken};
 use crate::custom_imagery_store::{self, CustomImageryEntry};
 use crate::keybindings::{self, ShortcutCategory, SHORTCUTS};
 use crate::settings_store::{self, ApiServerChoice, AppSettings, TextSizePreset, ThemePreference};
+use crate::ui::custom_imagery_dialog::{CustomImageryDialog, DialogEvent};
 use crate::ui::modal::field_row;
 use crate::{tr, tr_count};
 
@@ -264,13 +265,10 @@ pub struct SettingsWindow {
     page: PageSelection,
     focus_handle: FocusHandle,
     entries: Vec<CustomImageryEntry>,
-    editing_index: Option<usize>,
     confirm_delete_index: Option<usize>,
-    edit_name: Option<Entity<InputState>>,
-    edit_url: Option<Entity<InputState>>,
-    edit_min_zoom: Option<Entity<InputState>>,
-    edit_max_zoom: Option<Entity<InputState>>,
-    edit_error: Option<SharedString>,
+    /// The add/edit dialog while it is open, and the entry it edits (`None`
+    /// when adding a new one).
+    edit_dialog: Option<(Option<usize>, Entity<CustomImageryDialog>)>,
 
     app_settings: AppSettings,
     custom_api_url_input: Entity<InputState>,
@@ -340,13 +338,8 @@ impl SettingsWindow {
             page: PageSelection::new(start_page),
             focus_handle,
             entries: custom_imagery_store::load(),
-            editing_index: None,
             confirm_delete_index: None,
-            edit_name: None,
-            edit_url: None,
-            edit_min_zoom: None,
-            edit_max_zoom: None,
-            edit_error: None,
+            edit_dialog: None,
 
             app_settings,
             custom_api_url_input,
@@ -730,99 +723,47 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    fn start_editing(
+    /// Open the shared custom imagery dialog on entry `target`, or blank to
+    /// add one (`None`).
+    fn open_edit_dialog(
         &mut self,
-        entry: &CustomImageryEntry,
+        target: Option<usize>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(tr!("dialog.custom_imagery.name"))
-                .default_value(entry.name.clone())
+        let dialog = match target.and_then(|idx| self.entries.get(idx).cloned()) {
+            Some(entry) => cx.new(|cx| CustomImageryDialog::edit(&entry, window, cx)),
+            None => cx.new(|cx| CustomImageryDialog::new(window, cx)),
+        };
+        cx.subscribe(&dialog, move |this, _dialog, event: &DialogEvent, cx| {
+            if let DialogEvent::Submitted(entry) = event {
+                match target.filter(|&idx| idx < this.entries.len()) {
+                    Some(idx) => this.entries[idx] = entry.clone(),
+                    None => this.entries.push(entry.clone()),
+                }
+                this.persist();
+            }
+            this.edit_dialog = None;
+            cx.notify();
+        })
+        .detach();
+        self.confirm_delete_index = None;
+        // The click that got us here moves the focus once it finishes, so
+        // focus the name box on the next frame.
+        let name = dialog.read(cx).name_input();
+        self.edit_dialog = Some((target, dialog));
+        window.on_next_frame(move |window, cx| {
+            name.update(cx, |state, cx| state.focus(window, cx));
         });
-        let url = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("https://…/{z}/{x}/{y}.png")
-                .default_value(entry.url_template.clone())
-        });
-        let min_zoom = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("0")
-                .default_value(entry.min_zoom.to_string())
-        });
-        let max_zoom = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("19")
-                .default_value(entry.max_zoom.to_string())
-        });
-
-        self.edit_name = Some(name);
-        self.edit_url = Some(url);
-        self.edit_min_zoom = Some(min_zoom);
-        self.edit_max_zoom = Some(max_zoom);
-        self.edit_error = None;
-    }
-
-    fn clear_editing(&mut self) {
-        self.edit_name = None;
-        self.edit_url = None;
-        self.edit_min_zoom = None;
-        self.edit_max_zoom = None;
-        self.edit_error = None;
+        cx.notify();
     }
 
     fn start_edit_at(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let entry = self.entries[idx].clone();
-        self.editing_index = Some(idx);
-        self.confirm_delete_index = None;
-        self.start_editing(&entry, window, cx);
-        cx.notify();
+        self.open_edit_dialog(Some(idx), window, cx);
     }
 
-    fn save_entry(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let (Some(name), Some(url), Some(min_z), Some(max_z)) = (
-            self.edit_name.as_ref(),
-            self.edit_url.as_ref(),
-            self.edit_min_zoom.as_ref(),
-            self.edit_max_zoom.as_ref(),
-        ) else {
-            return;
-        };
-
-        let name_val = name.read(cx).value().to_string();
-        let url_val = url.read(cx).value().to_string();
-        let min_val = min_z.read(cx).value().to_string();
-        let max_val = max_z.read(cx).value().to_string();
-
-        match crate::ui::custom_imagery_dialog::validate(&name_val, &url_val, &min_val, &max_val) {
-            Ok(mut entry) => {
-                // The form edits neither the attribution nor the tile size;
-                // keep them.
-                entry.attribution = self.entries[idx].attribution.take();
-                entry.tile_size = self.entries[idx].tile_size;
-                self.entries[idx] = entry;
-                self.persist();
-                self.editing_index = None;
-                self.clear_editing();
-                cx.notify();
-            }
-            Err(e) => {
-                self.edit_error = Some(crate::ui::custom_imagery_dialog::error_message(&e));
-                cx.notify();
-            }
-        }
-    }
-
-    fn cancel_edit(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if let Some(entry) = self.entries.get(idx) {
-            if entry.name.is_empty() && entry.url_template.is_empty() {
-                self.entries.remove(idx);
-            }
-        }
-        self.editing_index = None;
-        self.clear_editing();
-        cx.notify();
+    fn add_new_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_edit_dialog(None, window, cx);
     }
 
     fn delete_entry(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -830,26 +771,7 @@ impl SettingsWindow {
             self.entries.remove(idx);
             self.persist();
         }
-        self.editing_index = None;
-        self.clear_editing();
         self.confirm_delete_index = None;
-        cx.notify();
-    }
-
-    fn add_new_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let blank = CustomImageryEntry {
-            name: String::new(),
-            url_template: String::new(),
-            min_zoom: 0,
-            max_zoom: 19,
-            attribution: None,
-            tile_size: crate::layers::tile_layer::STANDARD_TILE_SIZE,
-        };
-        self.entries.push(blank.clone());
-        let new_idx = self.entries.len() - 1;
-        self.editing_index = Some(new_idx);
-        self.confirm_delete_index = None;
-        self.start_editing(&blank, window, cx);
         cx.notify();
     }
 
@@ -1285,38 +1207,13 @@ impl SettingsWindow {
             } else {
                 entry.name.clone().into()
             };
-            let is_editing = self.editing_index == Some(idx);
             let is_confirming_delete = self.confirm_delete_index == Some(idx);
 
-            let mut item = if is_editing {
-                let entry_view = view.clone();
-                let edit_name = self.edit_name.clone();
-                let edit_url = self.edit_url.clone();
-                let edit_min_zoom = self.edit_min_zoom.clone();
-                let edit_max_zoom = self.edit_max_zoom.clone();
-                let edit_error = self.edit_error.clone();
-                SettingItem::new(
-                    title,
-                    SettingField::render(move |_options, window, cx| {
-                        render_entry_edit_form(
-                            entry_view.clone(),
-                            idx,
-                            edit_name.clone(),
-                            edit_url.clone(),
-                            edit_min_zoom.clone(),
-                            edit_max_zoom.clone(),
-                            edit_error.clone(),
-                            window,
-                            cx,
-                        )
-                    }),
-                )
-                .layout(Axis::Vertical)
-            } else {
+            let mut item = {
                 let entry_view = view.clone();
                 let entry_summary = tr!(
                     "settings.imagery.entry_summary",
-                    url = entry.url_template,
+                    url = truncate_middle(&entry.url_template, URL_PREVIEW_CHARS),
                     min = entry.min_zoom,
                     max = entry.max_zoom
                 );
@@ -1963,82 +1860,23 @@ fn render_shortcut_row(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_entry_edit_form(
-    view: Entity<SettingsWindow>,
-    idx: usize,
-    edit_name: Option<Entity<InputState>>,
-    edit_url: Option<Entity<InputState>>,
-    edit_min_zoom: Option<Entity<InputState>>,
-    edit_max_zoom: Option<Entity<InputState>>,
-    edit_error: Option<SharedString>,
-    _window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let muted = cx.theme().muted_foreground;
-    let danger = cx.theme().danger;
+/// How many characters of a tile URL a row shows before eliding the middle.
+const URL_PREVIEW_CHARS: usize = 34;
 
-    let (Some(edit_name), Some(edit_url), Some(edit_min_zoom), Some(edit_max_zoom)) =
-        (edit_name, edit_url, edit_min_zoom, edit_max_zoom)
-    else {
-        return div().into_any_element();
-    };
-
-    let mut content = v_flex()
-        .gap_2()
-        .child(field_row(
-            tr!("dialog.custom_imagery.name"),
-            &edit_name,
-            muted,
-        ))
-        .child(field_row(
-            tr!("dialog.custom_imagery.url_template"),
-            &edit_url,
-            muted,
-        ))
-        .child(
-            h_flex()
-                .gap_2()
-                .child(div().flex_1().child(field_row(
-                    tr!("dialog.custom_imagery.min_zoom"),
-                    &edit_min_zoom,
-                    muted,
-                )))
-                .child(div().flex_1().child(field_row(
-                    tr!("dialog.custom_imagery.max_zoom"),
-                    &edit_max_zoom,
-                    muted,
-                ))),
-        );
-
-    if let Some(err) = edit_error {
-        content = content.child(Label::new(err).text_color(danger));
+/// `text` shortened to at most `max` characters by replacing its middle with
+/// an ellipsis, so both the host and the placeholders at the end stay visible.
+fn truncate_middle(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max || max < 3 {
+        return text.to_string();
     }
-
-    let save_view = view.clone();
-    let cancel_view = view;
-    content
-        .child(
-            h_flex()
-                .gap_2()
-                .child(
-                    Button::new(("save", idx))
-                        .label(tr!("settings.save"))
-                        .primary()
-                        .on_click(move |_ev, _window, cx| {
-                            save_view.update(cx, |this, cx| this.save_entry(idx, cx));
-                        }),
-                )
-                .child(
-                    Button::new(("cancel", idx))
-                        .label(tr!("dialog.cancel"))
-                        .ghost()
-                        .on_click(move |_ev, _window, cx| {
-                            cancel_view.update(cx, |this, cx| this.cancel_edit(idx, cx));
-                        }),
-                ),
-        )
-        .into_any_element()
+    let keep = max - 1;
+    let head = keep.div_ceil(2);
+    let tail = keep - head;
+    let mut out: String = chars[..head].iter().collect();
+    out.push('…');
+    out.extend(chars[chars.len() - tail..].iter());
+    out
 }
 
 /// The settings card's size in a window of `w` x `h`: most of it, within
@@ -2066,6 +1904,7 @@ impl Render for SettingsWindow {
             }
             settings
         };
+        let edit_dialog = self.edit_dialog.as_ref().map(|(_, dialog)| dialog.clone());
         let theme = cx.theme();
         let card = v_flex()
             .w(px(w))
@@ -2104,9 +1943,14 @@ impl Render for SettingsWindow {
             .child(div().flex_1().min_h(px(0.)).child(settings));
         crate::ui::modal::scrim(
             &self.focus_handle,
-            cx.listener(|_, ev: &gpui::KeyDownEvent, _, cx| {
+            cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 if crate::ui::modal::classify_key(ev) == crate::ui::modal::ModalKey::Escape {
-                    cx.emit(SettingsEvent::Closed);
+                    // Escape closes the source dialog first, then Settings.
+                    if let Some((_, dialog)) = &this.edit_dialog {
+                        dialog.update(cx, |dialog, cx| dialog.cancel(cx));
+                    } else {
+                        cx.emit(SettingsEvent::Closed);
+                    }
                 }
             }),
             // Clicks on the card stay on it.
@@ -2114,6 +1958,7 @@ impl Render for SettingsWindow {
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(card),
         )
+        .children(edit_dialog)
     }
 }
 
@@ -2122,9 +1967,9 @@ mod tests {
     // Not `super::*`: it carries `gpui::*`, whose `test` macro shadows `#[test]`.
     use super::{
         acting_server, keybindings, login_state_for, parse_cache_budget, parse_client_id,
-        parse_custom_api_url, parse_map_style_location, rejection_message, CacheBudget,
-        ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, PageSelection, SettingsPage,
-        MIN_CACHE_BUDGET_MB,
+        parse_custom_api_url, parse_map_style_location, rejection_message, truncate_middle,
+        CacheBudget, ClientIdEdit, CustomApiUrl, LoginState, MapStyleLocation, PageSelection,
+        SettingsPage, MIN_CACHE_BUDGET_MB,
     };
     use crate::auth::StoredToken;
     use crate::settings_store::{ApiServerChoice, AppSettings, DEV_API_URL, PRIMARY_API_URL};
@@ -2150,6 +1995,17 @@ mod tests {
     /// A token store holding one login, keyed by OAuth base URL.
     fn store_with(oauth_base: &'static str) -> impl Fn(&str) -> Option<StoredToken> {
         move |base| (base == oauth_base).then(|| token("mapper"))
+    }
+
+    #[test]
+    fn truncate_middle_keeps_short_text_and_both_ends_of_long_text() {
+        assert_eq!(truncate_middle("short", 10), "short");
+        let url = "https://tiles.example.com/some/long/path/{z}/{x}/{y}.png";
+        let out = truncate_middle(url, 20);
+        assert_eq!(out.chars().count(), 20);
+        assert!(out.starts_with("https://"));
+        assert!(out.ends_with("{y}.png"));
+        assert!(out.contains('…'));
     }
 
     #[test]

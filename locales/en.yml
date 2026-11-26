@@ -547,7 +547,7 @@ settings:
     empty: "No custom imagery sources configured."
     new_source: "New Source"
     # `%{url}` is the tile URL template; zoom levels are numbers.
-    entry_summary: "%{url} · zoom %{min}–%{max}"
+    entry_summary: "zoom %{min}–%{max} · %{url}"
     add_source: "Add Source"
     edit: "Edit"
     delete: "Delete"
@@ -1194,9 +1194,14 @@ dialog:
       too_deep: "nested too deeply"
   custom_imagery:
     title: "Custom Imagery"
+    title_edit: "Edit Custom Imagery"
+    confirm_edit: "Save"
     name: "Name"
     name_placeholder: "My imagery"
     url_template: "URL template"
+    # `{z}`, `{x}`, `{y}`, `{-y}`, `{switch:a,b,c}` and `{bbox-epsg-3857}` are
+    # literal URL placeholders and must be kept exactly as written.
+    url_help: "{z} is the zoom level, {x} the column and {y} the row ({-y} for TMS servers). {switch:a,b,c} rotates through subdomains. {bbox-epsg-3857} is the tile's bounding box, for WMS or ArcGIS export servers."
     min_zoom: "Min zoom"
     max_zoom: "Max zoom"
     confirm: "Add"

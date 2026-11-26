@@ -527,7 +527,7 @@ settings:
     empty: "Keine eigenen Bildquellen eingerichtet."
     new_source: "Neue Quelle"
     # `%{url}` ist die Kachel-URL-Vorlage; Zoomstufen sind Zahlen.
-    entry_summary: "%{url} · Zoom %{min}–%{max}"
+    entry_summary: "Zoom %{min}–%{max} · %{url}"
     add_source: "Quelle hinzufügen"
     edit: "Bearbeiten"
     delete: "Löschen"
@@ -1148,9 +1148,14 @@ dialog:
       too_deep: "zu tief verschachtelt"
   custom_imagery:
     title: "Eigenes Hintergrundbild"
+    title_edit: "Eigenes Hintergrundbild bearbeiten"
+    confirm_edit: "Speichern"
     name: "Name"
     name_placeholder: "Mein Hintergrundbild"
     url_template: "URL-Vorlage"
+    # `{z}`, `{x}`, `{y}`, `{-y}`, `{switch:a,b,c}` and `{bbox-epsg-3857}` are
+    # literal URL placeholders and must be kept exactly as written.
+    url_help: "{z} ist die Zoomstufe, {x} die Spalte und {y} die Zeile ({-y} für TMS-Server). {switch:a,b,c} wechselt zwischen Subdomains. {bbox-epsg-3857} ist der Kachelausschnitt, für WMS- oder ArcGIS-Export-Server."
     min_zoom: "Min. Zoom"
     max_zoom: "Max. Zoom"
     confirm: "Hinzufügen"
