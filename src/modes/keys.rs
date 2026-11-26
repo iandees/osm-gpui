@@ -143,7 +143,7 @@ impl MapViewer {
             cx.notify();
             return;
         }
-        let cancelled_drag = self.cancel_move_drag(cx);
+        let cancelled_drag = self.cancel_move_drag(cx) | self.cancel_midpoint_drag();
         self.mode_escape(cancelled_drag);
         cx.notify();
     }

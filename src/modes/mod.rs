@@ -21,6 +21,7 @@ mod escape_tests;
 pub(crate) mod extrude;
 pub(crate) mod improve;
 pub(crate) mod keys;
+pub(crate) mod midpoint;
 pub(crate) mod pointer;
 mod preview;
 pub(crate) mod select;
@@ -231,6 +232,11 @@ impl crate::MapViewer {
     /// `pointer::press_owner`). A mode that owns the left button takes the
     /// press; for any other the shared select/box-select/move gesture starts.
     pub(crate) fn mode_press(&mut self, position: Point<Pixels>, modifiers: gpui::Modifiers) {
+        if matches!(self.mode_state, ModeState::Select(_))
+            && self.midpoint_press(position, modifiers)
+        {
+            return;
+        }
         let took_press = match self.mode_state {
             ModeState::Building(_) => building::press(self, position),
             ModeState::Extrude(_) => {
