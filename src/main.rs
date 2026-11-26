@@ -855,6 +855,9 @@ struct MapViewer {
     validation: Option<validation_panel::ValidationPanel>,
     /// Debounce state for automatic downloads (`Settings > Editing`).
     auto_fetch: osm_gpui::auto_fetch::AutoFetch,
+    /// Tiles automatic download still has to fetch, nearest the view centre
+    /// first; each finished download starts the next.
+    auto_fetch_queue: std::collections::VecDeque<GeoBounds>,
     /// The changeset comment typed in the upload dialog, kept when the dialog
     /// closes without uploading (Cancel, or Show on a conflict) and put back
     /// when it reopens. Cleared after a successful upload.
@@ -1089,6 +1092,7 @@ impl MapViewer {
             find_mode: Default::default(),
             validation: None,
             auto_fetch: Default::default(),
+            auto_fetch_queue: Default::default(),
             upload_comment_draft: String::new(),
             last_uploaded_changeset: None,
             upload_source_draft: None,
@@ -6138,8 +6142,12 @@ impl MapViewer {
                         if this.shows_notes() {
                             this.refresh_notes(cx);
                         }
+                        this.auto_fetch_next(cx);
                     }
-                    Err(e) => this.set_status(e.to_string()),
+                    Err(e) => {
+                        this.auto_fetch_queue.clear();
+                        this.set_status(e.to_string());
+                    }
                 }
                 cx.notify();
             });
@@ -6183,7 +6191,7 @@ impl MapViewer {
         started: osm_gpui::auto_fetch::ViewKey,
         cx: &mut Context<Self>,
     ) {
-        use osm_gpui::auto_fetch::{should_fetch, Settled};
+        use osm_gpui::auto_fetch::{tiles_to_fetch, Settled};
         let view = match self.auto_fetch.timer_fired(started) {
             Settled::Nothing => return,
             Settled::Wait(view) => {
@@ -6195,35 +6203,58 @@ impl MapViewer {
         if !settings_store::snapshot().auto_fetch_data {
             return;
         }
-        // The layer a download would merge into: the active one if it is an
-        // OSM layer, otherwise the download creates one.
-        let known: Option<Vec<osm_gpui::download_bounds::MercRect>> = self
-            .active_layer
+        self.auto_fetch.attempted(view);
+        // The tiles of this view replace whatever the last view left queued.
+        let known = self.auto_fetch_known_rects();
+        self.auto_fetch_queue = tiles_to_fetch(&view, known.as_deref()).into();
+        // If something is being transferred, its completion starts the queue.
+        self.auto_fetch_next(cx);
+    }
+
+    /// The downloaded area of the layer a download would merge into: the
+    /// active one if it is an OSM layer, otherwise `None` (the download
+    /// creates one).
+    fn auto_fetch_known_rects(&self) -> Option<Vec<osm_gpui::download_bounds::MercRect>> {
+        self.active_layer
             .and_then(|id| self.layer_manager.find_layer(id))
             .and_then(|layer| layer.as_osm())
-            .map(|osm| osm.download_rects().to_vec());
-        if !should_fetch(&view, known.as_deref()) {
+            .map(|osm| osm.download_rects().to_vec())
+    }
+
+    /// Download the next queued tile the layer does not already hold. Quiet:
+    /// this is not something the user asked for, so an offline server or an
+    /// unexpected refusal just drops the queue instead of nagging.
+    fn auto_fetch_next(&mut self, cx: &mut Context<Self>) {
+        if !settings_store::snapshot().auto_fetch_data {
+            self.auto_fetch_queue.clear();
             return;
         }
-        // Not while something else is being transferred, and quietly not
-        // when the server is offline or would refuse the area: this is not
-        // something the user asked for, so it should not nag.
         if self.transfer.is_some() {
-            // Try again at the next view change, or when this one is
-            // retried after the transfer ends.
-            self.auto_fetch = Default::default();
+            return;
+        }
+        let known = self.auto_fetch_known_rects();
+        if matches!(known.as_deref(), Some([])) {
+            self.auto_fetch_queue.clear();
             return;
         }
         let base_url = settings_store::api_base_url();
         osm_gpui::capabilities::ensure_fetched(self.http.clone(), &base_url);
-        if osm_gpui::capabilities::for_server(&base_url).is_offline()
-            || osm_api::check_area(&view.bounds(), &base_url).is_err()
-        {
-            self.auto_fetch.attempted(view);
+        while let Some(tile) = self.auto_fetch_queue.pop_front() {
+            if known
+                .as_deref()
+                .is_some_and(|rects| osm_gpui::auto_fetch::covers(rects, &tile))
+            {
+                continue;
+            }
+            if osm_gpui::capabilities::for_server(&base_url).is_offline()
+                || osm_api::check_area(&tile, &base_url).is_err()
+            {
+                self.auto_fetch_queue.clear();
+                return;
+            }
+            self.request_download_of(tile, cx);
             return;
         }
-        self.auto_fetch.attempted(view);
-        self.request_download_of(view.bounds(), cx);
     }
 
     /// File > "Revert Changeset…": ask which changeset (`render` opens the

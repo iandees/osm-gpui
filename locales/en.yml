@@ -512,7 +512,7 @@ settings:
     simplify_tolerance_error: "Enter a number from 0.1 to 100"
     auto_fetch_group: "Downloading"
     auto_fetch: "Download data automatically"
-    auto_fetch_description: "When the map has been still for a moment and is zoomed in to level 16 or more, download the visible area from the OpenStreetMap server unless it is already loaded. The data is merged into the current layer and your edits are kept. Off by default; downloads are also limited by the server's maximum area."
+    auto_fetch_description: "When the map has been still for a moment and is zoomed in to level 16 or more, download the visible area from the OpenStreetMap server in a grid of small tiles, skipping tiles that are already loaded. Nothing is downloaded while the window shows more than a few dozen tiles (zoom in further or use a smaller window). The data is merged into the current layer and your edits are kept. Off by default; downloads are also limited by the server's maximum area."
     taginfo_group: "Tag suggestions"
     taginfo: "Suggest tags from taginfo"
     taginfo_description: "While you type in the tag key and value fields, the text is sent to taginfo.openstreetmap.org to suggest keys and values that others use. Values of free-text keys such as name or addr:* are never sent. Suggestions from the loaded data and the tagging schema always work without it."
