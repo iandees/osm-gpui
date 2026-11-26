@@ -3468,6 +3468,20 @@ impl MapViewer {
         sources: &[Tags],
         with_nodes: bool,
     ) -> Option<SnapTarget> {
+        self.find_snap_target_avoiding(layer_id, screen_pt, node, sources, with_nodes, None)
+    }
+
+    /// `find_snap_target`, also never offering `avoid_way` or any node of it:
+    /// a vertex being added to that way must not join it a second time.
+    pub(crate) fn find_snap_target_avoiding(
+        &self,
+        layer_id: LayerId,
+        screen_pt: gpui::Point<gpui::Pixels>,
+        node: Option<NodeId>,
+        sources: &[Tags],
+        with_nodes: bool,
+        avoid_way: Option<WayId>,
+    ) -> Option<SnapTarget> {
         let layer = self.layer_manager.find_layer(layer_id)?;
         let osm_layer = layer.as_osm()?;
         let editable = layer.as_editable()?;
@@ -3476,7 +3490,10 @@ impl MapViewer {
                 &self.viewport,
                 screen_pt,
                 osm_gpui::layers::node_markers::FULL_HIT_RADIUS,
-                |n| snap_node_ok(editable, layer_id, sources, node, n),
+                |n| {
+                    snap_node_ok(editable, layer_id, sources, node, n)
+                        && avoid_way.is_none_or(|w| !editable.ways_using_node(n).contains(&w))
+                },
             );
             if let Some(id) = hit {
                 let at = editable.node_lat_lon(id)?;
@@ -3487,7 +3504,7 @@ impl MapViewer {
             &self.viewport,
             screen_pt,
             osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
-            |w| snap_way_ok(editable, layer_id, sources, node, w),
+            |w| Some(w) != avoid_way && snap_way_ok(editable, layer_id, sources, node, w),
         )?;
         // `index` counts only the way's nodes that are loaded, so with some
         // missing (a partial download) it is not a position in the node
@@ -3669,7 +3686,7 @@ impl MapViewer {
             return;
         }
 
-        if self.midpoint_move(adjusted_position, left_pressed) {
+        if self.midpoint_move(adjusted_position, event.modifiers, left_pressed) {
             return;
         }
 

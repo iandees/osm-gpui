@@ -13,8 +13,8 @@ use osm_gpui::layers::LayerId;
 use osm_gpui::selection::FeatureKind;
 
 use super::preview::{blue, line_width, stroke_polyline, PreviewFrame};
-use crate::undo::{EditLabel, UndoableAction};
-use crate::{to_pt, MapViewer};
+use crate::undo::{roll_back_recording, EditLabel, UndoableAction};
+use crate::{selection_actions, snap_target_tags, to_pt, MapViewer, SnapTarget, Tags};
 
 /// Segments shorter than this on screen show no handle: it would sit on top
 /// of the vertices at its ends.
@@ -134,22 +134,57 @@ impl MapViewer {
 
     /// Pointer movement during a midpoint drag. Returns whether one is in
     /// progress (the move is then fully handled).
-    pub(crate) fn midpoint_move(&mut self, position: Point<Pixels>, left_pressed: bool) -> bool {
+    pub(crate) fn midpoint_move(
+        &mut self,
+        position: Point<Pixels>,
+        modifiers: gpui::Modifiers,
+        left_pressed: bool,
+    ) -> bool {
         if !left_pressed {
             self.pointer.midpoint_drag = None;
             return false;
         }
-        match &mut self.pointer.midpoint_drag {
-            Some(drag) => {
-                drag.current = position;
-                true
-            }
-            None => false,
+        let Some(drag) = &mut self.pointer.midpoint_drag else {
+            return false;
+        };
+        drag.current = position;
+        let (handle, moved) = (drag.handle, drag.moved());
+        self.pointer.snap_preview = if moved {
+            self.midpoint_snap(position, modifiers, handle)
+        } else {
+            None
+        };
+        true
+    }
+
+    /// What a vertex dropped at `pos` on `handle`'s segment would snap onto:
+    /// the same rules as for any dragged vertex (the way's own tags decide
+    /// what it may join), except that it never joins the way it is part of.
+    fn midpoint_snap(
+        &self,
+        pos: Point<Pixels>,
+        modifiers: gpui::Modifiers,
+        handle: Handle,
+    ) -> Option<SnapTarget> {
+        if osm_gpui::snap::snapping_disabled(modifiers.alt, modifiers.control)
+            || self.active_layer != Some(handle.layer_id)
+        {
+            return None;
         }
+        let editable = self
+            .layer_manager
+            .find_layer(handle.layer_id)?
+            .as_editable()?;
+        let sources: Vec<Tags> = vec![
+            Tags::default(),
+            snap_target_tags(editable, handle.layer_id, handle.way),
+        ];
+        self.find_snap_target_avoiding(handle.layer_id, pos, None, &sources, true, Some(handle.way))
     }
 
     /// Abandon a midpoint drag (Escape). Returns whether there was one.
     pub(crate) fn cancel_midpoint_drag(&mut self) -> bool {
+        self.pointer.snap_preview = None;
         self.pointer.midpoint_drag.take().is_some()
     }
 
@@ -187,7 +222,13 @@ impl MapViewer {
             segment,
             ..
         } = drag.handle;
-        let at = self.viewport.screen_to_geo(up_pos);
+        let snap = self.midpoint_snap(up_pos, event.modifiers, drag.handle);
+        self.pointer.snap_preview = None;
+        let at = match &snap {
+            Some(SnapTarget::Node { at, .. }) => *at,
+            Some(SnapTarget::Way { at, .. }) => *at,
+            None => self.viewport.screen_to_geo(up_pos),
+        };
         let Some(editable) = self
             .layer_manager
             .find_layer_mut(layer_id)
@@ -196,15 +237,77 @@ impl MapViewer {
             return true;
         };
         let mut rec = Recording::new(layer_id, editable);
-        match rec.insert_node_into_way(way, segment + 1, at) {
-            Ok(_) => {
-                self.undo_stack.push(UndoableAction::edit(
-                    layer_id,
-                    EditLabel::InsertedNode,
-                    rec.into_ops(),
-                ));
+        let new_node = match rec.insert_node_into_way(way, segment + 1, at) {
+            Ok(id) => id,
+            Err(e) => {
+                roll_back_recording(rec);
+                self.set_status(e.to_string());
+                cx.notify();
+                return true;
             }
-            Err(e) => self.set_status(e.to_string()),
+        };
+        let mut ops = rec.into_ops();
+        match snap {
+            // Dropped on another way: the new vertex joins it too.
+            Some(SnapTarget::Way {
+                way_id,
+                index,
+                at: snap_at,
+                ..
+            }) => {
+                let joined = self
+                    .layer_manager
+                    .find_layer_mut(layer_id)
+                    .and_then(|l| l.as_editable_mut())
+                    .map(|editable| {
+                        selection_actions::join_node_into_way(
+                            editable,
+                            layer_id,
+                            new_node,
+                            way_id,
+                            Some(index),
+                            Some(snap_at),
+                        )
+                    });
+                match joined {
+                    Some(Ok(more)) => ops.extend(more),
+                    // Refused (way full, ...): the vertex stays on its own way.
+                    Some(Err(message)) => self.set_status(message),
+                    None => {}
+                }
+                self.undo_stack
+                    .push(UndoableAction::edit(layer_id, EditLabel::InsertedNode, ops));
+            }
+            // Dropped on a node: merge the new vertex into it.
+            Some(SnapTarget::Node { id: target, .. }) => {
+                let insert = UndoableAction::edit(layer_id, EditLabel::InsertedNode, ops);
+                let pick = |id: i64| osm_gpui::selection::FeatureRef {
+                    layer_id,
+                    kind: FeatureKind::Node,
+                    id,
+                };
+                match selection_actions::apply_merge(
+                    &mut self.layer_manager,
+                    &[pick(new_node.get()), pick(target.get())],
+                    self.active_layer,
+                ) {
+                    Ok(outcome) => {
+                        let label = outcome.status.clone();
+                        let mut actions = vec![insert];
+                        actions.extend(outcome.undo);
+                        self.undo_stack
+                            .push(UndoableAction::Batch { label, actions });
+                    }
+                    Err(message) => {
+                        self.undo_stack.push(insert);
+                        self.set_status(message);
+                    }
+                }
+            }
+            None => {
+                self.undo_stack
+                    .push(UndoableAction::edit(layer_id, EditLabel::InsertedNode, ops));
+            }
         }
         cx.notify();
         true
@@ -215,7 +318,12 @@ impl MapViewer {
     pub(super) fn paint_midpoints(&self, frame: &PreviewFrame<'_>, window: &mut Window) {
         if let Some(drag) = &self.pointer.midpoint_drag {
             if drag.moved() {
-                let tip = frame.local(drag.current);
+                let tip = match &self.pointer.snap_preview {
+                    Some(SnapTarget::Node { at, .. }) | Some(SnapTarget::Way { at, .. }) => {
+                        frame.geo(*at)
+                    }
+                    None => frame.local(drag.current),
+                };
                 stroke_polyline(
                     window,
                     [frame.geo(drag.handle.a), tip, frame.geo(drag.handle.b)],
