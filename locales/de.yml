@@ -1153,6 +1153,9 @@ dialog:
     name: "Name"
     name_placeholder: "Mein Hintergrundbild"
     url_template: "URL-Vorlage"
+    # `{z}`, `{x}`, `{y}`, `{-y}`, `{switch:a,b,c}` and `{bbox-epsg-3857}` are
+    # literal URL placeholders and must be kept exactly as written.
+    url_help: "{z} ist die Zoomstufe, {x} die Spalte und {y} die Zeile ({-y} für TMS-Server). {switch:a,b,c} wechselt zwischen Subdomains. {bbox-epsg-3857} ist der Kachelausschnitt, für WMS- oder ArcGIS-Export-Server."
     min_zoom: "Min. Zoom"
     max_zoom: "Max. Zoom"
     confirm: "Hinzufügen"

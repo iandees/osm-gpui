@@ -236,6 +236,11 @@ impl Render for CustomImageryDialog {
                 muted,
             ))
             .child(
+                Label::new(tr!("dialog.custom_imagery.url_help"))
+                    .text_size(crate::ui::style::muted_text_size())
+                    .text_color(muted),
+            )
+            .child(
                 div()
                     .flex()
                     .flex_row()
