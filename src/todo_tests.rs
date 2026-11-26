@@ -31,7 +31,10 @@ fn adding_the_selection_lists_it_and_shows_the_section(cx: &mut TestAppContext) 
         assert!(!s.act("todo_add"), "no undo step: the list is not an edit");
         assert_eq!(listed(s), [10, 11]);
         assert!(s.view.shows_todo());
-        assert!(s.view.side_panel_open[crate::todo_ui::SECTION]);
+        assert!(s
+            .view
+            .side_panel_open
+            .is_open(crate::side_panel::SidePanelSection::Todo));
         // Adding again: nothing new, and the action no longer applies.
         s.select(&[(W, 10)]);
         s.act("todo_add");

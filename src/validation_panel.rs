@@ -24,14 +24,12 @@ use osm_gpui::ui::validation_list::{
 use osm_gpui::validator::{apply_fix, Fix, Report};
 use osm_gpui::{tr, tr_count};
 
+use crate::side_panel::SidePanelSection;
 use crate::undo::{EditLabel, UndoableAction};
 use crate::MapViewer;
 
 /// How long after the last change the list is refreshed.
 pub(crate) const REFRESH_DELAY: Duration = Duration::from_millis(300);
-
-/// Index of the Validation section in `MapViewer::side_panel_open`.
-pub(crate) const SECTION: usize = 7;
 
 /// What "the edited data changed" means: `(undo stack revision, data
 /// generation, active layer)`. The revision is bumped by every edit, undo and
@@ -68,7 +66,7 @@ impl MapViewer {
     pub(crate) fn validation_want(&self) -> Option<crate::side_panel_layout::Want> {
         let panel = self.validation.as_ref()?;
         Some(crate::side_panel_layout::Want {
-            open: self.side_panel_open[SECTION],
+            open: self.side_panel_open.is_open(SidePanelSection::Validation),
             content: panel.report.entries.len().max(1) as f32 * ROW_HEIGHT_ESTIMATE,
         })
     }
@@ -95,7 +93,7 @@ impl MapViewer {
     /// section is shown expanded.
     pub(crate) fn show_validation_expanded(&mut self, cx: &mut Context<Self>) {
         self.show_validation(cx);
-        self.side_panel_open[SECTION] = true;
+        self.side_panel_open.set(SidePanelSection::Validation, true);
         cx.notify();
     }
 
@@ -322,7 +320,7 @@ impl MapViewer {
         let panel = self.validation.as_ref()?;
         let report = &panel.report;
         let theme = cx.theme().clone();
-        let open = self.side_panel_open[SECTION];
+        let open = self.side_panel_open.is_open(SidePanelSection::Validation);
 
         // The counts sit in the header so they show when it is collapsed.
         let counts = if report.is_empty() {
@@ -410,7 +408,7 @@ impl MapViewer {
         Some(
             self.collapsible_section_with(
                 tr!("validator.title"),
-                SECTION,
+                SidePanelSection::Validation,
                 open,
                 Some(trailing.into_any_element()),
                 div()

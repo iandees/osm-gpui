@@ -857,10 +857,8 @@ struct MapViewer {
     /// An in-progress drag of the side panel's resize handle: the window x
     /// and panel width at mouse-down.
     side_panel_resize: Option<(f32, f32)>,
-    /// Whether each side-panel accordion section (Layers, Selection, Fields,
-    /// Tags, History, Relations, Members, Validation, Junction, Lanes, by the
-    /// indices `render_side_panel` gives them) is expanded.
-    side_panel_open: [bool; 11],
+    /// Which side-panel accordion sections are expanded.
+    side_panel_open: side_panel::OpenSections,
     /// The Junction inspector's chosen approach: `(junction node, arm index)`.
     junction_from: Option<(NodeId, usize)>,
     /// The Lanes editor's chosen lane: `(way, group, lane from the left)`.
@@ -1089,14 +1087,7 @@ impl MapViewer {
                     .filter(|_| !script_harness::script_mode()),
             ),
             side_panel_resize: None,
-            // Everything open except History and Validation, which keep to
-            // their headers until the user opens them.
-            side_panel_open: {
-                let mut open = [true; 11];
-                open[side_panel::HISTORY_SECTION] = false;
-                open[validation_panel::SECTION] = false;
-                open
-            },
+            side_panel_open: side_panel::OpenSections::default(),
             junction_from: None,
             lane_selected: None,
             lane_left_hand: false,

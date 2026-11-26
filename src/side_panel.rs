@@ -24,8 +24,67 @@ use crate::{
 
 use crate::side_panel_layout as layout;
 
-/// Index of the History (undo) section in `MapViewer::side_panel_open`.
-pub(crate) const HISTORY_SECTION: usize = 4;
+/// A collapsible section of the side panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidePanelSection {
+    Layers,
+    Fields,
+    Tags,
+    History,
+    Relations,
+    Members,
+    Validation,
+    Junction,
+    Lanes,
+    Todo,
+}
+
+impl SidePanelSection {
+    /// How many sections there are.
+    const COUNT: usize = SidePanelSection::Todo as usize + 1;
+
+    /// Layers, History, Validation and To-do are zones of their own, like
+    /// the selection; the rest sit inside the selection zone.
+    fn is_document_level(self) -> bool {
+        matches!(
+            self,
+            SidePanelSection::Layers
+                | SidePanelSection::History
+                | SidePanelSection::Validation
+                | SidePanelSection::Todo
+        )
+    }
+}
+
+/// Which side-panel sections are expanded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpenSections([bool; SidePanelSection::COUNT]);
+
+impl OpenSections {
+    pub(crate) fn is_open(&self, section: SidePanelSection) -> bool {
+        self.0[section as usize]
+    }
+
+    pub(crate) fn set(&mut self, section: SidePanelSection, open: bool) {
+        self.0[section as usize] = open;
+    }
+
+    pub(crate) fn toggle(&mut self, section: SidePanelSection) {
+        let slot = &mut self.0[section as usize];
+        *slot = !*slot;
+    }
+}
+
+impl Default for OpenSections {
+    /// Everything open except History and Validation, which keep to their
+    /// headers until the user opens them.
+    fn default() -> Self {
+        let mut open = OpenSections([true; SidePanelSection::COUNT]);
+        open.set(SidePanelSection::History, false);
+        open.set(SidePanelSection::Validation, false);
+        open
+    }
+}
 
 /// What a Layers row needs of a layer: id, name, visible, modified, is an OSM
 /// layer, and (imagery layers only) its imagery offset.
@@ -100,13 +159,13 @@ impl MapViewer {
         let plan = layout::plan(
             panel_height,
             layout::Want {
-                open: self.side_panel_open[0],
+                open: self.side_panel_open.is_open(SidePanelSection::Layers),
                 content: rows(layer_info.len()),
             },
             self.todo_want(),
             self.validation_want(),
             layout::Want {
-                open: self.side_panel_open[HISTORY_SECTION],
+                open: self.side_panel_open.is_open(SidePanelSection::History),
                 content: self.undo_stack.actions.len().max(1) as f32 * PANEL_ROW_HEIGHT,
             },
         );
@@ -120,18 +179,18 @@ impl MapViewer {
             self.render_validation_section(plan.validation.unwrap_or_default(), cx);
         let todo_section = self.render_todo_section(plan.todo.unwrap_or_default(), cx);
         let relations_section = self.render_relations_section(cx);
-        let open_relations = self.side_panel_open[5];
+        let open_relations = self.side_panel_open.is_open(SidePanelSection::Relations);
         let members_section = self.render_members_section(window, cx);
-        let open_members = self.side_panel_open[6];
+        let open_members = self.side_panel_open.is_open(SidePanelSection::Members);
         let junction_section = self.render_junction_section(cx);
-        let open_junction = self.side_panel_open[crate::junction_view::SECTION];
+        let open_junction = self.side_panel_open.is_open(SidePanelSection::Junction);
         let lanes_section = self.render_lanes_section(cx);
-        let open_lanes = self.side_panel_open[crate::lanes_view::SECTION];
+        let open_lanes = self.side_panel_open.is_open(SidePanelSection::Lanes);
 
-        let open_layers = self.side_panel_open[0];
-        let open_fields = self.side_panel_open[2];
-        let open_tags = self.side_panel_open[3];
-        let open_history = self.side_panel_open[HISTORY_SECTION];
+        let open_layers = self.side_panel_open.is_open(SidePanelSection::Layers);
+        let open_fields = self.side_panel_open.is_open(SidePanelSection::Fields);
+        let open_tags = self.side_panel_open.is_open(SidePanelSection::Tags);
+        let open_history = self.side_panel_open.is_open(SidePanelSection::History);
         // Collapsed, the header says how many steps are in it.
         let steps = self.undo_stack.actions.len();
         let history_steps = (!open_history && steps > 0).then(|| {
@@ -216,7 +275,7 @@ impl MapViewer {
             .child(
                 self.collapsible_section(
                     tr!("panel.layers.title"),
-                    0,
+                    SidePanelSection::Layers,
                     open_layers,
                     layers_section,
                     cx,
@@ -304,7 +363,7 @@ impl MapViewer {
                                             .children(lanes_section.map(|section| {
                                                 self.collapsible_section(
                                                     tr!("panel.lanes.title"),
-                                                    crate::lanes_view::SECTION,
+                                                    SidePanelSection::Lanes,
                                                     open_lanes,
                                                     section,
                                                     cx,
@@ -313,7 +372,7 @@ impl MapViewer {
                                             .when(selected_count == 1, |group| {
                                                 group.child(self.collapsible_section(
                                                     tr!("panel.fields.title"),
-                                                    2,
+                                                    SidePanelSection::Fields,
                                                     open_fields,
                                                     fields_section,
                                                     cx,
@@ -322,7 +381,7 @@ impl MapViewer {
                                             .children(junction_section.map(|section| {
                                                 self.collapsible_section(
                                                     tr!("panel.junction.title"),
-                                                    crate::junction_view::SECTION,
+                                                    SidePanelSection::Junction,
                                                     open_junction,
                                                     section,
                                                     cx,
@@ -330,7 +389,7 @@ impl MapViewer {
                                             }))
                                             .child(self.collapsible_section(
                                                 tr!("panel.tags.title"),
-                                                3,
+                                                SidePanelSection::Tags,
                                                 open_tags,
                                                 tags_section,
                                                 cx,
@@ -338,7 +397,7 @@ impl MapViewer {
                                             .children(members_section.map(|(count, section)| {
                                                 self.collapsible_section(
                                                     tr_count!("panel.members.title_count", count),
-                                                    6,
+                                                    SidePanelSection::Members,
                                                     open_members,
                                                     section,
                                                     cx,
@@ -347,7 +406,7 @@ impl MapViewer {
                                             .children(relations_section.map(|section| {
                                                 self.collapsible_section(
                                                     tr!("panel.relations.title"),
-                                                    5,
+                                                    SidePanelSection::Relations,
                                                     open_relations,
                                                     section,
                                                     cx,
@@ -369,7 +428,7 @@ impl MapViewer {
             .child(
                 self.collapsible_section_with(
                     tr!("panel.history.title"),
-                    HISTORY_SECTION,
+                    SidePanelSection::History,
                     open_history,
                     history_steps,
                     history_section,
@@ -840,7 +899,7 @@ impl MapViewer {
     /// redo but not currently applied, and renders dimmed.
     fn render_history_section(&self, max_height: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         // Collapsed: the rows are not drawn, so they are not built either.
-        if !self.side_panel_open[HISTORY_SECTION] {
+        if !self.side_panel_open.is_open(SidePanelSection::History) {
             return div().into_any_element();
         }
         if self.undo_stack.actions.is_empty() {
@@ -906,17 +965,18 @@ impl MapViewer {
     }
 
     /// A single collapsible section: a clickable header (chevron + title) that
-    /// toggles `side_panel_open[index]`, with its content rendered below when
-    /// open. Sizes to content so sections stack instead of splitting the height.
+    /// toggles `section` in `side_panel_open`, with its content rendered below
+    /// when open. Sizes to content so sections stack instead of splitting the
+    /// height.
     fn collapsible_section(
         &self,
         title: impl Into<gpui::SharedString>,
-        index: usize,
+        section: SidePanelSection,
         open: bool,
         content: gpui::AnyElement,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        self.collapsible_section_with(title, index, open, None, content, cx)
+        self.collapsible_section_with(title, section, open, None, content, cx)
     }
 
     /// `collapsible_section` with `trailing` (if any) in the header after the
@@ -924,20 +984,17 @@ impl MapViewer {
     pub(crate) fn collapsible_section_with(
         &self,
         title: impl Into<gpui::SharedString>,
-        index: usize,
+        section: SidePanelSection,
         open: bool,
         trailing: Option<gpui::AnyElement>,
         content: gpui::AnyElement,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        // Layers (0), History (4) and Validation (7) are zones of their own,
-        // like the selection: their headers are full-width tinted strips (see
+        // Layers, History, Validation and To-do are zones of their own, like
+        // the selection: their headers are full-width tinted strips (see
         // `zone_strip`). Sections inside the selection zone keep the plain
         // header and a hairline.
-        let document_level = index == 0
-            || index == HISTORY_SECTION
-            || index == crate::validation_panel::SECTION
-            || index == crate::todo_ui::SECTION;
+        let document_level = section.is_document_level();
         let title_label = if document_level {
             Label::new(title)
                 .text_size(muted_text_size())
@@ -946,7 +1003,7 @@ impl MapViewer {
             Label::new(title)
         };
         let header = div()
-            .id(("section-header", index))
+            .id(("section-header", section as usize))
             .flex()
             .flex_row()
             .items_center()
@@ -974,7 +1031,7 @@ impl MapViewer {
             .child(title_label.font_weight(gpui::FontWeight::SEMIBOLD))
             .children(trailing)
             .on_click(cx.listener(move |this, _ev, _window, cx| {
-                this.side_panel_open[index] = !this.side_panel_open[index];
+                this.side_panel_open.toggle(section);
                 cx.notify();
             }));
 
@@ -997,8 +1054,10 @@ impl MapViewer {
                         // Validation may shrink in a short window: its body
                         // gives up height too, and its list scrolls.
                         .when(
-                            index == crate::validation_panel::SECTION
-                                || index == crate::todo_ui::SECTION,
+                            matches!(
+                                section,
+                                SidePanelSection::Validation | SidePanelSection::Todo
+                            ),
                             |this| this.flex().flex_col().flex_shrink(1.).min_h(px(0.)),
                         )
                         .when(document_level, |this| this.px_2())
@@ -1006,8 +1065,10 @@ impl MapViewer {
                         // rows carry the usual inset themselves.
                         .when(
                             !document_level
-                                && index != crate::junction_view::SECTION
-                                && index != crate::lanes_view::SECTION,
+                                && !matches!(
+                                    section,
+                                    SidePanelSection::Junction | SidePanelSection::Lanes
+                                ),
                             |this| this.px_3(),
                         )
                         .pt_0p5()
@@ -1809,6 +1870,43 @@ mod header_control_tests {
     fn change_type_is_disabled_while_an_upload_runs() {
         assert_eq!(header_change_type_control(1, true), Some(false));
         assert_eq!(header_change_type_control(3, true), None);
+    }
+}
+
+#[cfg(test)]
+mod open_sections_tests {
+    use super::{OpenSections, SidePanelSection};
+
+    #[test]
+    fn history_and_validation_start_closed_and_the_rest_open() {
+        let open = OpenSections::default();
+        for section in [
+            SidePanelSection::Layers,
+            SidePanelSection::Fields,
+            SidePanelSection::Tags,
+            SidePanelSection::Relations,
+            SidePanelSection::Members,
+            SidePanelSection::Junction,
+            SidePanelSection::Lanes,
+            SidePanelSection::Todo,
+        ] {
+            assert!(open.is_open(section), "{section:?} should start open");
+        }
+        assert!(!open.is_open(SidePanelSection::History));
+        assert!(!open.is_open(SidePanelSection::Validation));
+    }
+
+    #[test]
+    fn set_and_toggle_touch_only_their_section() {
+        let mut open = OpenSections::default();
+        open.toggle(SidePanelSection::History);
+        assert!(open.is_open(SidePanelSection::History));
+        assert!(!open.is_open(SidePanelSection::Validation));
+        open.set(SidePanelSection::Tags, false);
+        assert!(!open.is_open(SidePanelSection::Tags));
+        assert!(open.is_open(SidePanelSection::Fields));
+        open.toggle(SidePanelSection::Tags);
+        assert!(open.is_open(SidePanelSection::Tags));
     }
 }
 

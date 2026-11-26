@@ -4,7 +4,8 @@ use super::{
     long_way_nodes, make_pending_change, setup, setup_network, setup_network_with, validation_view,
     way_fixture, CENTER_LAT, CENTER_LON,
 };
-use crate::{validation_panel, MapViewer};
+use crate::side_panel::SidePanelSection;
+use crate::MapViewer;
 use gpui::prelude::*;
 use gpui::TestAppContext;
 use osm_gpui::coordinates::LatLon;
@@ -190,7 +191,7 @@ fn the_upload_dialog_validates_once_and_only_errors_block(cx: &mut TestAppContex
         assert_eq!(view.upload_comment_draft, "Add a node");
         let report = view.shown_validation().expect("the section opens");
         assert_eq!((report.errors(), report.warnings()), (1, 1));
-        assert!(view.side_panel_open[validation_panel::SECTION]);
+        assert!(view.side_panel_open.is_open(SidePanelSection::Validation));
     });
 }
 

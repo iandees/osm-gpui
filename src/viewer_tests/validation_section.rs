@@ -1,8 +1,9 @@
 //! The validation section of the side panel.
 
 use super::{make_pending_change, status_text, validation_view, CENTER_LAT, CENTER_LON};
+use crate::side_panel::SidePanelSection;
 use crate::undo::UndoableAction;
-use crate::{side_panel, side_panel_layout, validation_panel, MapViewer};
+use crate::{side_panel_layout, validation_panel, MapViewer};
 use gpui::TestAppContext;
 use osm_gpui::coordinates::LatLon;
 
@@ -17,10 +18,10 @@ fn tools_validate_shows_the_side_panel_section(cx: &mut TestAppContext) {
     // Nothing pending: the section appears (collapsed by default, like
     // History) and says so.
     view.update_in(vcx, |view, _window, cx| {
-        assert!(!view.side_panel_open[validation_panel::SECTION]);
-        assert!(!view.side_panel_open[side_panel::HISTORY_SECTION]);
+        assert!(!view.side_panel_open.is_open(SidePanelSection::Validation));
+        assert!(!view.side_panel_open.is_open(SidePanelSection::History));
         view.show_validation(cx);
-        assert!(!view.side_panel_open[validation_panel::SECTION]);
+        assert!(!view.side_panel_open.is_open(SidePanelSection::Validation));
         let report = view.shown_validation().expect("shown");
         assert!(!report.checked_changes);
         assert_eq!(
@@ -60,22 +61,23 @@ fn the_validation_section_keeps_the_users_choice_of_open_or_collapsed(cx: &mut T
     view.update_in(vcx, |view, _window, cx| {
         make_pending_change(view);
         view.show_validation(cx);
-        assert!(!view.side_panel_open[validation_panel::SECTION]);
+        assert!(!view.side_panel_open.is_open(SidePanelSection::Validation));
         // The user expands it (what a click on its header does): later
         // runs, and a close and reopen, leave it expanded.
-        view.side_panel_open[validation_panel::SECTION] = true;
+        view.side_panel_open.set(SidePanelSection::Validation, true);
         view.show_validation(cx);
-        assert!(view.side_panel_open[validation_panel::SECTION]);
+        assert!(view.side_panel_open.is_open(SidePanelSection::Validation));
         view.close_validation(cx);
         view.show_validation(cx);
-        assert!(view.side_panel_open[validation_panel::SECTION]);
+        assert!(view.side_panel_open.is_open(SidePanelSection::Validation));
         // Collapsed by the user: stays collapsed too.
-        view.side_panel_open[validation_panel::SECTION] = false;
+        view.side_panel_open
+            .set(SidePanelSection::Validation, false);
         view.show_validation(cx);
-        assert!(!view.side_panel_open[validation_panel::SECTION]);
+        assert!(!view.side_panel_open.is_open(SidePanelSection::Validation));
         // The explicit "Show in side panel" expands it.
         view.show_validation_expanded(cx);
-        assert!(view.side_panel_open[validation_panel::SECTION]);
+        assert!(view.side_panel_open.is_open(SidePanelSection::Validation));
     });
 }
 
@@ -87,7 +89,7 @@ fn the_collapsed_header_counts_follow_edits(cx: &mut TestAppContext) {
         make_pending_change(view);
         record_edit(view);
         view.show_validation(cx);
-        assert!(!view.side_panel_open[validation_panel::SECTION]);
+        assert!(!view.side_panel_open.is_open(SidePanelSection::Validation));
         assert_eq!(view.shown_validation().unwrap().warnings(), 1);
         assert!(view.select_finding(0, cx));
     });
@@ -111,7 +113,7 @@ fn the_collapsed_header_counts_follow_edits(cx: &mut TestAppContext) {
         .advance_clock(validation_panel::REFRESH_DELAY * 2);
     vcx.run_until_parked();
     view.update_in(vcx, |view, _w, _cx| {
-        assert!(!view.side_panel_open[validation_panel::SECTION]);
+        assert!(!view.side_panel_open.is_open(SidePanelSection::Validation));
         assert_eq!(view.shown_validation().unwrap().warnings(), 0);
     });
 }
