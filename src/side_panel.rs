@@ -86,9 +86,11 @@ impl Default for OpenSections {
     }
 }
 
-/// What a Layers row needs of a layer: id, name, visible, modified, is an OSM
+/// What a Layers row needs of a layer: its index in `LayerManager::layers()`
+/// (what the row's actions take), id, name, visible, modified, is an OSM
 /// layer, and (imagery layers only) its imagery offset.
-type LayerRowInfo = (
+pub(crate) type LayerRowInfo = (
+    usize,
     LayerId,
     String,
     bool,
@@ -125,20 +127,15 @@ impl MapViewer {
     /// their tags (that work is repeated on every frame).
     const TAGS_AGGREGATE_LIMIT: usize = 5000;
 
-    /// The right pane: Layers, the selection zone, Validation and History
-    /// stacked top-to-bottom (heights are planned in `side_panel_layout`).
-    pub(crate) fn render_side_panel(
-        &mut self,
-        window: &mut gpui::Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let layer_info: Vec<LayerRowInfo> = self
-            .layer_manager
-            .layers()
-            .iter()
-            .map(|layer| {
+    /// The Layers list's rows, top of the stack first: the first row is the
+    /// layer drawn on top of the map.
+    pub(crate) fn layer_rows(&self) -> Vec<LayerRowInfo> {
+        self.layer_manager
+            .top_first()
+            .map(|(index, layer)| {
                 let osm = layer.as_osm();
                 (
+                    index,
                     layer.id(),
                     layer.name().to_string(),
                     layer.is_visible(),
@@ -147,7 +144,17 @@ impl MapViewer {
                     layer.as_imagery().map(|i| i.imagery_offset()),
                 )
             })
-            .collect();
+            .collect()
+    }
+
+    /// The right pane: Layers, the selection zone, Validation and History
+    /// stacked top-to-bottom (heights are planned in `side_panel_layout`).
+    pub(crate) fn render_side_panel(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let layer_info = self.layer_rows();
 
         // How tall Layers, Validation and History lists may be (see
         // `side_panel_layout`); the middle zone gets the rest.
@@ -1346,12 +1353,17 @@ impl MapViewer {
             .children(
                 layer_info
                     .iter()
-                    .enumerate()
                     .map(
                         |(
                             index,
-                            (layer_id, name, is_visible, is_modified, is_osm, imagery_offset),
+                            layer_id,
+                            name,
+                            is_visible,
+                            is_modified,
+                            is_osm,
+                            imagery_offset,
                         )| {
+                            let index = *index;
                             let layer_id = *layer_id;
                             let is_imagery = imagery_offset.is_some();
                             // Imagery drawn shifted says so, so nobody traces
@@ -1483,16 +1495,19 @@ impl MapViewer {
                                             Box::new(SetActiveLayer { index }),
                                         );
                                     }
-                                    if index > 0 {
-                                        menu = menu.menu(
-                                            tr!("panel.layers.move_up"),
-                                            Box::new(MoveLayer { index, delta: -1 }),
-                                        );
-                                    }
+                                    // Up the list is up the stack: drawn
+                                    // higher. The top row has no Move Up,
+                                    // the bottom row no Move Down.
                                     if index + 1 < total {
                                         menu = menu.menu(
+                                            tr!("panel.layers.move_up"),
+                                            Box::new(MoveLayer::up(index)),
+                                        );
+                                    }
+                                    if index > 0 {
+                                        menu = menu.menu(
                                             tr!("panel.layers.move_down"),
-                                            Box::new(MoveLayer { index, delta: 1 }),
+                                            Box::new(MoveLayer::down(index)),
                                         );
                                     }
                                     if is_imagery {

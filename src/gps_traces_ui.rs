@@ -307,7 +307,7 @@ impl MapViewer {
         let id = self.layer_manager.alloc_id();
         let mut layer = ReferenceLayer::new(id, name, data);
         layer.set_trace_style(settings_store::snapshot().gps_trace_style);
-        self.layer_manager.add_reference_layer(Box::new(layer));
+        self.layer_manager.add_layer(Box::new(layer));
         self.gps_traces.layer = Some(id);
     }
 
