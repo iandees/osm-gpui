@@ -1086,7 +1086,8 @@ impl EditableLayer for OsmLayer {
         window: &mut Window,
         feature: &FeatureRef,
         kind: HighlightKind,
+        cx: &App,
     ) {
-        self.render_highlight_of(viewport, bounds, window, feature, kind)
+        self.render_highlight_of(viewport, bounds, window, feature, kind, cx)
     }
 }

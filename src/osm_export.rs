@@ -361,7 +361,7 @@ mod tests {
         let (original, current) = edited();
         let xml = to_osm_xml(&original, &current);
 
-        let (reloaded, edits) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        let (reloaded, edits) = OsmParser::parse_str_with_edits(&xml).unwrap();
         // The reloaded data is the current state, tag text intact.
         assert_eq!(reloaded.nodes, current.nodes);
         assert_eq!(reloaded.ways, current.ways);
@@ -418,7 +418,7 @@ mod tests {
             "{xml}"
         );
 
-        let (reloaded, edits) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        let (reloaded, edits) = OsmParser::parse_str_with_edits(&xml).unwrap();
         assert_eq!(edits.modified_relations, HashSet::from([RelationId(5)]));
         assert_eq!(reloaded.relations, current.relations);
 
@@ -488,7 +488,7 @@ mod tests {
         );
         assert!(xml.contains("<relation id=\"5\" version=\"2\""), "{xml}");
 
-        let (reloaded, edits) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        let (reloaded, edits) = OsmParser::parse_str_with_edits(&xml).unwrap();
         assert_eq!(
             edits.deleted_relations.keys().copied().collect::<Vec<_>>(),
             [RelationId(6)]
@@ -525,7 +525,7 @@ mod tests {
             xml.contains("v=\"line one&#10;line two&#9;end&#13;\""),
             "{xml}"
         );
-        let (reloaded, _) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        let (reloaded, _) = OsmParser::parse_str_with_edits(&xml).unwrap();
         assert_eq!(
             reloaded.nodes[&NodeId(1)].tags["note"],
             "line one\nline two\tend\r"
@@ -551,7 +551,7 @@ mod tests {
         ];
         let xml = to_osm_xml(&current, &current);
         assert_eq!(xml.matches("<bounds ").count(), 2);
-        let (reloaded, _) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        let (reloaded, _) = OsmParser::parse_str_with_edits(&xml).unwrap();
         assert_eq!(reloaded.bounds, current.bounds);
     }
 
@@ -590,7 +590,7 @@ mod tests {
             "    <tag k=\"type\" v=\"route\"/>\n",
             "  </relation>\n",
         )));
-        let (reloaded, _) = OsmParser::new().parse_str_with_edits(&xml).unwrap();
+        let (reloaded, _) = OsmParser::parse_str_with_edits(&xml).unwrap();
         assert_eq!(reloaded, current);
     }
 

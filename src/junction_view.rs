@@ -27,9 +27,6 @@ use osm_gpui::ui::style::{interactive_row, muted_text_size};
 
 use crate::MapViewer;
 
-/// Index of the Junction section in `MapViewer::side_panel_open`.
-pub(crate) const SECTION: usize = 8;
-
 const ALLOWED: u32 = 0x2E9E44;
 
 /// Reads a live editable layer for the junction model.

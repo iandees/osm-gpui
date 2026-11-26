@@ -429,6 +429,23 @@ pub(crate) static SCRIPT_BUS: std::sync::OnceLock<Arc<ScriptBus>> = std::sync::O
 pub(crate) static KEYSTROKE_QUEUE: std::sync::OnceLock<Arc<Mutex<Vec<Keystroke>>>> =
     std::sync::OnceLock::new();
 
+/// Append `item` to `queue`, even if a thread panicked while holding it: a
+/// `Vec` push or drain cannot leave it half-updated, and dropping keystrokes
+/// would leave a script waiting on input that never arrives.
+fn push_queued<T>(queue: &Mutex<Vec<T>>, item: T) {
+    queue.lock().unwrap_or_else(|e| e.into_inner()).push(item);
+}
+
+/// Take everything in `queue` without blocking: empty if another thread holds
+/// it right now (it is drained again next frame), recovered if poisoned.
+fn try_drain_queued<T>(queue: &Mutex<Vec<T>>) -> Vec<T> {
+    match queue.try_lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(std::sync::TryLockError::Poisoned(e)) => std::mem::take(&mut *e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => Vec::new(),
+    }
+}
+
 impl MapViewer {
     /// Window pixels for a script position (see `script::Where`).
     pub(crate) fn script_window_point(&self, at: script::Where) -> gpui::Point<gpui::Pixels> {
@@ -927,7 +944,7 @@ impl MapViewer {
                     bus.set_assert_result(result);
                 }
                 ScriptCommand::SetPanelOpen(section, open) => {
-                    self.side_panel_open[panel_section_index(section)] = open;
+                    self.side_panel_open.set(side_panel_section(section), open);
                     cx.notify();
                     bus.set_assert_result(Ok(()));
                 }
@@ -1311,7 +1328,7 @@ impl MapViewer {
                 }
             }
             Check::PanelOpen(section, want) => {
-                let open = self.side_panel_open[panel_section_index(*section)];
+                let open = self.side_panel_open.is_open(side_panel_section(*section));
                 if open == *want {
                     Ok(())
                 } else if *want {
@@ -1545,15 +1562,13 @@ impl MapViewer {
         // which would double-lease it if dispatched synchronously from
         // inside `render`.
         if let Some(ks_queue) = KEYSTROKE_QUEUE.get() {
-            if let Ok(mut guard) = ks_queue.try_lock() {
-                let pending: Vec<_> = guard.drain(..).collect();
-                if !pending.is_empty() {
-                    window.defer(cx, move |window, cx| {
-                        for ks in pending {
-                            window.dispatch_keystroke(ks, cx);
-                        }
-                    });
-                }
+            let pending = try_drain_queued(ks_queue);
+            if !pending.is_empty() {
+                window.defer(cx, move |window, cx| {
+                    for ks in pending {
+                        window.dispatch_keystroke(ks, cx);
+                    }
+                });
             }
         }
 
@@ -1601,11 +1616,11 @@ pub(crate) fn keystroke_for_char(ch: char) -> Keystroke {
     }
 }
 
-/// The `side_panel_open` slot of a section a script can open or close.
-fn panel_section_index(section: script::PanelSection) -> usize {
+/// The side-panel section a script can open or close.
+fn side_panel_section(section: script::PanelSection) -> crate::side_panel::SidePanelSection {
     match section {
-        script::PanelSection::Validation => crate::validation_panel::SECTION,
-        script::PanelSection::History => crate::side_panel::HISTORY_SECTION,
+        script::PanelSection::Validation => crate::side_panel::SidePanelSection::Validation,
+        script::PanelSection::History => crate::side_panel::SidePanelSection::History,
     }
 }
 
@@ -1715,9 +1730,7 @@ impl AppHandle for LiveApp {
             key_char,
         };
         if let Some(q) = KEYSTROKE_QUEUE.get() {
-            if let Ok(mut guard) = q.lock() {
-                guard.push(ks);
-            }
+            push_queued(q, ks);
         }
         // The keystroke is queued from this thread, so the frame in flight
         // may already be past the point where the queue is drained: it goes
@@ -1756,11 +1769,8 @@ impl AppHandle for LiveApp {
             });
             return Ok(());
         }
-        let parser = OsmParser::new();
         let path_str = path.to_string_lossy().to_string();
-        let loaded = parser
-            .parse_file_with_edits(&path_str)
-            .map_err(|e| e.to_string())?;
+        let loaded = OsmParser::parse_file_with_edits(&path_str).map_err(|e| e.to_string())?;
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -1804,9 +1814,7 @@ impl AppHandle for LiveApp {
             }
             let ks = keystroke_for_char(ch);
             if let Some(q) = KEYSTROKE_QUEUE.get() {
-                if let Ok(mut guard) = q.lock() {
-                    guard.push(ks);
-                }
+                push_queued(q, ks);
             }
             // One character per frame, like a person typing, so each lands
             // before the next and the input can be watched filling in.
@@ -2060,5 +2068,29 @@ mod tests {
         bus.try_submit(ScriptCommand::Note("hello".into()), Duration::from_secs(10))
             .unwrap();
         assert!(matches!(t.join().unwrap(), ScriptCommand::Note(m) if m == "hello"));
+    }
+
+    #[test]
+    fn a_poisoned_queue_still_takes_and_hands_out_items() {
+        let queue = Arc::new(Mutex::new(vec![1]));
+        let q = queue.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = q.lock().unwrap();
+            panic!("poison the queue");
+        })
+        .join();
+        assert!(queue.is_poisoned());
+        push_queued(&queue, 2);
+        assert_eq!(try_drain_queued(&queue), [1, 2]);
+        assert!(try_drain_queued(&queue).is_empty());
+    }
+
+    #[test]
+    fn a_held_queue_is_left_for_the_next_drain() {
+        let queue = Mutex::new(vec![1]);
+        let guard = queue.lock().unwrap();
+        assert!(try_drain_queued(&queue).is_empty());
+        drop(guard);
+        assert_eq!(try_drain_queued(&queue), [1]);
     }
 }

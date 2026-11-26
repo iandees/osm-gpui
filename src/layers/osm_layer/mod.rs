@@ -48,10 +48,8 @@ use self::markers::*;
 use self::multipolygon::*;
 use self::scene::*;
 
-const SELECTION_ACCENT: u32 = 0xFF4081;
-
 /// Highlight color of the members of a selected relation; apart from the
-/// selection pink and from the map's own colors.
+/// theme's selection blue and from the map's own colors.
 const RELATION_MEMBER_ACCENT: u32 = 0x7C4DFF;
 
 /// Near-black used for the casing under ways, node marker outlines, and the

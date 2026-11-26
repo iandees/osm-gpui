@@ -1753,7 +1753,7 @@ mod tests {
         let road = s.way_text_style(&tags("highway", "residential"), false, 16.0);
         assert_eq!(road.position, Some(TextPosition::Line));
         assert_eq!(road.text.as_deref(), Some("name"));
-        assert_eq!(road.offset, Some(6.2));
+        assert_eq!(road.offset, Some(8.2));
         assert_eq!(road.halo_color, Some(0xffffff));
         assert!(s
             .way_text_style(&tags("highway", "residential"), false, 15.0)

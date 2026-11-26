@@ -58,9 +58,25 @@ fn set_relation_members_returns_the_previous_list_and_marks_the_layer_modified()
 #[test]
 fn relation_member_highlight_differs_from_selection_and_hover() {
     use crate::layers::HighlightKind::{Hovered, Member, Selected};
-    let colors = |kind| super::super::highlight_colors(kind);
-    assert_ne!(colors(Member), colors(Selected));
-    assert_ne!(colors(Member), colors(Hovered));
+    // Both default themes' selection colors.
+    for selection in [gpui::rgb(0x55a0fc).into(), gpui::rgb(0x1d4ed8).into()] {
+        let colors = |kind| super::super::highlight_colors(kind, selection);
+        assert_ne!(colors(Member), colors(Selected));
+        assert_ne!(colors(Member), colors(Hovered));
+    }
+}
+
+#[test]
+fn selection_highlight_core_is_the_theme_selection_color() {
+    use crate::layers::HighlightKind::{Hovered, Member, Selected};
+    let selection: gpui::Hsla = gpui::rgb(0x1d4ed8).into();
+    let colors = |kind| super::super::highlight_colors(kind, selection);
+    assert_eq!(colors(Selected).1, selection);
+    // Only the selection follows the theme.
+    let other: gpui::Hsla = gpui::rgb(0x55a0fc).into();
+    let others = |kind| super::super::highlight_colors(kind, other);
+    assert_eq!(colors(Hovered), others(Hovered));
+    assert_eq!(colors(Member), others(Member));
 }
 
 #[test]

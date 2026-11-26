@@ -101,13 +101,10 @@ async fn load_osm_path(path: std::path::PathBuf, cx: &mut gpui::AsyncApp) {
                     osm_gpui::reference::load_file(&bg_path, format).map_err(|e| e.to_string()),
                 );
             }
-            let parser = OsmParser::new();
             // With edits: a file saved by File > Export… (or JOSM) may
             // carry pending local changes, which must stay pending.
             Loaded::Osm(Box::new(
-                parser
-                    .parse_file_with_edits(&path_str)
-                    .map_err(|e| e.to_string()),
+                OsmParser::parse_file_with_edits(&path_str).map_err(|e| e.to_string()),
             ))
         })
         .await;
@@ -212,13 +209,13 @@ pub(crate) fn add_imagery_layer(action: &AddImageryLayer, cx: &mut App) {
     let Some(index) = IMAGERY_INDEX.get() else {
         return;
     };
-    let entry = {
-        let guard = match index.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        guard.iter().find(|e| e.id == id).cloned()
-    };
+    // The index is only ever replaced whole, so poison is recovered.
+    let entry = index
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|e| e.id == id)
+        .cloned();
     let Some(entry) = entry else { return };
     with_map_viewer(cx, |v, cx| {
         v.apply_layer_request(
@@ -744,7 +741,7 @@ fn build_menus(
         ImageryLoadState::Ready => {
             let entries = IMAGERY_INDEX
                 .get()
-                .and_then(|i| i.lock().ok().map(|g| g.clone()))
+                .map(|i| i.lock().unwrap_or_else(|e| e.into_inner()).clone())
                 .unwrap_or_default();
             let shown = imagery::entries_for_viewport(&entries, center);
             if !shown.is_empty() {

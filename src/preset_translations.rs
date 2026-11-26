@@ -158,7 +158,11 @@ static CACHE: OnceLock<Cache> = OnceLock::new();
 /// bundled for it.
 pub fn translations_for(requested: &str) -> Option<&'static PresetTranslations> {
     let locale = resolve_locale(requested);
-    let mut cache = CACHE.get_or_init(Default::default).lock().ok()?;
+    // Poison is recovered: entries are inserted whole, so the cache is sound.
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(found) = cache.get(&locale) {
         return *found;
     }

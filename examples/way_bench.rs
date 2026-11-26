@@ -32,7 +32,7 @@ fn main() {
         vec![14.0, 15.0, 15.5, 16.0, 16.5, 17.0, 18.0, 18.5, 19.5]
     };
 
-    let data = OsmParser::new().parse_file(&args[1]).expect("parse");
+    let data = OsmParser::parse_file(&args[1]).expect("parse");
     println!("nodes {} ways {}", data.nodes.len(), data.ways.len());
     let layer = OsmLayer::new_with_data(LayerId(1), "bench", Arc::new(data));
 

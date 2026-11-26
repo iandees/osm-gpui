@@ -153,56 +153,41 @@ fn attr_str(bytes: &[u8]) -> Result<&str, OsmParseError> {
         .map_err(|e| OsmParseError::ParseError(format!("Invalid UTF-8 in XML attribute: {}", e)))
 }
 
+/// Parses OSM XML. Stateless: every method is an associated function, e.g.
+/// `OsmParser::parse_str(xml)`.
 pub struct OsmParser;
 
-impl Default for OsmParser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl OsmParser {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn parse(&self, reader: BufReader<File>) -> Result<OsmData, OsmParseError> {
+    pub fn parse(reader: BufReader<File>) -> Result<OsmData, OsmParseError> {
         let mut xml_reader = Reader::from_reader(reader);
         xml_reader.config_mut().trim_text(true);
-        self.run(xml_reader).map(|(data, _edits)| data)
+        Self::run(xml_reader).map(|(data, _edits)| data)
     }
 
-    pub fn parse_str(&self, xml_str: &str) -> Result<OsmData, OsmParseError> {
-        self.parse_str_with_edits(xml_str)
-            .map(|(data, _edits)| data)
+    pub fn parse_str(xml_str: &str) -> Result<OsmData, OsmParseError> {
+        Self::parse_str_with_edits(xml_str).map(|(data, _edits)| data)
     }
 
     /// Like `parse_str`, but also returns the local edits the file records
     /// through `action` attributes (see `FileEdits`). In both variants,
     /// elements marked `action="delete"` are left out of the `OsmData`.
-    pub fn parse_str_with_edits(
-        &self,
-        xml_str: &str,
-    ) -> Result<(OsmData, FileEdits), OsmParseError> {
+    pub fn parse_str_with_edits(xml_str: &str) -> Result<(OsmData, FileEdits), OsmParseError> {
         let mut xml_reader = Reader::from_str(xml_str);
         xml_reader.config_mut().trim_text(true);
-        self.run(xml_reader)
+        Self::run(xml_reader)
     }
 
     /// Like `parse_file`, but also returns the file's recorded local edits;
     /// see `parse_str_with_edits`.
-    pub fn parse_file_with_edits(
-        &self,
-        file_path: &str,
-    ) -> Result<(OsmData, FileEdits), OsmParseError> {
+    pub fn parse_file_with_edits(file_path: &str) -> Result<(OsmData, FileEdits), OsmParseError> {
         let file = File::open(file_path).map_err(OsmParseError::IoError)?;
         let mut xml_reader = Reader::from_reader(BufReader::new(file));
         xml_reader.config_mut().trim_text(true);
-        self.run(xml_reader)
+        Self::run(xml_reader)
     }
 
     /// The value of an element's `action` attribute.
-    fn parse_action(&self, e: &BytesStart) -> Result<ElementAction, OsmParseError> {
+    fn parse_action(e: &BytesStart) -> Result<ElementAction, OsmParseError> {
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
             if attr.key.as_ref() == b"action" {
@@ -219,7 +204,6 @@ impl OsmParser {
     /// Handle the children (`tag`/`nd`/`member`) of a `node`/`way`/`relation`,
     /// shared between `Event::Start` and `Event::Empty`.
     fn parse_child_element(
-        &self,
         e: &BytesStart,
         name: &[u8],
         current_element: ElementType,
@@ -229,7 +213,7 @@ impl OsmParser {
     ) -> Result<(), OsmParseError> {
         match name {
             b"tag" => {
-                let (key, value) = self.parse_tag(e)?;
+                let (key, value) = Self::parse_tag(e)?;
                 match current_element {
                     ElementType::Node => {
                         if let Some(ref mut node) = current_node {
@@ -251,13 +235,13 @@ impl OsmParser {
             }
             b"nd" => {
                 if let Some(ref mut way) = current_way {
-                    let node_ref = self.parse_node_ref(e)?;
+                    let node_ref = Self::parse_node_ref(e)?;
                     way.nodes.push(node_ref);
                 }
             }
             b"member" => {
                 if let Some(ref mut relation) = current_relation {
-                    let member = self.parse_member(e)?;
+                    let member = Self::parse_member(e)?;
                     relation.members.push(member);
                 }
             }
@@ -267,7 +251,6 @@ impl OsmParser {
     }
 
     fn run<R: std::io::BufRead>(
-        &self,
         mut xml_reader: Reader<R>,
     ) -> Result<(OsmData, FileEdits), OsmParseError> {
         let mut osm_data = OsmData {
@@ -347,24 +330,24 @@ impl OsmParser {
             match xml_reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => match e.name().as_ref() {
                     b"bounds" => {
-                        osm_data.bounds.push(self.parse_bounds(e)?);
+                        osm_data.bounds.push(Self::parse_bounds(e)?);
                     }
                     b"node" => {
                         current_element = ElementType::Node;
-                        current_action = self.parse_action(e)?;
-                        current_node = Some(self.parse_node_start(e)?);
+                        current_action = Self::parse_action(e)?;
+                        current_node = Some(Self::parse_node_start(e)?);
                     }
                     b"way" => {
                         current_element = ElementType::Way;
-                        current_action = self.parse_action(e)?;
-                        current_way = Some(self.parse_way_start(e)?);
+                        current_action = Self::parse_action(e)?;
+                        current_way = Some(Self::parse_way_start(e)?);
                     }
                     b"relation" => {
                         current_element = ElementType::Relation;
-                        current_action = self.parse_action(e)?;
-                        current_relation = Some(self.parse_relation_start(e)?);
+                        current_action = Self::parse_action(e)?;
+                        current_relation = Some(Self::parse_relation_start(e)?);
                     }
-                    name => self.parse_child_element(
+                    name => Self::parse_child_element(
                         e,
                         name,
                         current_element,
@@ -375,21 +358,21 @@ impl OsmParser {
                 },
                 Ok(Event::Empty(ref e)) => match e.name().as_ref() {
                     b"bounds" => {
-                        osm_data.bounds.push(self.parse_bounds(e)?);
+                        osm_data.bounds.push(Self::parse_bounds(e)?);
                     }
                     b"node" => {
-                        let node = self.parse_node_start(e)?;
-                        store_node(node, self.parse_action(e)?, &mut osm_data, &mut edits);
+                        let node = Self::parse_node_start(e)?;
+                        store_node(node, Self::parse_action(e)?, &mut osm_data, &mut edits);
                     }
                     b"way" => {
-                        let way = self.parse_way_start(e)?;
-                        store_way(way, self.parse_action(e)?, &mut osm_data, &mut edits);
+                        let way = Self::parse_way_start(e)?;
+                        store_way(way, Self::parse_action(e)?, &mut osm_data, &mut edits);
                     }
                     b"relation" => {
-                        let relation = self.parse_relation_start(e)?;
-                        store_relation(relation, self.parse_action(e)?, &mut osm_data, &mut edits);
+                        let relation = Self::parse_relation_start(e)?;
+                        store_relation(relation, Self::parse_action(e)?, &mut osm_data, &mut edits);
                     }
-                    name => self.parse_child_element(
+                    name => Self::parse_child_element(
                         e,
                         name,
                         current_element,
@@ -429,23 +412,19 @@ impl OsmParser {
         Ok((osm_data, edits))
     }
 
-    pub fn parse_file(&self, file_path: &str) -> Result<OsmData, OsmParseError> {
-        self.parse_file_with_edits(file_path)
-            .map(|(data, _edits)| data)
+    pub fn parse_file(file_path: &str) -> Result<OsmData, OsmParseError> {
+        Self::parse_file_with_edits(file_path).map(|(data, _edits)| data)
     }
 
     /// The text of an attribute value with XML entities (`&amp;`, `&quot;`,
     /// `&#10;`, …) decoded.
-    fn unescaped(
-        &self,
-        attr: &quick_xml::events::attributes::Attribute,
-    ) -> Result<String, OsmParseError> {
+    fn unescaped(attr: &quick_xml::events::attributes::Attribute) -> Result<String, OsmParseError> {
         attr.unescape_value()
             .map(|value| value.into_owned())
             .map_err(OsmParseError::XmlError)
     }
 
-    fn parse_bounds(&self, e: &BytesStart) -> Result<OsmBounds, OsmParseError> {
+    fn parse_bounds(e: &BytesStart) -> Result<OsmBounds, OsmParseError> {
         let mut min_lat = 0.0;
         let mut max_lat = 0.0;
         let mut min_lon = 0.0;
@@ -457,10 +436,10 @@ impl OsmParser {
             let value = attr_str(&attr.value)?;
 
             match key {
-                "minlat" => min_lat = self.parse_f64(value)?,
-                "maxlat" => max_lat = self.parse_f64(value)?,
-                "minlon" => min_lon = self.parse_f64(value)?,
-                "maxlon" => max_lon = self.parse_f64(value)?,
+                "minlat" => min_lat = Self::parse_f64(value)?,
+                "maxlat" => max_lat = Self::parse_f64(value)?,
+                "minlon" => min_lon = Self::parse_f64(value)?,
+                "maxlon" => max_lon = Self::parse_f64(value)?,
                 _ => {}
             }
         }
@@ -473,7 +452,7 @@ impl OsmParser {
         })
     }
 
-    fn parse_node_start(&self, e: &BytesStart) -> Result<OsmNode, OsmParseError> {
+    fn parse_node_start(e: &BytesStart) -> Result<OsmNode, OsmParseError> {
         let mut id: Option<i64> = None;
         let mut lat: Option<f64> = None;
         let mut lon: Option<f64> = None;
@@ -485,10 +464,10 @@ impl OsmParser {
             let value = attr_str(&attr.value)?;
 
             match key {
-                "id" => id = Some(self.parse_i64(value)?),
-                "lat" => lat = Some(self.parse_f64(value)?),
-                "lon" => lon = Some(self.parse_f64(value)?),
-                "version" => version = self.parse_i32(value)?,
+                "id" => id = Some(Self::parse_i64(value)?),
+                "lat" => lat = Some(Self::parse_f64(value)?),
+                "lon" => lon = Some(Self::parse_f64(value)?),
+                "version" => version = Self::parse_i32(value)?,
                 _ => {}
             }
         }
@@ -502,7 +481,7 @@ impl OsmParser {
         })
     }
 
-    fn parse_way_start(&self, e: &BytesStart) -> Result<OsmWay, OsmParseError> {
+    fn parse_way_start(e: &BytesStart) -> Result<OsmWay, OsmParseError> {
         let mut id: Option<i64> = None;
         let mut version = 1;
 
@@ -512,8 +491,8 @@ impl OsmParser {
             let value = attr_str(&attr.value)?;
 
             match key {
-                "id" => id = Some(self.parse_i64(value)?),
-                "version" => version = self.parse_i32(value)?,
+                "id" => id = Some(Self::parse_i64(value)?),
+                "version" => version = Self::parse_i32(value)?,
                 _ => {}
             }
         }
@@ -526,7 +505,7 @@ impl OsmParser {
         })
     }
 
-    fn parse_relation_start(&self, e: &BytesStart) -> Result<OsmRelation, OsmParseError> {
+    fn parse_relation_start(e: &BytesStart) -> Result<OsmRelation, OsmParseError> {
         let mut id: Option<i64> = None;
         let mut version = 1;
 
@@ -536,8 +515,8 @@ impl OsmParser {
             let value = attr_str(&attr.value)?;
 
             match key {
-                "id" => id = Some(self.parse_i64(value)?),
-                "version" => version = self.parse_i32(value)?,
+                "id" => id = Some(Self::parse_i64(value)?),
+                "version" => version = Self::parse_i32(value)?,
                 _ => {}
             }
         }
@@ -550,7 +529,7 @@ impl OsmParser {
         })
     }
 
-    fn parse_tag(&self, e: &BytesStart) -> Result<(String, String), OsmParseError> {
+    fn parse_tag(e: &BytesStart) -> Result<(String, String), OsmParseError> {
         let mut key = String::new();
         let mut value = String::new();
 
@@ -561,8 +540,8 @@ impl OsmParser {
             // Unescaped, so `v="Barnes &amp; Noble"` is stored as the text
             // "Barnes & Noble" rather than with the entity left in.
             match attr_key {
-                "k" => key = self.unescaped(&attr)?,
-                "v" => value = self.unescaped(&attr)?,
+                "k" => key = Self::unescaped(&attr)?,
+                "v" => value = Self::unescaped(&attr)?,
                 _ => {}
             }
         }
@@ -574,21 +553,21 @@ impl OsmParser {
         Ok((key, value))
     }
 
-    fn parse_node_ref(&self, e: &BytesStart) -> Result<NodeId, OsmParseError> {
+    fn parse_node_ref(e: &BytesStart) -> Result<NodeId, OsmParseError> {
         for attr in e.attributes() {
             let attr = attr.map_err(OsmParseError::AttrError)?;
             let key = attr_str(attr.key.as_ref())?;
             let value = attr_str(&attr.value)?;
 
             if key == "ref" {
-                return self.parse_i64(value).map(NodeId);
+                return Self::parse_i64(value).map(NodeId);
             }
         }
 
         Err(OsmParseError::MissingAttribute("ref".to_string()))
     }
 
-    fn parse_member(&self, e: &BytesStart) -> Result<OsmMember, OsmParseError> {
+    fn parse_member(e: &BytesStart) -> Result<OsmMember, OsmParseError> {
         let mut member_type: Option<MemberType> = None;
         let mut reference = 0;
         let mut role = String::new();
@@ -600,8 +579,8 @@ impl OsmParser {
 
             match key {
                 "type" => member_type = Some(value.parse()?),
-                "ref" => reference = self.parse_i64(value)?,
-                "role" => role = self.unescaped(&attr)?,
+                "ref" => reference = Self::parse_i64(value)?,
+                "role" => role = Self::unescaped(&attr)?,
                 _ => {}
             }
         }
@@ -614,17 +593,17 @@ impl OsmParser {
         })
     }
 
-    fn parse_i64(&self, s: &str) -> Result<i64, OsmParseError> {
+    fn parse_i64(s: &str) -> Result<i64, OsmParseError> {
         s.parse()
             .map_err(|_| OsmParseError::ParseError(format!("Invalid i64: {}", s)))
     }
 
-    fn parse_i32(&self, s: &str) -> Result<i32, OsmParseError> {
+    fn parse_i32(s: &str) -> Result<i32, OsmParseError> {
         s.parse()
             .map_err(|_| OsmParseError::ParseError(format!("Invalid i32: {}", s)))
     }
 
-    fn parse_f64(&self, s: &str) -> Result<f64, OsmParseError> {
+    fn parse_f64(s: &str) -> Result<f64, OsmParseError> {
         s.parse()
             .map_err(|_| OsmParseError::ParseError(format!("Invalid f64: {}", s)))
     }
@@ -700,7 +679,7 @@ mod tests {
   <bounds minlat="40.1" minlon="-74.2" maxlat="40.3" maxlon="-74.0"/>
   <node id="1" lat="40.2" lon="-74.1"/>
 </osm>"#;
-        let data = OsmParser::new().parse_str(xml).unwrap();
+        let data = OsmParser::parse_str(xml).unwrap();
         assert_eq!(
             data.bounds,
             vec![OsmBounds {
@@ -720,7 +699,7 @@ mod tests {
   <bounds minlat="3" minlon="2" maxlat="5" maxlon="6"></bounds>
   <node id="1" lat="2" lon="3"/>
 </osm>"#;
-        let data = OsmParser::new().parse_str(xml).unwrap();
+        let data = OsmParser::parse_str(xml).unwrap();
         assert_eq!(data.bounds.len(), 2);
         assert_eq!(data.bounds[0].max_lat, 3.0);
         assert_eq!(data.bounds[1].max_lon, 6.0);
@@ -732,7 +711,7 @@ mod tests {
 <osm version="0.6">
   <node id="1" lat="2" lon="3"/>
 </osm>"#;
-        assert!(OsmParser::new().parse_str(xml).unwrap().bounds.is_empty());
+        assert!(OsmParser::parse_str(xml).unwrap().bounds.is_empty());
     }
 
     #[test]
@@ -767,8 +746,7 @@ mod tests {
   </way>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+        let osm_data = OsmParser::parse_str(xml).expect("parse_str failed");
 
         assert!(
             osm_data.nodes.contains_key(&NodeId(1)),
@@ -807,8 +785,7 @@ mod tests {
   </relation>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+        let osm_data = OsmParser::parse_str(xml).expect("parse_str failed");
 
         assert_eq!(
             osm_data.nodes[&NodeId(1)].version,
@@ -833,8 +810,7 @@ mod tests {
   <node id="1" lat="40.0" lon="-74.0"/>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+        let osm_data = OsmParser::parse_str(xml).expect("parse_str failed");
 
         assert_eq!(
             osm_data.nodes[&NodeId(1)].version,
@@ -855,10 +831,9 @@ mod tests {
         xml.push(0xFF);
         xml.extend_from_slice(br#""/></node></osm>"#);
 
-        let parser = OsmParser::new();
         let mut reader = Reader::from_reader(xml.as_slice());
         reader.config_mut().trim_text(true);
-        let result = parser.run(reader);
+        let result = OsmParser::run(reader);
 
         assert!(
             result.is_err(),
@@ -875,8 +850,7 @@ mod tests {
   </relation>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let result = parser.parse_str(xml);
+        let result = OsmParser::parse_str(xml);
 
         assert!(
             matches!(result, Err(OsmParseError::ParseError(_))),
@@ -892,8 +866,7 @@ mod tests {
   <node lat="40.0" lon="-74.0"/>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let result = parser.parse_str(xml);
+        let result = OsmParser::parse_str(xml);
 
         assert!(
             matches!(result, Err(OsmParseError::MissingAttribute(ref a)) if a == "id"),
@@ -911,8 +884,7 @@ mod tests {
   </way>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let result = parser.parse_str(xml);
+        let result = OsmParser::parse_str(xml);
 
         assert!(
             matches!(result, Err(OsmParseError::MissingAttribute(ref a)) if a == "id"),
@@ -930,8 +902,7 @@ mod tests {
   </relation>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let result = parser.parse_str(xml);
+        let result = OsmParser::parse_str(xml);
 
         assert!(
             matches!(result, Err(OsmParseError::MissingAttribute(ref a)) if a == "id"),
@@ -947,8 +918,7 @@ mod tests {
   <node id="1" lon="-74.0"/>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let result = parser.parse_str(xml);
+        let result = OsmParser::parse_str(xml);
 
         assert!(
             matches!(result, Err(OsmParseError::MissingAttribute(ref a)) if a == "lat"),
@@ -964,8 +934,7 @@ mod tests {
   <node id="1" lat="40.0"/>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let result = parser.parse_str(xml);
+        let result = OsmParser::parse_str(xml);
 
         assert!(
             matches!(result, Err(OsmParseError::MissingAttribute(ref a)) if a == "lon"),
@@ -981,8 +950,7 @@ mod tests {
   <node id="1" lat="not-a-number" lon="-74.0"/>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let result = parser.parse_str(xml);
+        let result = OsmParser::parse_str(xml);
 
         assert!(
             matches!(result, Err(OsmParseError::ParseError(_))),
@@ -1003,8 +971,7 @@ mod tests {
   </way>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+        let osm_data = OsmParser::parse_str(xml).expect("parse_str failed");
 
         let way = osm_data
             .ways
@@ -1032,8 +999,7 @@ mod tests {
   </relation>
 </osm>"#;
 
-        let parser = OsmParser::new();
-        let osm_data = parser.parse_str(xml).expect("parse_str failed");
+        let osm_data = OsmParser::parse_str(xml).expect("parse_str failed");
 
         let members = &osm_data.relations[0].members;
         assert_eq!(members.len(), 3);
@@ -1053,7 +1019,7 @@ mod tests {
   </relation>
 </osm>"#;
 
-        let data = OsmParser::new().parse_str(xml).unwrap();
+        let data = OsmParser::parse_str(xml).unwrap();
 
         assert_eq!(
             data.nodes[&NodeId(1)].tags["name"],
@@ -1084,7 +1050,7 @@ mod tests {
   <relation id="21" version="1"/>
 </osm>"#;
 
-        let (data, edits) = OsmParser::new().parse_str_with_edits(xml).unwrap();
+        let (data, edits) = OsmParser::parse_str_with_edits(xml).unwrap();
 
         let mut live: Vec<i64> = data.nodes.keys().map(|id| id.get()).collect();
         live.sort_unstable();
@@ -1100,13 +1066,13 @@ mod tests {
         assert_eq!(edits.deleted_relations[&RelationId(20)].version, 1);
 
         // The plain entry point agrees on the data and just drops the edits.
-        assert_eq!(OsmParser::new().parse_str(xml).unwrap(), data);
+        assert_eq!(OsmParser::parse_str(xml).unwrap(), data);
     }
 
     #[test]
     fn a_file_without_actions_has_no_edits() {
         let xml = r#"<osm version="0.6"><node id="1" lat="1" lon="1"/></osm>"#;
-        let (_, edits) = OsmParser::new().parse_str_with_edits(xml).unwrap();
+        let (_, edits) = OsmParser::parse_str_with_edits(xml).unwrap();
         assert!(edits.is_empty());
     }
 }

@@ -370,6 +370,80 @@ mod tests {
         assert!(wire.way_text_style(&t, true, 19.0).is_empty());
     }
 
+    /// The gap between a road's drawn edge and its street name's baseline,
+    /// as `line_labels::clear_offset` measures it: the offset less half the
+    /// x-height (0.35 of the font size) less the half-width the label pass
+    /// uses (half the stroke plus the casing, at least 1 px from z16).
+    fn street_name_gap(sheet: &Stylesheet, t: &Tags, zoom: f64) -> Option<f32> {
+        use crate::style::mapcss::TextPosition;
+        let text = sheet.way_text_style(t, false, zoom);
+        if text.position != Some(TextPosition::Line) {
+            return None;
+        }
+        let way = sheet.way_style(t, false, zoom);
+        let half_width = way.width / 2.0 + way.casing_width.max(1.0);
+        let font = text.font_size.unwrap_or(12.0);
+        Some(text.offset? - 0.35 * font - half_width)
+    }
+
+    #[test]
+    fn street_names_sit_the_same_distance_from_every_road_class() {
+        let classes = [
+            ("highway", "motorway"),
+            ("highway", "motorway_link"),
+            ("highway", "trunk"),
+            ("highway", "trunk_link"),
+            ("highway", "primary"),
+            ("highway", "primary_link"),
+            ("highway", "secondary"),
+            ("highway", "secondary_link"),
+            ("highway", "tertiary"),
+            ("highway", "tertiary_link"),
+            ("highway", "residential"),
+            ("highway", "unclassified"),
+            ("highway", "living_street"),
+            ("highway", "service"),
+            ("highway", "road"),
+            ("highway", "track"),
+            ("highway", "footway"),
+            ("highway", "path"),
+            ("highway", "pedestrian"),
+            ("highway", "steps"),
+            ("highway", "bridleway"),
+            ("highway", "cycleway"),
+            ("waterway", "river"),
+            ("waterway", "stream"),
+            ("railway", "rail"),
+        ];
+        for style in BUILT_IN_STYLES.iter().filter(|s| s.id != "wireframe") {
+            let sheet = Stylesheet::parse(style.source).unwrap();
+            for (k, v) in classes {
+                let t = tags(&[(k, v), ("name", "X")]);
+                for zoom in 16..=21 {
+                    let Some(gap) = street_name_gap(&sheet, &t, zoom as f64) else {
+                        continue;
+                    };
+                    assert!(
+                        (gap - 1.5).abs() < 1e-3,
+                        "{}: {k}={v} at z{zoom} is {gap} px off the road",
+                        style.id
+                    );
+                }
+            }
+        }
+        // A couple of the resolved values.
+        let default = Stylesheet::parse(BUILT_IN_STYLES[0].source).unwrap();
+        let offset = |v: &str, z: f64| {
+            default
+                .way_text_style(&tags(&[("highway", v)]), false, z)
+                .offset
+        };
+        assert_eq!(offset("residential", 16.0), Some(8.2));
+        assert_eq!(offset("residential", 18.0), Some(9.2));
+        assert_eq!(offset("motorway", 17.0), Some(9.7));
+        assert_eq!(offset("footway", 18.0), Some(7.45));
+    }
+
     #[test]
     fn the_default_style_keeps_the_theme_background_and_imagery() {
         let default = Stylesheet::parse(BUILT_IN_STYLES[0].source).unwrap();

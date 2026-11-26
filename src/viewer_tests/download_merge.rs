@@ -115,9 +115,7 @@ fn exported_layer_reopens_with_the_same_pending_edits(cx: &mut TestAppContext) {
             assert_eq!(name, "L");
 
             // Reopen the exported document as File > Open would.
-            let (data, edits) = osm_gpui::osm::OsmParser::new()
-                .parse_str_with_edits(&xml)
-                .unwrap();
+            let (data, edits) = osm_gpui::osm::OsmParser::parse_str_with_edits(&xml).unwrap();
             view.add_osm_dataset("reopened".to_string(), data, &edits, cx);
 
             let reopened = view

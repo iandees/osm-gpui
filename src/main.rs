@@ -857,10 +857,8 @@ struct MapViewer {
     /// An in-progress drag of the side panel's resize handle: the window x
     /// and panel width at mouse-down.
     side_panel_resize: Option<(f32, f32)>,
-    /// Whether each side-panel accordion section (Layers, Selection, Fields,
-    /// Tags, History, Relations, Members, Validation, Junction, Lanes, by the
-    /// indices `render_side_panel` gives them) is expanded.
-    side_panel_open: [bool; 11],
+    /// Which side-panel accordion sections are expanded.
+    side_panel_open: side_panel::OpenSections,
     /// The Junction inspector's chosen approach: `(junction node, arm index)`.
     junction_from: Option<(NodeId, usize)>,
     /// The Lanes editor's chosen lane: `(way, group, lane from the left)`.
@@ -1089,14 +1087,7 @@ impl MapViewer {
                     .filter(|_| !script_harness::script_mode()),
             ),
             side_panel_resize: None,
-            // Everything open except History and Validation, which keep to
-            // their headers until the user opens them.
-            side_panel_open: {
-                let mut open = [true; 11];
-                open[side_panel::HISTORY_SECTION] = false;
-                open[validation_panel::SECTION] = false;
-                open
-            },
+            side_panel_open: side_panel::OpenSections::default(),
             junction_from: None,
             lane_selected: None,
             lane_left_hand: false,
@@ -6673,6 +6664,7 @@ impl Render for MapViewer {
                                                 &viewport_clone,
                                                 bounds,
                                                 window,
+                                                cx,
                                             );
                                         }
 
@@ -6685,6 +6677,7 @@ impl Render for MapViewer {
                                                 &viewport_clone,
                                                 bounds,
                                                 window,
+                                                cx,
                                             );
                                         }
 
@@ -6702,6 +6695,7 @@ impl Render for MapViewer {
                                             &modes::PreviewFrame {
                                                 viewport: &viewport_clone,
                                                 bounds,
+                                                cx,
                                             },
                                             window,
                                         );
@@ -6746,9 +6740,11 @@ impl Render for MapViewer {
                                 .top(rect.origin.y)
                                 .w(rect.size.width)
                                 .h(rect.size.height)
-                                .bg(cx.theme().accent)
+                                // The same theme color as the selection
+                                // highlight it will become.
+                                .bg(cx.theme().selection)
                                 .border_1()
-                                .border_color(cx.theme().accent)
+                                .border_color(cx.theme().selection)
                                 .opacity(0.35)
                                 .into_any_element()
                         } else {

@@ -1208,9 +1208,7 @@ fn the_screenshot_fixture_reports_exactly_its_new_and_edited_objects() {
         env!("CARGO_MANIFEST_DIR"),
         "/docs/screenshots/fixtures/validator.osm"
     );
-    let (mut current, edits) = crate::osm::OsmParser::new()
-        .parse_file_with_edits(path)
-        .unwrap();
+    let (mut current, edits) = crate::osm::OsmParser::parse_file_with_edits(path).unwrap();
     let baseline = baseline_for_loaded_file(&current, &edits);
     let tags = &mut current.nodes.get_mut(&NodeId(2002)).unwrap().tags;
     tags.insert("landuse", "farm");

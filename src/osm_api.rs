@@ -104,9 +104,7 @@ pub fn fetch_bbox_with(
 /// Parse a `/map` response. The API's response carries a `<bounds>` element;
 /// if one is missing, the area we asked for is what was downloaded.
 fn parse_download(body: &str, requested: &GeoBounds) -> Result<OsmData, OsmApiError> {
-    let mut data = OsmParser::new()
-        .parse_str(body)
-        .map_err(OsmApiError::Parse)?;
+    let mut data = OsmParser::parse_str(body).map_err(OsmApiError::Parse)?;
     if data.bounds.is_empty() {
         data.bounds.push(crate::osm::OsmBounds {
             min_lat: requested.min_lat,
@@ -246,8 +244,7 @@ pub fn fetch_element_with(
 ) -> Result<ServerElement, OsmApiError> {
     let url = element_url(base_url, kind, id, full);
     match fetch_map_body(client, &url, token, None) {
-        Ok(body) => OsmParser::new()
-            .parse_str(&body)
+        Ok(body) => OsmParser::parse_str(&body)
             .map(ServerElement::Present)
             .map_err(OsmApiError::Parse),
         Err(OsmApiError::Http { status: 410, .. }) => Ok(ServerElement::Gone),

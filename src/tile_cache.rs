@@ -185,9 +185,8 @@ impl TileStore {
     /// Number of files in the cache directory `dir`, rescanned at most once
     /// per `STATS_TTL`.
     fn cached_file_count(&self, dir: &Path) -> usize {
-        let Ok(mut guard) = self.file_count.lock() else {
-            return 0;
-        };
+        // Poison is recovered: the cached count is only ever replaced whole.
+        let mut guard = self.file_count.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((last, count)) = *guard {
             if last.elapsed() < STATS_TTL {
                 return count;
@@ -203,9 +202,7 @@ impl TileStore {
 
     /// `cache_summary_at(dir)`, rescanned at most once per `STATS_TTL`.
     fn cache_summary(&self, dir: &Path) -> CacheSummary {
-        let Ok(mut guard) = self.summary.lock() else {
-            return cache_summary_at(dir);
-        };
+        let mut guard = self.summary.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((last, summary)) = guard.as_ref() {
             if last.elapsed() < STATS_TTL {
                 return summary.clone();

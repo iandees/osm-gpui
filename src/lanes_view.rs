@@ -23,11 +23,9 @@ use crate::road_paint::{
     fill, lane_divider, lane_glyph, stroke, ASPHALT, CENTRE_LINE, LANE_LINE, V,
 };
 use crate::selection_actions::{record_edit, refused};
+use crate::side_panel::SidePanelSection;
 use crate::undo::{EditLabel, UndoableAction};
 use crate::MapViewer;
-
-/// Index of the Lanes section in `MapViewer::side_panel_open`.
-pub(crate) const SECTION: usize = 9;
 
 /// Height of one lane in the strip, in pixels.
 const LANE_H: f32 = 28.0;
@@ -419,7 +417,7 @@ impl MapViewer {
     /// Each sits just beyond its end of the way, so it doesn't hide the node.
     pub(crate) fn render_lane_end_markers(&self) -> Vec<gpui::AnyElement> {
         let mut out = Vec::new();
-        if !self.side_panel_open[SECTION] {
+        if !self.side_panel_open.is_open(SidePanelSection::Lanes) {
             return out;
         }
         let Some((layer_id, way, _)) = self.selected_road() else {

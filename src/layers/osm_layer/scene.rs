@@ -179,14 +179,14 @@ pub(super) fn arrow_segments(pts: &[Point<Pixels>], spacing: f32) -> Vec<usize> 
 pub(super) struct VertexHints(pub(super) std::sync::Mutex<HashMap<u64, usize>>);
 
 impl VertexHints {
+    // A poisoned lock is recovered: the map is only ever replaced whole, and a
+    // stale hint just sizes one frame's reservation wrong.
     pub(super) fn snapshot(&self) -> HashMap<u64, usize> {
-        self.0.lock().map(|m| m.clone()).unwrap_or_default()
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub(super) fn replace(&self, hints: HashMap<u64, usize>) {
-        if let Ok(mut m) = self.0.lock() {
-            *m = hints;
-        }
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = hints;
     }
 }
 
