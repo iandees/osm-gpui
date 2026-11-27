@@ -79,13 +79,20 @@ impl MapViewer {
             };
             let positions: Vec<Option<LatLon>> =
                 nodes.iter().map(|&n| editable.node_lat_lon(n)).collect();
+            // A live move-drag offsets nodes on screen only; follow it so
+            // the handles travel with the way.
+            let offsets: Vec<Point<Pixels>> = nodes
+                .iter()
+                .map(|&n| editable.node_drag_offset(n))
+                .collect();
             for (segment, pair) in positions.windows(2).enumerate() {
                 let (Some(a), Some(b)) = (pair[0], pair[1]) else {
                     continue;
                 };
+                let (oa, ob) = (offsets[segment], offsets[segment + 1]);
                 let (sa, sb) = (
-                    to_pt(self.viewport.geo_to_screen(a)),
-                    to_pt(self.viewport.geo_to_screen(b)),
+                    to_pt(self.viewport.geo_to_screen(a) + oa),
+                    to_pt(self.viewport.geo_to_screen(b) + ob),
                 );
                 if !long_enough(sa, sb) {
                     continue;

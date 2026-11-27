@@ -518,6 +518,10 @@ pub trait EditableLayer {
     /// Clear any transient drag preview.
     fn clear_drag_preview(&mut self);
 
+    /// The screen-space offset a live drag preview currently applies to a
+    /// node (zero when it isn't being dragged).
+    fn node_drag_offset(&self, node_id: NodeId) -> Point<Pixels>;
+
     /// Current position of a node this layer owns, if any.
     fn node_lat_lon(&self, node_id: NodeId) -> Option<crate::coordinates::LatLon>;
 
