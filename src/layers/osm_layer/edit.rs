@@ -252,6 +252,10 @@ impl EditableLayer for OsmLayer {
         self.view.drag_preview = None;
     }
 
+    fn node_drag_offset(&self, node_id: NodeId) -> Point<Pixels> {
+        self.drag_preview_offset(node_id)
+    }
+
     fn node_lat_lon(&self, node_id: NodeId) -> Option<LatLon> {
         let data = self.store.osm_data.as_ref()?;
         let n = data.nodes.get(&node_id)?;
