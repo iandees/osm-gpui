@@ -62,7 +62,7 @@ impl<'a> ActionEnv<'a> {
         join_ways_in(editable, layer_id, self.selection)
     }
 
-    /// Whether the selection is two closed ways whose areas overlap, which
+    /// Whether the selection is closed ways whose areas overlap, which
     /// Join unites into one.
     fn selected_overlap_union(&self) -> bool {
         let (Some(layer_id), Some(editable)) = (self.active_layer, self.active_editable()) else {
@@ -1407,12 +1407,23 @@ fn apply_reverse(
     })
 }
 
-/// Two closed ways, the outline positions of each (the closing node not
-/// repeated) and their union, when the selection is exactly two closed ways
-/// whose areas overlap in a single outline.
+/// Where a vertex of the growing union outline comes from.
+#[derive(Clone, Copy, PartialEq)]
+enum Slot {
+    /// An existing node.
+    Existing(i64),
+    /// The `n`th entry of `OverlapUnion::new_nodes`.
+    New(usize),
+}
+
+/// The outline around two or more overlapping closed ways, when the
+/// selection is all closed ways that unite into a single outline.
 struct OverlapUnion {
     ways: Vec<JoinWay>,
-    union: osm_gpui::polygon_union::Union,
+    /// The union outline, open (the first vertex is not repeated).
+    ring: Vec<Slot>,
+    /// Where the outlines cross, in the plane the union was built in.
+    new_nodes: Vec<osm_gpui::polygon_union::Pt>,
     /// Longitude scale that makes the plane the union was built in roughly
     /// metric.
     lon_scale: f64,
@@ -1423,8 +1434,10 @@ fn overlap_union(
     layer_id: LayerId,
     selection: &[FeatureRef],
 ) -> Option<OverlapUnion> {
+    use osm_gpui::polygon_union::{self, Pt, Vertex};
+
     let ways = join_ways_in(editable, layer_id, selection);
-    if ways.len() != 2
+    if ways.len() < 2
         || ways
             .iter()
             .any(|w| w.nodes.len() < 4 || w.nodes.first() != w.nodes.last())
@@ -1437,44 +1450,78 @@ fn overlap_union(
             .map(|&id| editable.node_lat_lon(NodeId(id)))
             .collect()
     };
-    let points = [positions(0)?, positions(1)?];
+    let points = (0..ways.len()).map(positions).collect::<Option<Vec<_>>>()?;
     let mean_lat = points[0].iter().map(|p| p.lat).sum::<f64>() / points[0].len() as f64;
     let lon_scale = mean_lat.to_radians().cos();
-    let plane = |ring: &[LatLon]| -> Vec<osm_gpui::polygon_union::Pt> {
-        ring.iter().map(|p| (p.lon * lon_scale, p.lat)).collect()
-    };
-    let (ids_a, ids_b) = (ids_of_ring(&ways, 0), ids_of_ring(&ways, 1));
-    let union = osm_gpui::polygon_union::union(&plane(&points[0]), &plane(&points[1]), |i, j| {
-        ids_a[i] == ids_b[j]
-    })
-    .ok()?;
+    let plane: Vec<Vec<Pt>> = points
+        .iter()
+        .map(|ring| ring.iter().map(|p| (p.lon * lon_scale, p.lat)).collect())
+        .collect();
+
+    // Fold the ways into the first one's outline, each step uniting it with
+    // any remaining way that overlaps the outline so far.
+    let mut acc: Vec<(Pt, Slot)> = plane[0]
+        .iter()
+        .zip(ids_of_ring(&ways, 0))
+        .map(|(&p, &id)| (p, Slot::Existing(id)))
+        .collect();
+    let mut new_nodes: Vec<Pt> = Vec::new();
+    let mut remaining: Vec<usize> = (1..ways.len()).collect();
+    while !remaining.is_empty() {
+        let acc_pts: Vec<Pt> = acc.iter().map(|&(p, _)| p).collect();
+        let (pos, union) = remaining.iter().enumerate().find_map(|(pos, &w)| {
+            let ids = ids_of_ring(&ways, w);
+            polygon_union::union(&acc_pts, &plane[w], |i, j| {
+                acc[i].1 == Slot::Existing(ids[j])
+            })
+            .ok()
+            .map(|u| (pos, u))
+        })?;
+        let w = remaining.remove(pos);
+        let ids = ids_of_ring(&ways, w);
+        let next: Vec<(Pt, Slot)> = union
+            .ring
+            .iter()
+            .map(|v| match *v {
+                Vertex::Original { which: 0, index } => acc[index],
+                Vertex::Original { index, .. } => (plane[w][index], Slot::Existing(ids[index])),
+                Vertex::Crossing(k) => {
+                    new_nodes.push(union.crossings[k]);
+                    (union.crossings[k], Slot::New(new_nodes.len() - 1))
+                }
+            })
+            .collect();
+        acc = next;
+    }
     Some(OverlapUnion {
         ways,
-        union,
+        ring: acc.into_iter().map(|(_, s)| s).collect(),
+        new_nodes,
         lon_scale,
     })
 }
 
-/// Join two overlapping closed ways into one: the first selected way takes
-/// the outline around both and the other is deleted.
+/// Join overlapping closed ways into one: the first selected way takes the
+/// outline around all of them and the others are deleted.
 fn apply_overlap_union(
     editable: &mut dyn EditableLayer,
     layer_id: LayerId,
     ov: OverlapUnion,
 ) -> Result<ActionOutcome, String> {
-    use osm_gpui::polygon_union::Vertex;
-
     let keep = ov.ways[0].id;
-    let drop = ov.ways[1].id;
+    let drops: Vec<i64> = ov.ways[1..].iter().map(|w| w.id).collect();
     let tags = topology::merge_way_tags(&ov.ways).map_err(|e| e.message())?;
-    let ids_of = |i: usize| ids_of_ring(&ov.ways, i);
-    let ring_len = ov.union.ring.len() + 1;
+    let ring_len = ov.ring.len() + 1;
     if let Some(m) = osm_gpui::limits::way_over_limit(ring_len, osm_gpui::limits::join_message) {
         return Err(m);
     }
-    // Relations the dropped way is in: its place goes to the kept way.
-    let (keep_way, drop_way) = (WayId(keep), WayId(drop));
-    let mut relation_ids = editable.relations_containing_way(drop_way);
+    // Relations the dropped ways are in: their place goes to the kept way.
+    let keep_way = WayId(keep);
+    let drop_ways: Vec<WayId> = drops.iter().map(|&id| WayId(id)).collect();
+    let mut relation_ids: Vec<RelationId> = drop_ways
+        .iter()
+        .flat_map(|&id| editable.relations_containing_way(id))
+        .collect();
     relation_ids.sort_unstable();
     relation_ids.dedup();
     let mut relation_edits = Vec::new();
@@ -1482,7 +1529,7 @@ fn apply_overlap_union(
         let Some(relation) = editable.relation(relation_id) else {
             continue;
         };
-        let after = osm_gpui::relations::join_members(&relation, keep_way, &[drop_way])
+        let after = osm_gpui::relations::join_members(&relation, keep_way, &drop_ways)
             .map_err(|e| e.message())?;
         if let Some(after) = after {
             relation_edits.push((relation_id, after));
@@ -1491,21 +1538,21 @@ fn apply_overlap_union(
     // Corners that end up inside the union, and so off the outline: they go
     // too unless something else still uses them.
     let on_outline: std::collections::HashSet<i64> = ov
-        .union
         .ring
         .iter()
-        .filter_map(|v| match *v {
-            Vertex::Original { which, index } => Some(ids_of(which)[index]),
-            Vertex::Crossing(_) => None,
+        .filter_map(|s| match *s {
+            Slot::Existing(id) => Some(id),
+            Slot::New(_) => None,
         })
         .collect();
+    let ours: std::collections::HashSet<i64> = ov.ways.iter().map(|w| w.id).collect();
     let mut dropped_nodes: Vec<i64> = Vec::new();
-    for which in 0..2 {
-        for &id in ids_of(which) {
+    for which in 0..ov.ways.len() {
+        for &id in ids_of_ring(&ov.ways, which) {
             let only_ours = editable
                 .ways_using_node(NodeId(id))
                 .iter()
-                .all(|w| w.get() == keep || w.get() == drop);
+                .all(|w| ours.contains(&w.get()));
             let plain = editable
                 .feature_tags(&FeatureRef {
                     layer_id,
@@ -1520,19 +1567,19 @@ fn apply_overlap_union(
         }
     }
     let kept_tags = ov.ways[0].tags.clone();
-    let (lon_scale, union) = (ov.lon_scale, ov.union);
+    let count = ov.ways.len();
+    let (lon_scale, new_nodes, ring) = (ov.lon_scale, ov.new_nodes, ov.ring);
 
     let ((), ops) = record_edit(layer_id, editable, |rec| {
-        let mut crossing_ids = Vec::new();
-        for &(x, y) in &union.crossings {
-            crossing_ids.push(rec.add_node(LatLon::new(y, x / lon_scale)));
-        }
-        let mut nodes: Vec<NodeId> = union
-            .ring
+        let new_ids: Vec<NodeId> = new_nodes
             .iter()
-            .map(|v| match *v {
-                Vertex::Original { which, index } => NodeId(ids_of_ring(&ov.ways, which)[index]),
-                Vertex::Crossing(k) => crossing_ids[k],
+            .map(|&(x, y)| rec.add_node(LatLon::new(y, x / lon_scale)))
+            .collect();
+        let mut nodes: Vec<NodeId> = ring
+            .iter()
+            .map(|s| match *s {
+                Slot::Existing(id) => NodeId(id),
+                Slot::New(k) => new_ids[k],
             })
             .collect();
         nodes.push(nodes[0]);
@@ -1547,8 +1594,9 @@ fn apply_overlap_union(
             rec.set_relation_members(relation_id, after)
                 .map_err(refused)?;
         }
-        rec.delete_feature(FeatureKind::Way, drop)
-            .map_err(refused)?;
+        for id in &drops {
+            rec.delete_feature(FeatureKind::Way, *id).map_err(refused)?;
+        }
         for id in &dropped_nodes {
             rec.delete_feature(FeatureKind::Node, *id)
                 .map_err(refused)?;
@@ -1556,7 +1604,7 @@ fn apply_overlap_union(
         Ok(())
     })?;
 
-    let label = tr_count!("action.join.done", 2).to_string();
+    let label = tr_count!("action.join.done", count).to_string();
     Ok(ActionOutcome {
         undo: Some(UndoableAction::edit(
             layer_id,
@@ -4789,6 +4837,7 @@ mod tests {
         let mut nodes: std::collections::HashMap<_, _> = square(21, 40.0, -74.0)
             .into_iter()
             .chain(square(31, 40.001, -73.999))
+            .chain(square(41, 40.0025, -73.9975))
             .collect();
         // Node 23 is 200's far corner, inside 201.
         nodes.get_mut(&NodeId(23)).unwrap().tags = Tags::from([("note", "keep me")]);
@@ -4812,6 +4861,8 @@ mod tests {
                     &[31, 32, 33, 34, 31],
                     &[("building", "yes"), ("name", "Annex")],
                 ),
+                // Overlaps 201 only.
+                way(202, &[41, 42, 43, 44, 41], &[("building", "yes")]),
             ]),
             relations: Vec::new(),
             bounds: Vec::new(),
@@ -4828,6 +4879,27 @@ mod tests {
             layer_id,
             clipboards: Clipboards::default(),
         }
+    }
+
+    #[test]
+    fn join_unites_every_selected_overlapping_closed_way() {
+        let mut n = overlapping_squares();
+        // 202 overlaps only 201, so 200 and 202 unite through it.
+        let all = n.ways(&[200, 202, 201]);
+        assert!(n.applicable(&all).contains(&"join"));
+        let out = n.run("join", &all).unwrap();
+        assert_eq!(out.select, Some(n.ways(&[200])));
+        let nodes = n.editable().way_node_ids(WayId(200)).unwrap();
+        assert_eq!(nodes.first(), nodes.last());
+        // 200 and 201 give 6 corners and 2 crossings; 201's corner inside
+        // 202 drops off, and 202 adds 3 corners and 2 crossings: 12, closed.
+        assert_eq!(nodes.len(), 13);
+        assert!(n.editable().way_node_ids(WayId(201)).is_none());
+        assert!(n.editable().way_node_ids(WayId(202)).is_none());
+
+        // A way that overlaps none of the others is not joined in.
+        let n = overlapping_squares();
+        assert!(!n.applicable(&n.ways(&[200, 202])).contains(&"join"));
     }
 
     #[test]
@@ -6141,7 +6213,7 @@ mod tests {
         };
         assert_eq!(
             find("join").unwrap().why_not(&none),
-            "Select two or more ways that connect end to end, or two overlapping closed ways, to join them"
+            "Select two or more ways that connect end to end, or overlapping closed ways, to join them"
         );
         assert_eq!(
             find("separate").unwrap().why_not(&none),
