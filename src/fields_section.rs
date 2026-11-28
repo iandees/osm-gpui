@@ -12,6 +12,7 @@ use gpui_component::{
 };
 use osm_gpui::tags::Tags;
 
+use crate::side_panel_state::OptionDescriptions;
 use crate::MapViewer;
 use osm_gpui::tr;
 use osm_gpui::ui::style::muted_text_size;
@@ -81,7 +82,56 @@ fn is_opening_hours_key(key: &str) -> bool {
     key == "opening_hours" || key.starts_with("opening_hours:")
 }
 
+/// The language taginfo descriptions are asked for in: the UI language
+/// without its region (`de-AT` -> `de`).
+fn description_language() -> String {
+    let locale = osm_gpui::i18n::current_locale();
+    locale
+        .split(['-', '_'])
+        .next()
+        .unwrap_or("en")
+        .to_lowercase()
+}
+
 impl MapViewer {
+    /// Fetch taginfo's wiki descriptions of the values of `key`, once per
+    /// session and language, so a combo for it can show them. Does nothing
+    /// when taginfo is off (the setting, a unit test, a scripted run without
+    /// canned answers) or `key` is not a plain schema key.
+    fn request_option_descriptions(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !crate::tag_suggest_ui::taginfo_enabled() || !osm_gpui::taginfo::may_describe_values(key)
+        {
+            return;
+        }
+        let lang = description_language();
+        let id = (key.to_string(), lang.clone());
+        if self.fields_panel.option_descriptions.contains_key(&id) {
+            return;
+        }
+        self.fields_panel
+            .option_descriptions
+            .insert(id.clone(), OptionDescriptions::Loading);
+        let http = self.http.clone();
+        let key = key.to_string();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    osm_gpui::taginfo::fetch_value_descriptions(http.as_ref(), &key, &lang)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let state = match result {
+                    Ok(map) => OptionDescriptions::Ready(map),
+                    Err(_) => OptionDescriptions::Failed,
+                };
+                this.fields_panel.option_descriptions.insert(id, state);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Open the hours editor for `field_key` of `feature`, starting from what
     /// the field's `input` shows (which may not be committed yet). Applying
     /// writes the tag and the field's input.
@@ -415,6 +465,17 @@ impl MapViewer {
                     .clone();
 
                 let field_id_for_toggle = field.id.clone();
+                let key_for_toggle = field.key.clone();
+                // Wiki descriptions from taginfo, for values the schema has
+                // no description for (loaded when the list is first opened).
+                let taginfo_descriptions = match self
+                    .fields_panel
+                    .option_descriptions
+                    .get(&(field.key.clone(), description_language()))
+                {
+                    Some(OptionDescriptions::Ready(m)) if is_open => m.clone(),
+                    _ => Default::default(),
+                };
                 let focus_for_toggle = focus.clone();
                 let header = gpui::div()
                     .id(format!("field-combo-header-{}", field.id))
@@ -469,6 +530,8 @@ impl MapViewer {
                                 };
                             if this.fields_panel.fields_open_combo.is_none() {
                                 window.focus(&this.focus_handle, cx);
+                            } else {
+                                this.request_option_descriptions(&key_for_toggle, cx);
                             }
                             cx.notify();
                         }),
@@ -577,7 +640,11 @@ impl MapViewer {
                                     .hover(|el| el.bg(cx.theme().accent))
                                     .child(combo_option_row(
                                         cat.option_label(field, opt).to_string(),
-                                        cat.option_description(field, opt).map(str::to_string),
+                                        cat.option_description(field, opt)
+                                            .map(str::to_string)
+                                            .or_else(|| {
+                                                taginfo_descriptions.get(&opt.value).cloned()
+                                            }),
                                         opt,
                                         field.options.iter().any(|o| o.icon.is_some()),
                                         cx,

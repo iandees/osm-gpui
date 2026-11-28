@@ -49,7 +49,7 @@ fn schema() -> &'static SchemaIndex {
 /// Whether taginfo may be asked right now: the setting is on, and this is
 /// neither a unit test nor a `--script` run (which never touch the network
 /// for suggestions).
-fn taginfo_enabled() -> bool {
+pub(crate) fn taginfo_enabled() -> bool {
     if crate::script_harness::script_mode() {
         // A scripted run asks taginfo only when it was given canned answers:
         // `fn main` then routes taginfo requests to them (`taginfo::fixture_rule`).
