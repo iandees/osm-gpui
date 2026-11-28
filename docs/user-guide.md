@@ -20,7 +20,7 @@ osm-gpui can upload to the live OpenStreetMap database. Read the [OSM editing gu
 
 You only need to sign in to upload (and to work with notes). Everything else, including downloading and editing, works without an account.
 
-1. Open **Settings** (`⌘,` on macOS, or the Settings item in the app or Edit menu) and go to **Account**.
+1. Open **Settings** (`F12`, or the Settings item in the app or Edit menu) and go to **Account**.
 2. Pick the **Server**: Primary (`api.openstreetmap.org`), Dev / testing (`master.apis.dev.openstreetmap.org`), or Custom. The dev server is a safe place to practise; it needs its own account.
 3. Click **Sign in with OpenStreetMap**. Your browser opens; approve the request there. The app shows "Logged in as *name*" when it is done.
 
@@ -67,7 +67,7 @@ Pick a mode from the toolbar, the **Mode** menu, or the keyboard. Each mode show
 | Building | `B` | Three clicks draw a rectangular building. With a squared way selected, it aligns the new building to it. |
 | Extrude | `X` | Drag a way segment to reshape the way: pull out an L or push in a notch. Cmd/Ctrl-drag moves the segment; Alt-drag makes a new way. |
 | Arc | `V` | Click the start, click the end, move the mouse to bend the arc, and click to finish. |
-| Improve Way | `I` | With a way selected, click to move the nearest node to the cursor. Cmd/Ctrl/Alt-click inserts a node, and Cmd/Ctrl+Alt-click deletes the nearest node. Holding Shift locks the node being improved (and never picks another way) while you move the cursor. |
+| Improve Way | `W` | With a way selected, click to move the nearest node to the cursor. Cmd/Ctrl/Alt-click inserts a node, and Cmd/Ctrl+Alt-click deletes the nearest node. Holding Shift locks the node being improved (and never picks another way) while you move the cursor. |
 
 Esc cancels what you are drawing or deselects. Delete or Backspace removes the selection.
 
@@ -79,7 +79,7 @@ Select features, then use the **Tools** menu or the right-click menu. Each actio
 - **Reverse Way** (`R`) flips direction (and direction-dependent tags).
 - **Join Ways** (`C`), **Split Way** (`P`), **Merge Nodes** (`M`) and **Straighten Way** (`T`) change how ways connect.
 - **Separate Node** (`G`) and **Unjoin Node from Way** pull shared nodes apart; **Extend Way** (`E`) continues a way.
-- **Rotate Selection** (`W`) and **Scale Selection** (`D`) turn or resize the selected nodes and ways about their centre. Hold the key and move the pointer, then release it to apply; or tap the key, move the pointer, and click or press Enter. Rotate follows the pointer around the centre (Shift snaps to 15°); Scale follows its distance from the centre (Shift snaps to 5%). Esc cancels.
+- **Rotate Selection** (`H`) and **Scale Selection** (`D`) turn or resize the selected nodes and ways about their centre. Hold the key and move the pointer, then release it to apply; or tap the key, move the pointer, and click or press Enter. Rotate follows the pointer around the centre (Shift snaps to 15°); Scale follows its distance from the centre (Shift snaps to 5%). Esc cancels.
 - **Extract Point** moves POI tags from a building onto a new node.
 - **Copy Tags** and **Paste Tags** (`⇧⌘C`, `⇧⌘V`) copy tags between features.
 - **Add to Relation** and **New Relation** manage relation membership. Selecting a relation from the side panel highlights its members and lets you edit their roles and order.
