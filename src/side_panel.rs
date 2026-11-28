@@ -1435,6 +1435,10 @@ impl MapViewer {
                                 .get(index)
                                 .and_then(|l| l.as_reference())
                                 .map(|l| l.format().tag());
+                            let is_photo =
+                                self.layer_manager.layers().get(index).is_some_and(|l| {
+                                    l.kind() == osm_gpui::layers::LayerKind::ImageOverlay
+                                });
                             let trace_style = self
                                 .layer_manager
                                 .layers()
@@ -1523,6 +1527,14 @@ impl MapViewer {
                                                 Box::new(ResetLayerImageryOffset { index }),
                                             );
                                         }
+                                    }
+                                    if is_photo {
+                                        menu = menu.separator().menu(
+                                            tr!("panel.layers.adjust_photo"),
+                                            Box::new(crate::photo_overlay_ui::AdjustLayerPhoto {
+                                                index,
+                                            }),
+                                        );
                                     }
                                     menu.separator()
                                         .menu(

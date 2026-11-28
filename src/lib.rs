@@ -27,6 +27,7 @@ pub mod fields;
 pub mod frame_stats;
 pub mod geojson;
 pub mod geometry;
+pub mod georeference;
 pub mod gps_traces;
 pub mod gpx;
 pub mod http;

@@ -98,6 +98,7 @@ impl MapViewer {
                 // Adjusting imagery offset: arrows nudge the imagery, Escape
                 // cancels, Enter keeps. Otherwise arrow keys pan, +/- zoom.
                 if self.offset_adjust_key(key, modifiers.shift, window, cx)
+                    || self.photo_adjust_key(key, modifiers.shift, window, cx)
                     || self.handle_navigation_key(key, cx)
                 {
                     return;

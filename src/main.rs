@@ -46,6 +46,7 @@ mod menu;
 mod menu_sync;
 mod mode_panel;
 mod modes;
+mod photo_overlay_ui;
 mod road_paint;
 use modes::AddProgress;
 #[cfg(test)]
@@ -920,6 +921,8 @@ struct MapViewer {
     /// The "Adjust imagery offset" mode, while it is on (see
     /// `imagery_offset_ui`).
     offset_adjust: Option<imagery_offset_ui::OffsetAdjust>,
+    /// The photo placement mode while it is on (see `photo_overlay_ui`).
+    photo_adjust: Option<photo_overlay_ui::PhotoAdjust>,
     /// OSM notes: the Notes layer, the open note, writes (see `notes_ui`).
     notes: notes_ui::NotesState,
     /// A picture shown full size over the window (see `image_viewer`).
@@ -1133,6 +1136,7 @@ impl MapViewer {
             drawn_once: false,
             last_modal_focus: Vec::new(),
             offset_adjust: None,
+            photo_adjust: None,
             notes: Default::default(),
             todo: Default::default(),
             image_viewer: None,
@@ -1614,6 +1618,7 @@ impl MapViewer {
         }
         // Picking a tool ends the imagery offset adjustment, keeping it.
         self.finish_offset_adjust(true, window, cx);
+        self.finish_photo_adjust(true, window, cx);
         self.switch_to_mode(mode);
         self.pointer.hovered = None;
         self.clear_vertex_preview();
@@ -3763,6 +3768,10 @@ impl MapViewer {
         if self.offset_adjust_mouse_move(adjusted_position, left_pressed, cx) {
             return;
         }
+        // Placing a photo: a left-drag pulls a corner or moves the photo.
+        if self.photo_adjust_mouse_move(adjusted_position, event.modifiers, left_pressed, cx) {
+            return;
+        }
 
         if self.midpoint_move(adjusted_position, event.modifiers, left_pressed) {
             return;
@@ -3836,7 +3845,7 @@ impl MapViewer {
         }
         self.viewport.handle_mouse_up();
 
-        if self.offset_adjust_mouse_up() {
+        if self.offset_adjust_mouse_up() || self.photo_adjust_mouse_up() {
             cx.notify();
             return;
         }
@@ -6658,6 +6667,7 @@ impl Render for MapViewer {
         self.show_save_failures();
         self.expire_status();
         self.drop_stale_offset_adjust();
+        self.drop_stale_photo_adjust();
 
         self.keep_dialog_focus(window, cx);
         self.refocus_map_after_modals(window, cx);
@@ -6955,6 +6965,8 @@ impl Render for MapViewer {
                     })
                     .children(self.object_history.view.clone())
                     .children(self.render_imagery_offset_panel(window, cx))
+                    .children(self.render_photo_adjust_handles(cx))
+                    .children(self.render_photo_adjust_panel(cx))
                     .children(self.render_gps_traces_legend(cx))
                     .children(self.render_lane_end_markers())
                     .child({
@@ -7118,6 +7130,9 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_reset_imagery_offset))
             .on_action(cx.listener(Self::on_reset_layer_imagery_offset))
             .on_action(cx.listener(Self::on_set_imagery_offset))
+            .on_action(cx.listener(Self::on_add_photo_overlay))
+            .on_action(cx.listener(Self::on_open_photo_overlay))
+            .on_action(cx.listener(Self::on_adjust_layer_photo))
             .on_action(cx.listener(Self::on_set_mode))
             .on_action(cx.listener(Self::on_run_selection_action))
             .on_action(cx.listener(Self::on_split_way_here))
@@ -7305,6 +7320,7 @@ fn main() {
         cx.on_action(open_custom_imagery_dialog);
         cx.on_action(open_esri_layer_dialog);
         cx.on_action(open_pmtiles_dialog);
+        cx.on_action(menu::add_photo_overlay);
         cx.on_action(open_settings);
         cx.on_action(upload_to_osm);
         cx.on_action(validate);

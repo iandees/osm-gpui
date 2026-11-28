@@ -248,6 +248,11 @@ pub(crate) fn open_pmtiles_dialog(_: &AddPmtilesLayer, cx: &mut App) {
 }
 
 // Global fallback, deferred; see `upload_to_osm`.
+pub(crate) fn add_photo_overlay(_: &crate::photo_overlay_ui::AddPhotoOverlay, cx: &mut App) {
+    cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.start_add_photo_overlay(window, cx)));
+}
+
+// Global fallback, deferred; see `upload_to_osm`.
 pub(crate) fn open_esri_layer_dialog(_: &AddEsriImagery, cx: &mut App) {
     cx.defer(|cx| with_map_viewer_in(cx, |v, window, cx| v.open_esri_layer_dialog(window, cx)));
 }
@@ -712,6 +717,10 @@ fn build_menus(
         }),
         MenuItem::separator(),
         MenuItem::action(tr!("menu.imagery.osm_carto"), AddOsmCarto),
+        MenuItem::action(
+            tr!("menu.imagery.photo_add"),
+            crate::photo_overlay_ui::AddPhotoOverlay,
+        ),
         MenuItem::separator(),
         MenuItem::action(
             tr!("menu.imagery.adjust_offset"),
