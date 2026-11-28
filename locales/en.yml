@@ -362,6 +362,15 @@ panel:
       other: "%{count} features selected: too many to show combined tags (limit %{limit})"
     key_placeholder: "key"
     value_placeholder: "value"
+    # Right-click menu on a tag's key or value. `%{key}` is the key, `%{tag}`
+    # is `key=value`.
+    menu:
+      find_key: "Find all features with %{key}"
+      wiki_key: "OSM wiki: %{key}"
+      taginfo_key: "Taginfo: %{key}"
+      find_tag: "Find all features with %{tag}"
+      wiki_tag: "OSM wiki: %{tag}"
+      taginfo_tag: "Taginfo: %{tag}"
   lanes:
     title: "Lanes"
     # After the A → B (or B → A) badges. `%{place}` is the road(s) the

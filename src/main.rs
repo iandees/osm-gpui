@@ -302,6 +302,24 @@ struct SetActiveLayer {
     index: usize,
 }
 
+/// Action to select every feature matching a Find `query` (the tag table's
+/// right-click menu).
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = tags)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FindTagQuery {
+    query: String,
+}
+
+/// Action to open `url` in the browser (the tag table's wiki and taginfo
+/// links).
+#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
+#[action(namespace = tags)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpenTagUrl {
+    url: String,
+}
+
 /// Action to toggle the visibility of the layer at `index`.
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = layers)]
@@ -1568,6 +1586,25 @@ impl MapViewer {
 
     /// Handle the `SetActiveLayer` context-menu action: makes the OSM layer
     /// at `index` the active (editable) layer, which the drawing modes need.
+    /// Handle `FindTagQuery`: select every feature in the active layer that
+    /// matches the query.
+    fn on_find_tag_query(&mut self, action: &FindTagQuery, _: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.apply_find(&action.query, osm_gpui::search::SearchMode::Replace);
+        cx.notify();
+    }
+
+    /// Handle `OpenTagUrl`: open the link in the browser.
+    fn on_open_tag_url(&mut self, action: &OpenTagUrl, _: &mut Window, cx: &mut Context<Self>) {
+        if let Err(e) = open::that(&action.url) {
+            self.set_status(tr!(
+                "extensions.open_url_failed",
+                url = action.url.clone(),
+                detail = e.to_string()
+            ));
+            cx.notify();
+        }
+    }
+
     fn on_set_active_layer(
         &mut self,
         action: &SetActiveLayer,
@@ -7123,6 +7160,8 @@ impl Render for MapViewer {
             .on_action(cx.listener(Self::on_move_layer))
             .on_action(cx.listener(Self::on_delete_layer))
             .on_action(cx.listener(Self::on_set_active_layer))
+            .on_action(cx.listener(Self::on_find_tag_query))
+            .on_action(cx.listener(Self::on_open_tag_url))
             .on_action(cx.listener(Self::on_toggle_layer_visibility))
             .on_action(cx.listener(Self::on_adjust_imagery_offset))
             .on_action(cx.listener(Self::on_adjust_layer_imagery_offset))

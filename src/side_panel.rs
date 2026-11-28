@@ -18,8 +18,8 @@ use osm_gpui::{tr, tr_count};
 
 use crate::imagery_offset_ui::{AdjustLayerImageryOffset, ResetLayerImageryOffset};
 use crate::{
-    DeleteLayer, MapViewer, MoveLayer, PendingTagEditOpen, SetActiveLayer,
-    ToggleLayerVisibilityAction,
+    DeleteLayer, FindTagQuery, MapViewer, MoveLayer, OpenTagUrl, PendingTagEditOpen,
+    SetActiveLayer, ToggleLayerVisibilityAction,
 };
 
 use crate::side_panel_layout as layout;
@@ -1724,6 +1724,11 @@ impl MapViewer {
                 .with_size(Size::Medium);
 
             for (k, v) in aggregated.into_iter() {
+                // `None` when the selection disagrees on the value.
+                let single_value = match &v {
+                    osm_gpui::selection::TagValue::Single(s) => Some(s.clone()),
+                    osm_gpui::selection::TagValue::Multiple(_) => None,
+                };
                 let value_text = match v {
                     osm_gpui::selection::TagValue::Single(s) => s,
                     osm_gpui::selection::TagValue::Multiple(n) => format!("<{} values>", n),
@@ -1764,6 +1769,10 @@ impl MapViewer {
                             gpui::MouseButton::Left,
                             cx.listener(open_edit(TagEditField::Key)),
                         )
+                        .context_menu({
+                            let (k, v) = (k.clone(), single_value.clone());
+                            move |menu, _, _| tag_context_menu(menu, &k, v.as_deref(), true)
+                        })
                         .into_any_element(),
                 };
 
@@ -1786,6 +1795,10 @@ impl MapViewer {
                             gpui::MouseButton::Left,
                             cx.listener(open_edit(TagEditField::Value)),
                         )
+                        .context_menu({
+                            let (k, v) = (k.clone(), single_value.clone());
+                            move |menu, _, _| tag_context_menu(menu, &k, v.as_deref(), false)
+                        })
                         .into_any_element(),
                 };
 
@@ -1882,6 +1895,73 @@ impl MapViewer {
         )
         .into_any_element()
     }
+}
+
+/// The right-click menu of a tag's key or value cell: Find, wiki and taginfo
+/// entries. `value` is `None` when the selection has several values for
+/// `key`, which leaves only the key entries. The key cell leads with the key
+/// entries and the value cell with the tag entries.
+fn tag_context_menu(
+    menu: gpui_component::menu::PopupMenu,
+    key: &str,
+    value: Option<&str>,
+    from_key: bool,
+) -> gpui_component::menu::PopupMenu {
+    use osm_gpui::tag_links::{find_query, taginfo_url, wiki_url};
+
+    type Item = (SharedString, Box<dyn gpui::Action>);
+    let find = |value| -> Box<dyn gpui::Action> {
+        Box::new(FindTagQuery {
+            query: find_query(key, value),
+        })
+    };
+    let open = |url: String| -> Box<dyn gpui::Action> { Box::new(OpenTagUrl { url }) };
+
+    let key_items: Vec<Item> = vec![
+        (tr!("panel.tags.menu.find_key", key = key), find(None)),
+        (
+            tr!("panel.tags.menu.wiki_key", key = key),
+            open(wiki_url(key, None)),
+        ),
+        (
+            tr!("panel.tags.menu.taginfo_key", key = key),
+            open(taginfo_url(key, None)),
+        ),
+    ];
+    let tag_items: Vec<Item> = match value.filter(|v| !v.is_empty()) {
+        Some(v) => {
+            let tag = format!("{key}={v}");
+            vec![
+                (tr!("panel.tags.menu.find_tag", tag = tag), find(Some(v))),
+                (
+                    tr!("panel.tags.menu.wiki_tag", tag = tag),
+                    open(wiki_url(key, Some(v))),
+                ),
+                (
+                    tr!("panel.tags.menu.taginfo_tag", tag = tag),
+                    open(taginfo_url(key, Some(v))),
+                ),
+            ]
+        }
+        None => Vec::new(),
+    };
+    let (first, second) = if from_key {
+        (key_items, tag_items)
+    } else {
+        (tag_items, key_items)
+    };
+    let mut menu = menu;
+    let separate = !first.is_empty() && !second.is_empty();
+    for (label, action) in first {
+        menu = menu.menu(label, action);
+    }
+    if separate {
+        menu = menu.separator();
+    }
+    for (label, action) in second {
+        menu = menu.menu(label, action);
+    }
+    menu
 }
 
 #[cfg(test)]
