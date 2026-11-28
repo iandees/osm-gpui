@@ -37,6 +37,10 @@ pub(crate) struct PointerState {
     pub(crate) improve_lock: Option<(osm_gpui::layers::LayerId, osm_gpui::ids::WayId, i64)>,
     /// The interactive Rotate in progress, if any (see `TransformSession`).
     pub(crate) transform_session: Option<TransformSession>,
+    /// A chord-started Rotate (hold Cmd/Ctrl+Shift and move the pointer) has
+    /// already run during this hold of the chord, so it must not restart
+    /// (after Escape or a click) until the chord is released.
+    pub(crate) rotate_chord_spent: bool,
     /// Window position of the last right-button press on the map, kept until
     /// the button is released: a release within `CLICK_SLOP` of it is a click
     /// (opens the context menu), anything further was a pan.
@@ -61,6 +65,7 @@ impl Default for PointerState {
             midpoint_drag: None,
             improve_lock: None,
             transform_session: None,
+            rotate_chord_spent: false,
             right_press: None,
             menu_swallow_press: false,
             context_menu: None,

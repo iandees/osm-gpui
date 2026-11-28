@@ -492,6 +492,21 @@ struct TransformSession {
     /// and when it went down. Releasing it after [`TRANSFORM_HOLD`] applies
     /// the transform; a quicker tap hands over to click/Enter/Escape.
     hold: Option<(String, std::time::Instant)>,
+    /// Started by holding the Rotate chord (Cmd/Ctrl+Shift): releasing the
+    /// chord applies it, and Shift is not a 15 degree snap (it is part of
+    /// the chord).
+    chord: bool,
+}
+
+/// Whether `m` is exactly the Rotate chord: Cmd (macOS) or Ctrl (elsewhere)
+/// plus Shift, with no other modifier. This matches JOSM's hold-to-rotate.
+fn is_rotate_chord(m: gpui::Modifiers) -> bool {
+    let primary = if cfg!(target_os = "macos") {
+        m.platform && !m.control
+    } else {
+        m.control && !m.platform
+    };
+    primary && m.shift && !m.alt
 }
 
 impl TransformSession {
@@ -2334,6 +2349,7 @@ impl MapViewer {
             factor: 1.0,
             moved: false,
             hold: None,
+            chord: false,
         });
     }
 
@@ -2345,7 +2361,14 @@ impl MapViewer {
     /// Move the nodes of the transform in progress to follow the pointer.
     fn update_transform(&mut self, pointer: gpui::Point<gpui::Pixels>, snap: bool) {
         match self.pointer.transform_session.as_ref().map(|t| t.kind) {
-            Some(TransformKind::Rotate) => self.update_rotate(pointer, snap),
+            Some(TransformKind::Rotate) => {
+                let chord = self
+                    .pointer
+                    .transform_session
+                    .as_ref()
+                    .is_some_and(|t| t.chord);
+                self.update_rotate(pointer, snap && !chord)
+            }
             Some(TransformKind::Scale) => self.update_scale(pointer, snap),
             None => {}
         }
@@ -3632,6 +3655,19 @@ impl MapViewer {
     /// next mouse move.
     fn handle_modifiers_changed(&mut self, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
         self.pointer.last_modifiers = modifiers;
+        if !is_rotate_chord(modifiers) {
+            self.pointer.rotate_chord_spent = false;
+            // Letting go of the chord applies a chord-started Rotate.
+            if self
+                .pointer
+                .transform_session
+                .as_ref()
+                .is_some_and(|t| t.chord)
+            {
+                self.finish_transform();
+                cx.notify();
+            }
+        }
         self.update_improve_lock();
         if self.preview_depends_on_modifiers() {
             cx.notify();
@@ -3655,6 +3691,21 @@ impl MapViewer {
         self.pointer.last_mouse_pos = Some(adjusted_position);
         self.pointer.last_modifiers = event.modifiers;
         self.update_improve_lock();
+        // Holding Cmd/Ctrl+Shift and moving the pointer starts a Rotate of
+        // the selection. Starting on the move (not on the modifier press)
+        // keeps chords such as Cmd+Shift+C from flashing a rotation.
+        if self.pointer.transform_session.is_none()
+            && !left_pressed
+            && !self.pointer.rotate_chord_spent
+            && !self.selected.is_empty()
+            && is_rotate_chord(event.modifiers)
+        {
+            self.pointer.rotate_chord_spent = true;
+            self.start_transform(TransformKind::Rotate);
+            if let Some(session) = self.pointer.transform_session.as_mut() {
+                session.chord = true;
+            }
+        }
         // Rotating: the selection follows the pointer around its centre.
         if self.pointer.transform_session.is_some() {
             self.update_transform(adjusted_position, event.modifiers.shift);

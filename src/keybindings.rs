@@ -219,7 +219,7 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
     },
     ShortcutDef {
         id: "mode_improve",
-        default_spec: "i",
+        default_spec: "w",
         category: ShortcutCategory::Modes,
     },
     ShortcutDef {
@@ -270,12 +270,6 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef {
         id: "action_align",
         default_spec: "l",
-        category: ShortcutCategory::Actions,
-    },
-    // Not r: that is Reverse Way.
-    ShortcutDef {
-        id: "action_rotate",
-        default_spec: "w",
         category: ShortcutCategory::Actions,
     },
     ShortcutDef {

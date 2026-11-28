@@ -660,7 +660,6 @@ shortcut:
   action_merge: "Knoten vereinigen"
   action_straighten: "Weg begradigen"
   action_align: "Knoten in einer Linie ausrichten"
-  action_rotate: "Auswahl drehen"
   action_scale: "Auswahl skalieren"
 
 # Auswahlaktionen (`selection_actions::ACTIONS`): Kontextmenü, Werkzeugmenü

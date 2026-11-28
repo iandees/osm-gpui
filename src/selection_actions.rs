@@ -578,8 +578,14 @@ pub(crate) const ACTIONS: &[SelectionAction] = &[
     },
     SelectionAction {
         id: "rotate",
-        shortcut_id: Some("action_rotate"),
-        fixed_shortcut: None,
+        shortcut_id: None,
+        // Hold the chord and move the pointer; not a keystroke, so it is
+        // not customizable (see `is_rotate_chord` in main.rs).
+        fixed_shortcut: Some(if cfg!(target_os = "macos") {
+            "⇧⌘"
+        } else {
+            "Ctrl+Shift"
+        }),
         needs_active_layer: true,
         menu: MenuSlot::Tools,
         destructive: false,
