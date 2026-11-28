@@ -331,6 +331,15 @@ panel:
       other: "%{count} Objekte ausgewählt: zu viele, um gemeinsame Tags anzuzeigen (Grenze %{limit})"
     key_placeholder: "Schlüssel"
     value_placeholder: "Wert"
+    # Right-click menu on a tag's key or value. `%{key}` is the key, `%{tag}`
+    # is `key=value`.
+    menu:
+      find_key: "Alle Objekte mit %{key} finden"
+      wiki_key: "OSM-Wiki: %{key}"
+      taginfo_key: "Taginfo: %{key}"
+      find_tag: "Alle Objekte mit %{tag} finden"
+      wiki_tag: "OSM-Wiki: %{tag}"
+      taginfo_tag: "Taginfo: %{tag}"
   lanes:
     title: "Fahrstreifen"
     towards: "Richtung %{place}"

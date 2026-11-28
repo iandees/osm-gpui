@@ -75,6 +75,7 @@ pub mod settings_store;
 pub mod snap;
 pub mod style;
 pub mod svg_normalize;
+pub mod tag_links;
 pub mod tag_suggest;
 pub mod taginfo;
 pub mod tags;
