@@ -20,7 +20,7 @@ osm-gpui can upload to the live OpenStreetMap database. Read the [OSM editing gu
 
 You only need to sign in to upload (and to work with notes). Everything else, including downloading and editing, works without an account.
 
-1. Open **Settings** (`F12`, or the Settings item in the app or Edit menu) and go to **Account**.
+1. Open **Settings** (`⌘,` on macOS, or the Settings item in the app or Edit menu) and go to **Account**.
 2. Pick the **Server**: Primary (`api.openstreetmap.org`), Dev / testing (`master.apis.dev.openstreetmap.org`), or Custom. The dev server is a safe place to practise; it needs its own account.
 3. Click **Sign in with OpenStreetMap**. Your browser opens; approve the request there. The app shows "Logged in as *name*" when it is done.
 
@@ -79,7 +79,7 @@ Select features, then use the **Tools** menu or the right-click menu. Each actio
 - **Reverse Way** (`R`) flips direction (and direction-dependent tags).
 - **Join Ways** (`C`), **Split Way** (`P`), **Merge Nodes** (`M`) and **Straighten Way** (`T`) change how ways connect.
 - **Separate Node** (`G`) and **Unjoin Node from Way** pull shared nodes apart; **Extend Way** (`E`) continues a way.
-- **Rotate Selection** (`H`) and **Scale Selection** (`D`) turn or resize the selected nodes and ways about their centre. Hold the key and move the pointer, then release it to apply; or tap the key, move the pointer, and click or press Enter. Rotate follows the pointer around the centre (Shift snaps to 15°); Scale follows its distance from the centre (Shift snaps to 5%). Esc cancels.
+- **Rotate Selection** (hold `⇧⌘`, or `Ctrl+Shift`, and move the pointer; release to apply) and **Scale Selection** (`D`) turn or resize the selected nodes and ways about their centre. Rotate follows the pointer around the centre. For Scale, hold the key and move the pointer, then release it to apply; or tap the key, move the pointer, and click or press Enter. Scale follows its distance from the centre (Shift snaps to 5%). Esc cancels.
 - **Extract Point** moves POI tags from a building onto a new node.
 - **Copy Tags** and **Paste Tags** (`⇧⌘C`, `⇧⌘V`) copy tags between features.
 - **Add to Relation** and **New Relation** manage relation membership. Selecting a relation from the side panel highlights its members and lets you edit their roles and order.

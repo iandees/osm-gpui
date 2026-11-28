@@ -88,7 +88,7 @@ impl ShortcutCategory {
 pub const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef {
         id: "open_settings",
-        default_spec: "f12",
+        default_spec: "secondary-,",
         category: ShortcutCategory::General,
     },
     ShortcutDef {
@@ -270,12 +270,6 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
     ShortcutDef {
         id: "action_align",
         default_spec: "l",
-        category: ShortcutCategory::Actions,
-    },
-    // Not r (Reverse Way) or w (Improve Way, as in JOSM).
-    ShortcutDef {
-        id: "action_rotate",
-        default_spec: "h",
         category: ShortcutCategory::Actions,
     },
     ShortcutDef {

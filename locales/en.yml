@@ -680,7 +680,6 @@ shortcut:
   action_merge: "Merge Nodes"
   action_straighten: "Straighten Way"
   action_align: "Align Nodes in Line"
-  action_rotate: "Rotate Selection"
   action_scale: "Scale Selection"
 
 # Selection actions (`selection_actions::ACTIONS`): the right-click context
