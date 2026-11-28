@@ -76,12 +76,14 @@ impl OpenSections {
 }
 
 impl Default for OpenSections {
-    /// Everything open except History and Validation, which keep to their
-    /// headers until the user opens them.
+    /// Everything open except History, Validation, Junction and Lanes, which
+    /// keep to their headers until the user opens them.
     fn default() -> Self {
         let mut open = OpenSections([true; SidePanelSection::COUNT]);
         open.set(SidePanelSection::History, false);
         open.set(SidePanelSection::Validation, false);
+        open.set(SidePanelSection::Junction, false);
+        open.set(SidePanelSection::Lanes, false);
         open
     }
 }
@@ -1893,7 +1895,7 @@ mod open_sections_tests {
     use super::{OpenSections, SidePanelSection};
 
     #[test]
-    fn history_and_validation_start_closed_and_the_rest_open() {
+    fn history_validation_junction_and_lanes_start_closed_and_the_rest_open() {
         let open = OpenSections::default();
         for section in [
             SidePanelSection::Layers,
@@ -1901,14 +1903,14 @@ mod open_sections_tests {
             SidePanelSection::Tags,
             SidePanelSection::Relations,
             SidePanelSection::Members,
-            SidePanelSection::Junction,
-            SidePanelSection::Lanes,
             SidePanelSection::Todo,
         ] {
             assert!(open.is_open(section), "{section:?} should start open");
         }
         assert!(!open.is_open(SidePanelSection::History));
         assert!(!open.is_open(SidePanelSection::Validation));
+        assert!(!open.is_open(SidePanelSection::Junction));
+        assert!(!open.is_open(SidePanelSection::Lanes));
     }
 
     #[test]
