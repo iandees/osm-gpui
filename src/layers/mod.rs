@@ -464,6 +464,12 @@ pub trait EditableLayer {
         false
     }
 
+    /// The way whose vertices are currently previewed (see
+    /// `update_vertex_preview`), if any. Default: none.
+    fn vertex_preview_way_id(&self) -> Option<crate::ids::WayId> {
+        None
+    }
+
     /// Names of the named roads within `radius_m` meters of `feature`,
     /// nearest first (for `addr:street` suggestions). Default: none.
     fn nearby_road_names(

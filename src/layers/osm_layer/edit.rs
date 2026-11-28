@@ -244,6 +244,10 @@ impl EditableLayer for OsmLayer {
         changed
     }
 
+    fn vertex_preview_way_id(&self) -> Option<WayId> {
+        self.view.preview_way
+    }
+
     fn set_drag_preview(&mut self, node_ids: &HashSet<NodeId>, delta: Point<Pixels>) {
         self.view.drag_preview = Some((node_ids.clone(), delta));
     }

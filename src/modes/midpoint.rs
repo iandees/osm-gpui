@@ -59,21 +59,36 @@ fn long_enough(a: (f32, f32), b: (f32, f32)) -> bool {
 }
 
 impl MapViewer {
-    /// The handles of every selected way, in screen order of the data.
+    /// The handles of every selected way and of the way under the pointer
+    /// (whose vertices are previewed), so a segment can be split without
+    /// selecting the way first.
     pub(crate) fn midpoint_handles(&self) -> Vec<Handle> {
-        let mut out = Vec::new();
-        for feat in &self.selected {
-            if feat.kind != FeatureKind::Way {
-                continue;
+        let mut ways: Vec<(LayerId, WayId)> = self
+            .selected
+            .iter()
+            .filter(|f| f.kind == FeatureKind::Way)
+            .map(|f| (f.layer_id, WayId(f.id)))
+            .collect();
+        for layer in self.layer_manager.layers() {
+            let previewed = layer
+                .as_editable()
+                .and_then(|e| e.vertex_preview_way_id())
+                .map(|w| (layer.id(), w));
+            if let Some(entry) = previewed {
+                if !ways.contains(&entry) {
+                    ways.push(entry);
+                }
             }
+        }
+        let mut out = Vec::new();
+        for (layer_id, way) in ways {
             let Some(editable) = self
                 .layer_manager
-                .find_layer(feat.layer_id)
+                .find_layer(layer_id)
                 .and_then(|l| l.as_editable())
             else {
                 continue;
             };
-            let way = WayId(feat.id);
             let Some(nodes) = editable.way_node_ids(way) else {
                 continue;
             };
@@ -99,7 +114,7 @@ impl MapViewer {
                 }
                 let mid = point(px((sa.0 + sb.0) / 2.0), px((sa.1 + sb.1) / 2.0));
                 out.push(Handle {
-                    layer_id: feat.layer_id,
+                    layer_id,
                     way,
                     segment,
                     at: self.viewport.screen_to_geo(mid),
