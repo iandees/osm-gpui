@@ -390,6 +390,21 @@ impl Field {
             })
             .unwrap_or(&option.label)
     }
+
+    /// The description of one of this field's options, translated where
+    /// possible, else iD's English one.
+    pub fn display_option_description<'a>(
+        &'a self,
+        option: &'a FieldOption,
+        translations: Option<&'a PresetTranslations>,
+    ) -> Option<&'a str> {
+        translations
+            .and_then(|t| {
+                t.option_description(&self.id, &option.value)
+                    .or_else(|| t.option_description(&self.strings_id, &option.value))
+            })
+            .or(option.description.as_deref())
+    }
 }
 
 /// A parsed, in-memory collection of vendored `Field`s, keyed by id, with all

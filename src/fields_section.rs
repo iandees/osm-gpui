@@ -32,6 +32,7 @@ fn field_label(text: impl Into<gpui::SharedString>, cx: &gpui::App) -> gpui::Div
 /// short description underneath (when iD has one).
 fn combo_option_row(
     label: String,
+    description: Option<String>,
     opt: &osm_gpui::fields::FieldOption,
     reserve_icon: bool,
     cx: &gpui::App,
@@ -57,12 +58,12 @@ fn combo_option_row(
         .flex_1()
         .min_w(gpui::px(0.))
         .child(Label::new(label));
-    if let Some(desc) = &opt.description {
+    if let Some(desc) = description {
         text = text.child(
             gpui::div()
                 .text_size(muted_text_size())
                 .text_color(cx.theme().muted_foreground)
-                .child(desc.clone()),
+                .child(desc),
         );
     }
     gpui::div()
@@ -576,6 +577,7 @@ impl MapViewer {
                                     .hover(|el| el.bg(cx.theme().accent))
                                     .child(combo_option_row(
                                         cat.option_label(field, opt).to_string(),
+                                        cat.option_description(field, opt).map(str::to_string),
                                         opt,
                                         field.options.iter().any(|o| o.icon.is_some()),
                                         cx,

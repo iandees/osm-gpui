@@ -146,6 +146,18 @@ impl<'a> Catalogue<'a> {
         field.display_option_label(option, self.translations)
     }
 
+    /// One option's description (translated where possible), if it has one.
+    pub fn option_description<'f>(
+        &self,
+        field: &'f Field,
+        option: &'f FieldOption,
+    ) -> Option<&'f str>
+    where
+        'a: 'f,
+    {
+        field.display_option_description(option, self.translations)
+    }
+
     /// The translated label of option `value` of field `field_id`, if any.
     pub fn translated_option_label(&self, field_id: &str, value: &str) -> Option<&'a str> {
         self.translations?.option_label(field_id, value)

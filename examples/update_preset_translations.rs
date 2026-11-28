@@ -10,6 +10,7 @@
 //!   { "presets": { "<id>": { "name": "...", "terms": ["..."] } },
 //!     "fields":  { "<id>": { "label": "...", "placeholder": "...",
 //!                            "options": { "<value>": "..." },
+//!                            "option_descriptions": { "<value>": "..." },
 //!                            "types": { "<key>": "..." } } } }
 //! A preset's `terms` are upstream's `terms` plus its `aliases`, both of which
 //! are alternative search words.
@@ -169,6 +170,7 @@ fn trim_fields(
         }
         // Options are either a plain string or `{ "title": ..., "description": ... }`.
         let mut options = Map::new();
+        let mut descriptions = Map::new();
         if let Some(opts) = entry.get("options").and_then(|v| v.as_object()) {
             for (value, opt) in opts {
                 if !values.contains(value) {
@@ -180,10 +182,16 @@ fn trim_fields(
                 if let Some(title) = title {
                     options.insert(value.clone(), Value::String(title.to_string()));
                 }
+                if let Some(d) = opt.get("description").and_then(|t| t.as_str()) {
+                    descriptions.insert(value.clone(), Value::String(d.to_string()));
+                }
             }
         }
         if !options.is_empty() {
             trimmed.insert("options".into(), Value::Object(options));
+        }
+        if !descriptions.is_empty() {
+            trimmed.insert("option_descriptions".into(), Value::Object(descriptions));
         }
         // Labels of the sub-keys of a multi-key field (`access`: "Foot", ...).
         let mut types = Map::new();
