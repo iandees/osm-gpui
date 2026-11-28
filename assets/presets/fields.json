@@ -724,7 +724,8 @@
     "options": [
       {
         "value": "bump",
-        "label": "Speed Bump"
+        "label": "Speed Bump",
+        "icon": "roentgen-bump"
       },
       {
         "value": "chicane",
@@ -740,19 +741,23 @@
       },
       {
         "value": "cushion",
-        "label": "Speed Cushion"
+        "label": "Speed Cushion",
+        "icon": "roentgen-traffic_cushion"
       },
       {
         "value": "dip",
-        "label": "Dip"
+        "label": "Dip",
+        "icon": "roentgen-dip"
       },
       {
         "value": "double_dip",
-        "label": "Double Dip"
+        "label": "Double Dip",
+        "icon": "roentgen-double_dip"
       },
       {
         "value": "hump",
-        "label": "Speed Hump"
+        "label": "Speed Hump",
+        "icon": "roentgen-hump"
       },
       {
         "value": "island",
@@ -760,15 +765,18 @@
       },
       {
         "value": "mini_bumps",
-        "label": "Mini Speed Bumps"
+        "label": "Mini Speed Bumps",
+        "icon": "roentgen-mini_bumps"
       },
       {
         "value": "rumble_strip",
-        "label": "Rumble Strip"
+        "label": "Rumble Strip",
+        "icon": "roentgen-rumble_strip"
       },
       {
         "value": "table",
-        "label": "Speed Table"
+        "label": "Speed Table",
+        "icon": "roentgen-traffic_table"
       }
     ]
   },
@@ -981,19 +989,23 @@
     "options": [
       {
         "value": "motorcar",
-        "label": "Motorcar"
+        "label": "Motorcar",
+        "description": "Regular car (implied default)"
       },
       {
         "value": "motorcycle",
-        "label": "Motorcycle"
+        "label": "Motorcycle",
+        "description": "With passengers 'riding pillion' (e.g. mototáxi, etc.)"
       },
       {
         "value": "auto_rickshaw",
-        "label": "Auto Rickshaw"
+        "label": "Auto Rickshaw",
+        "description": "Motorized rickshaws (e.g. bajaj, tricycle, tuk-tuk, etc.)"
       },
       {
         "value": "cycle_rickshaw",
-        "label": "Cycle Rickshaw"
+        "label": "Cycle Rickshaw",
+        "description": "Pedal-powered rickshaws (e.g. padyak, velotaxi, etc.)"
       }
     ]
   },
@@ -2169,15 +2181,18 @@
     "options": [
       {
         "value": "yes",
-        "label": "Yes"
+        "label": "Yes",
+        "description": "There is a sidewalk"
       },
       {
         "value": "no",
-        "label": "No"
+        "label": "No",
+        "description": "No sidewalk"
       },
       {
         "value": "separate",
-        "label": "Mapped Separately"
+        "label": "Mapped Separately",
+        "description": "The sidewalk is mapped using separate ways"
       }
     ],
     "types": {
@@ -3239,7 +3254,8 @@
     "options": [
       {
         "value": "swing",
-        "label": "Swing"
+        "label": "Swing",
+        "icon": "temaki-swing"
       },
       {
         "value": "structure",
@@ -3247,7 +3263,8 @@
       },
       {
         "value": "slide",
-        "label": "Slide"
+        "label": "Slide",
+        "icon": "temaki-slide2"
       },
       {
         "value": "sandpit",
@@ -3255,23 +3272,28 @@
       },
       {
         "value": "springy",
-        "label": "Spring Rider"
+        "label": "Spring Rider",
+        "icon": "temaki-spring_rider"
       },
       {
         "value": "climbingframe",
-        "label": "Climbing Frame"
+        "label": "Climbing Frame",
+        "icon": "temaki-climbing_frame"
       },
       {
         "value": "seesaw",
-        "label": "Seesaw"
+        "label": "Seesaw",
+        "icon": "temaki-seesaw"
       },
       {
         "value": "playhouse",
-        "label": "Playhouse"
+        "label": "Playhouse",
+        "icon": "temaki-playhouse"
       },
       {
         "value": "basketswing",
-        "label": "Basket Swing"
+        "label": "Basket Swing",
+        "icon": "temaki-basketswing"
       },
       {
         "value": "roundabout",
@@ -3279,11 +3301,13 @@
       },
       {
         "value": "trampoline",
-        "label": "Trampoline"
+        "label": "Trampoline",
+        "icon": "temaki-trampoline"
       },
       {
         "value": "zipwire",
-        "label": "Zipline / Zipwire"
+        "label": "Zipline / Zipwire",
+        "icon": "temaki-zip_wire"
       },
       {
         "value": "horizontal_bar",
@@ -3291,7 +3315,8 @@
       },
       {
         "value": "balancebeam",
-        "label": "Balance Beam"
+        "label": "Balance Beam",
+        "icon": "temaki-balance_beam"
       },
       {
         "value": "hopscotch",
@@ -3299,11 +3324,13 @@
       },
       {
         "value": "splash_pad",
-        "label": "Splash Pad"
+        "label": "Splash Pad",
+        "icon": "temaki-splash_pad"
       },
       {
         "value": "climbingwall",
-        "label": "Climbing Wall"
+        "label": "Climbing Wall",
+        "icon": "temaki-climbing_wall"
       },
       {
         "value": "water",
@@ -3315,15 +3342,18 @@
       },
       {
         "value": "map",
-        "label": "Map"
+        "label": "Map",
+        "icon": "fas-earth-africa"
       },
       {
         "value": "activitypanel",
-        "label": "Activity Panel"
+        "label": "Activity Panel",
+        "icon": "temaki-activity_panel"
       },
       {
         "value": "cushion",
-        "label": "Bouncy Cushion"
+        "label": "Bouncy Cushion",
+        "icon": "temaki-cushion"
       },
       {
         "value": "exercise",
@@ -3339,7 +3369,8 @@
       },
       {
         "value": "tunnel_tube",
-        "label": "Tunnel Tube"
+        "label": "Tunnel Tube",
+        "icon": "maki-tunnel"
       },
       {
         "value": "basketrotator",
@@ -3439,7 +3470,8 @@
       },
       {
         "value": "pump",
-        "label": "Pump"
+        "label": "Pump",
+        "icon": "temaki-well_pump_manual"
       },
       {
         "value": "ride_on",
@@ -3519,7 +3551,8 @@
       },
       {
         "value": "maze",
-        "label": "Maze"
+        "label": "Maze",
+        "icon": "roentgen-maze"
       },
       {
         "value": "parallel_bars",
@@ -3853,55 +3886,68 @@
     "options": [
       {
         "value": "surface",
-        "label": "Surface"
+        "label": "Surface",
+        "description": "One level of parking on the ground."
       },
       {
         "value": "street_side",
-        "label": "Street-Side"
+        "label": "Street-Side",
+        "description": "Parking directly adjacent to the street (but not on it)."
       },
       {
         "value": "lane",
-        "label": "Roadside Lane"
+        "label": "Roadside Lane",
+        "description": "Parking on the street (which could be easily converted to a travel lane)."
       },
       {
         "value": "underground",
-        "label": "Underground"
+        "label": "Underground",
+        "description": "Underground parking."
       },
       {
         "value": "multi-storey",
-        "label": "Multilevel"
+        "label": "Multilevel",
+        "description": "Two or more levels of parking decks in a building structure."
       },
       {
         "value": "rooftop",
-        "label": "Rooftop"
+        "label": "Rooftop",
+        "description": "One level of a parking deck on top of a building."
       },
       {
         "value": "carports",
-        "label": "Carports"
+        "label": "Carports",
+        "description": "Structure used to offer limited protection to vehicles, typically without walls."
       },
       {
         "value": "garage_boxes",
-        "label": "Garage Boxes"
+        "label": "Garage Boxes",
+        "description": "Private garage with multiple individual boxes for one car each."
       },
       {
         "value": "sheds",
-        "label": "Sheds"
+        "label": "Sheds",
+        "description": "Sheds for vehicle storage."
       },
       {
         "value": "layby",
-        "label": "Turnout / Lay-By"
+        "label": "Turnout / Lay-By",
+        "description": "Parking at a rest area, alongside a road."
       },
       {
         "value": "on_kerb",
-        "label": "On Kerb"
+        "label": "On Kerb",
+        "description": "Parking on the sidewalk."
       },
       {
         "value": "half_on_kerb",
-        "label": "Half On Kerb"
+        "label": "Half On Kerb",
+        "description": "Parking partially on the sidewalk."
       },
       {
         "value": "shoulder",
-        "label": "Shoulder"
+        "label": "Shoulder",
+        "description": "Parking on the shoulder."
       }
     ]
   },
@@ -4853,27 +4899,33 @@
     "options": [
       {
         "value": "aerial",
-        "label": "Aerial"
+        "label": "Aerial",
+        "description": "Designed to be visible from the air."
       },
       {
         "value": "post",
-        "label": "Post"
+        "label": "Post",
+        "description": "Raised marker mounted on a small pole or mast."
       },
       {
         "value": "stone",
-        "label": "Stone"
+        "label": "Stone",
+        "description": "Markings directly etched or painted on a stone."
       },
       {
         "value": "plate",
-        "label": "Plate"
+        "label": "Plate",
+        "description": "Flat marker mounted directly on walls or similar."
       },
       {
         "value": "pedestal",
-        "label": "Pedestal"
+        "label": "Pedestal",
+        "description": "Raised marker mounted on a small base."
       },
       {
         "value": "ground",
-        "label": "Ground"
+        "label": "Ground",
+        "description": "Flat marker laid in the ground."
       }
     ]
   },
@@ -5094,11 +5146,13 @@
     "options": [
       {
         "value": "broadleaved",
-        "label": "Broadleaved"
+        "label": "Broadleaved",
+        "icon": "maki-park"
       },
       {
         "value": "needleleaved",
-        "label": "Needleleaved"
+        "label": "Needleleaved",
+        "icon": "roentgen-needleleaved_tree"
       },
       {
         "value": "mixed",
@@ -5254,27 +5308,37 @@
     "options": [
       {
         "value": "flush",
-        "label": "Flush"
+        "label": "Flush",
+        "description": "A dropped curb which is level with the surrounding area.",
+        "icon": "temaki-kerb-flush"
       },
       {
         "value": "lowered",
-        "label": "Lowered"
+        "label": "Lowered",
+        "description": "A dropped curb which can be used by wheelchair users, not higher than a few centimeters.",
+        "icon": "temaki-kerb-lowered"
       },
       {
         "value": "no",
-        "label": "No"
+        "label": "No",
+        "description": "There is no curb present at this location."
       },
       {
         "value": "raised",
-        "label": "Raised"
+        "label": "Raised",
+        "description": "A raised curb which can't easily be used by wheelchair users, higher than a few centimeters.",
+        "icon": "temaki-kerb-raised"
       },
       {
         "value": "rolled",
-        "label": "Rolled"
+        "label": "Rolled",
+        "description": "A raised curb with a rounded edge which makes it easier to use for cars or bicycles, but not for wheelchairs.",
+        "icon": "temaki-kerb-rolled"
       },
       {
         "value": "yes",
-        "label": "Yes"
+        "label": "Yes",
+        "description": "Some sort of curb is present at this location, unknown whether it is raised, lowered, flush etc."
       }
     ]
   },
@@ -5452,31 +5516,38 @@
     "options": [
       {
         "value": "terraced",
-        "label": "Single Townhouse"
+        "label": "Single Townhouse",
+        "description": "Individual house in a row of townhouses"
       },
       {
         "value": "detached",
-        "label": "Detached House"
+        "label": "Detached House",
+        "description": "A house that is not connected to any other houses"
       },
       {
         "value": "semi-detached",
-        "label": "Semi-Detached House"
+        "label": "Semi-Detached House",
+        "description": "A house that is attached to another house on one side"
       },
       {
         "value": "bungalow",
-        "label": "Bungalow"
+        "label": "Bungalow",
+        "description": "A small house with a single storey"
       },
       {
         "value": "terrace",
-        "label": "Row of Townhouses"
+        "label": "Row of Townhouses",
+        "description": "A row of houses that are attached to each other in a line (mapping each house as a separate area is preferred)"
       },
       {
         "value": "maisonette",
-        "label": "Maisonette"
+        "label": "Maisonette",
+        "description": "A residential dwelling, split over two floors with private external entrances rather than a communal entrance"
       },
       {
         "value": "link-detached",
-        "label": "Link-Detached House"
+        "label": "Link-Detached House",
+        "description": "A house that is connected to another house by a garage or other non-living area"
       }
     ]
   },
@@ -6189,19 +6260,23 @@
     "options": [
       {
         "value": "button",
-        "label": "Button activated"
+        "label": "Button activated",
+        "description": "Lights activated by pressing a button"
       },
       {
         "value": "always",
-        "label": "Always flashing"
+        "label": "Always flashing",
+        "description": "Lights are always flashing"
       },
       {
         "value": "sensor",
-        "label": "Sensor activated"
+        "label": "Sensor activated",
+        "description": "Lights activated by a sensor"
       },
       {
         "value": "button;sensor",
-        "label": "Button and sensor activated"
+        "label": "Button and sensor activated",
+        "description": "Lights activated by a sensor or by pressing a button"
       },
       {
         "value": "no",
@@ -7055,40 +7130,48 @@
     "options": [
       {
         "value": "no",
-        "label": "None"
+        "label": "None",
+        "description": "No bike lane"
       },
       {
         "value": "lane",
-        "label": "Standard Bike Lane"
+        "label": "Standard Bike Lane",
+        "description": "A bike lane separated from auto traffic by a painted line"
       },
       {
         "value": "shared_lane",
-        "label": "Shared Bike Lane"
+        "label": "Shared Bike Lane",
+        "description": "A bike lane with no separation from auto traffic"
       },
       {
         "value": "track",
-        "label": "Bike Track"
+        "label": "Bike Track",
+        "description": "A bike lane separated from traffic by a physical barrier"
       },
       {
         "value": "share_busway",
-        "label": "Bike Lane Shared With Bus"
+        "label": "Bike Lane Shared With Bus",
+        "description": "A bike lane shared with a bus lane"
       },
       {
         "value": "separate",
-        "label": "Cycleway Mapped Separately"
+        "label": "Cycleway Mapped Separately",
+        "description": "Indicates that cycleway was mapped as a separate geometry"
       },
       {
         "value": "opposite_lane",
-        "label": "(Deprecated) Opposite Bike Lane"
+        "label": "(Deprecated) Opposite Bike Lane",
+        "description": "Please update with oneway, oneway:bicycle, and cycleway:left/right=lane etc."
       },
       {
         "value": "opposite",
-        "label": "(Deprecated) Contraflow Bike Lane"
+        "label": "(Deprecated) Contraflow Bike Lane",
+        "description": "Please update with oneway=yes, oneway:bicycle=no, and cycleway:both=no etc."
       }
     ],
     "types": {
-      "cycleway:right": "Right Side",
-      "cycleway:left": "Left Side"
+      "cycleway:left": "Left Side",
+      "cycleway:right": "Right Side"
     }
   },
   {
@@ -8419,19 +8502,23 @@
     "options": [
       {
         "value": "basic",
-        "label": "Basic (only tent/vehicle spots)"
+        "label": "Basic (only tent/vehicle spots)",
+        "description": "Nothing but a place to pitch a tent or park a vehicle"
       },
       {
         "value": "standard",
-        "label": "Standard (offers toilets and water)"
+        "label": "Standard (offers toilets and water)",
+        "description": "Toilets and water are provided or available nearby"
       },
       {
         "value": "serviced",
-        "label": "Serviced (offers showers and electricity)"
+        "label": "Serviced (offers showers and electricity)",
+        "description": "Toilets, water, showers and electricity are provided"
       },
       {
         "value": "deluxe",
-        "label": "Deluxe (offers laundry or swimming pool, etc.)"
+        "label": "Deluxe (offers laundry or swimming pool, etc.)",
+        "description": "Fully serviced and has additional amenities like a laundry, swimming pool or similar recreation facilities"
       }
     ]
   },
@@ -9791,50 +9878,60 @@
     "options": [
       {
         "value": "yes",
-        "label": "Allowed"
+        "label": "Allowed",
+        "description": "Access allowed by law; a right of way"
       },
       {
         "value": "no",
-        "label": "Prohibited"
+        "label": "Prohibited",
+        "description": "Access not allowed to the general public"
       },
       {
         "value": "permissive",
-        "label": "Permissive"
+        "label": "Permissive",
+        "description": "Access allowed until such time as the owner revokes the permission"
       },
       {
         "value": "private",
-        "label": "Private"
+        "label": "Private",
+        "description": "Access allowed only with permission of the owner on an individual basis"
       },
       {
         "value": "designated",
-        "label": "Designated"
+        "label": "Designated",
+        "description": "Access allowed according to signs or specific local laws"
       },
       {
         "value": "destination",
-        "label": "Destination"
+        "label": "Destination",
+        "description": "Access allowed only to reach a destination"
       },
       {
         "value": "customers",
-        "label": "Customers"
+        "label": "Customers",
+        "description": "Restricted to customers at the destination"
       },
       {
         "value": "dismount",
-        "label": "Dismount"
+        "label": "Dismount",
+        "description": "Access allowed but rider must dismount"
       },
       {
         "value": "permit",
-        "label": "Permit"
+        "label": "Permit",
+        "description": "Access allowed only with a valid permit or license"
       },
       {
         "value": "unknown",
-        "label": "Unknown"
+        "label": "Unknown",
+        "description": "Access conditions are unknown or unclear"
       }
     ],
     "types": {
       "access": "All",
-      "motor_vehicle": "Motor Vehicles",
-      "bicycle": "Bicycles",
       "horse": "Horses",
+      "bicycle": "Bicycles",
+      "motor_vehicle": "Motor Vehicles",
       "foot": "Foot"
     }
   },
@@ -9934,15 +10031,18 @@
     "options": [
       {
         "value": "stratovolcano",
-        "label": "Stratovolcano"
+        "label": "Stratovolcano",
+        "icon": "roentgen-stratovolcano___smoke_2"
       },
       {
         "value": "shield",
-        "label": "Shield"
+        "label": "Shield",
+        "icon": "roentgen-shield_volcano___smoke_2"
       },
       {
         "value": "scoria",
-        "label": "Scoria"
+        "label": "Scoria",
+        "icon": "roentgen-volcanic_cone___smoke_2"
       }
     ]
   },
@@ -9954,15 +10054,18 @@
     "options": [
       {
         "value": "active",
-        "label": "Active"
+        "label": "Active",
+        "icon": "roentgen-stratovolcano___lava"
       },
       {
         "value": "dormant",
-        "label": "Dormant"
+        "label": "Dormant",
+        "icon": "roentgen-stratovolcano___smoke"
       },
       {
         "value": "extinct",
-        "label": "Extinct"
+        "label": "Extinct",
+        "icon": "roentgen-stratovolcano"
       }
     ]
   },
@@ -9997,11 +10100,13 @@
       },
       {
         "value": "locate",
-        "label": "Call Button Locator"
+        "label": "Call Button Locator",
+        "description": "There is a signal only for finding the call button"
       },
       {
         "value": "walk",
-        "label": "Walk Indication"
+        "label": "Walk Indication",
+        "description": "There is only a signal when walking is allowed"
       }
     ]
   },
@@ -10191,11 +10296,13 @@
     "options": [
       {
         "value": "optical",
-        "label": "Optical Telescope"
+        "label": "Optical Telescope",
+        "icon": "temaki-telescope"
       },
       {
         "value": "radio",
-        "label": "Radio Telescope"
+        "label": "Radio Telescope",
+        "icon": "roentgen-telescope_radio"
       }
     ]
   },
@@ -10931,31 +11038,38 @@
     "options": [
       {
         "value": "lift_hill",
-        "label": "Lift Hill"
+        "label": "Lift Hill",
+        "description": "An inclined track meant to give the trains potential energy"
       },
       {
         "value": "launch_straight",
-        "label": "Launch Track"
+        "label": "Launch Track",
+        "description": "A section of track meant to accelerate the trains through external input"
       },
       {
         "value": "brake_run",
-        "label": "Brake Run"
+        "label": "Brake Run",
+        "description": "A section of track meant to slow or stop trains"
       },
       {
         "value": "station",
-        "label": "Station"
+        "label": "Station",
+        "description": "A section of track where a train stops to board and unboard passengers"
       },
       {
         "value": "moving",
-        "label": "Moving"
+        "label": "Moving",
+        "description": "Any type of moving track, like switch tracks"
       },
       {
         "value": "waiting",
-        "label": "Waiting"
+        "label": "Waiting",
+        "description": "Tracks used to hold trains if the next block section is occupied"
       },
       {
         "value": "maintenance",
-        "label": "Maintenance"
+        "label": "Maintenance",
+        "description": "Tracks meant to hold spare trains or conduct maintenance"
       }
     ]
   },
@@ -11669,8 +11783,8 @@
       }
     ],
     "types": {
-      "parking:left": "Left side",
-      "parking:right": "Right side"
+      "parking:right": "Right side",
+      "parking:left": "Left side"
     }
   },
   {
@@ -13143,11 +13257,13 @@
     "options": [
       {
         "value": "zebra",
-        "label": "Longitudinal Bars"
+        "label": "Longitudinal Bars",
+        "icon": "iD-crossing_markings-zebra"
       },
       {
         "value": "lines",
-        "label": "Transverse Lines"
+        "label": "Transverse Lines",
+        "icon": "iD-crossing_markings-lines"
       },
       {
         "value": "no",
@@ -13155,15 +13271,18 @@
       },
       {
         "value": "ladder",
-        "label": "Ladder With Longitudinal Bars"
+        "label": "Ladder With Longitudinal Bars",
+        "icon": "iD-crossing_markings-ladder"
       },
       {
         "value": "dots",
-        "label": "Dotted Transverse Lines"
+        "label": "Dotted Transverse Lines",
+        "icon": "iD-crossing_markings-dots"
       },
       {
         "value": "dashes",
-        "label": "Dashed Transverse Lines"
+        "label": "Dashed Transverse Lines",
+        "icon": "iD-crossing_markings-dashes"
       },
       {
         "value": "yes",
@@ -13171,11 +13290,13 @@
       },
       {
         "value": "surface",
-        "label": "Surface Treatment Only"
+        "label": "Surface Treatment Only",
+        "icon": "iD-crossing_markings-surface"
       },
       {
         "value": "ladder:skewed",
-        "label": "Ladder With Diagonal Bars"
+        "label": "Ladder With Diagonal Bars",
+        "icon": "iD-crossing_markings-ladder_skewed"
       },
       {
         "value": "pictograms",
@@ -13183,23 +13304,28 @@
       },
       {
         "value": "lines:paired",
-        "label": "Double Transverse Lines"
+        "label": "Double Transverse Lines",
+        "icon": "iD-crossing_markings-lines_paired"
       },
       {
         "value": "zebra:double",
-        "label": "Triple-Four"
+        "label": "Triple-Four",
+        "icon": "iD-crossing_markings-zebra_double"
       },
       {
         "value": "zebra:paired",
-        "label": "Paired Longitudinal Bars"
+        "label": "Paired Longitudinal Bars",
+        "icon": "iD-crossing_markings-zebra_paired"
       },
       {
         "value": "zebra:bicolour",
-        "label": "Longitudinal Bars With Alternating Colors"
+        "label": "Longitudinal Bars With Alternating Colors",
+        "icon": "iD-crossing_markings-zebra_bicolour"
       },
       {
         "value": "ladder:paired",
-        "label": "Ladder With Paired Longitudinal Bars"
+        "label": "Ladder With Paired Longitudinal Bars",
+        "icon": "iD-crossing_markings-ladder_paired"
       }
     ]
   },
@@ -13362,7 +13488,8 @@
     "options": [
       {
         "value": "portal_crane",
-        "label": "Portal Crane"
+        "label": "Portal Crane",
+        "icon": "roentgen-crane_portal"
       },
       {
         "value": "floor-mounted_crane",
@@ -13370,15 +13497,18 @@
       },
       {
         "value": "travel_lift",
-        "label": "Travel Lift"
+        "label": "Travel Lift",
+        "icon": "roentgen-crane_travel_lift"
       },
       {
         "value": "gantry_crane",
-        "label": "Gantry Crane"
+        "label": "Gantry Crane",
+        "icon": "roentgen-crane_gantry"
       },
       {
         "value": "tower_crane",
-        "label": "Tower Crane"
+        "label": "Tower Crane",
+        "icon": "roentgen-crane"
       }
     ]
   },

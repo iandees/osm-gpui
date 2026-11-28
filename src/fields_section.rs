@@ -28,6 +28,52 @@ fn field_label(text: impl Into<gpui::SharedString>, cx: &gpui::App) -> gpui::Div
         .child(text.into())
 }
 
+/// One dropdown row: the value's icon (when iD has one), its label, and its
+/// short description underneath (when iD has one).
+fn combo_option_row(
+    label: String,
+    opt: &osm_gpui::fields::FieldOption,
+    reserve_icon: bool,
+    cx: &gpui::App,
+) -> gpui::Div {
+    let icon = opt
+        .icon
+        .as_deref()
+        .and_then(osm_gpui::presets::icon_path)
+        .map(|path| {
+            gpui::div()
+                .flex_shrink_0()
+                .child(osm_gpui::presets::icon_element(
+                    path,
+                    20.0,
+                    cx.theme().foreground,
+                    cx.theme().is_dark(),
+                ))
+        })
+        .or_else(|| reserve_icon.then(|| gpui::div().flex_shrink_0().size(gpui::px(20.0))));
+    let mut text = gpui::div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w(gpui::px(0.))
+        .child(Label::new(label));
+    if let Some(desc) = &opt.description {
+        text = text.child(
+            gpui::div()
+                .text_size(muted_text_size())
+                .text_color(cx.theme().muted_foreground)
+                .child(desc.clone()),
+        );
+    }
+    gpui::div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .children(icon)
+        .child(text)
+}
+
 /// Whether `key` holds an `opening_hours`-syntax value the hours editor can
 /// open (`opening_hours`, `opening_hours:drive_through`, …).
 fn is_opening_hours_key(key: &str) -> bool {
@@ -528,7 +574,12 @@ impl MapViewer {
                                     .py_1()
                                     .cursor_pointer()
                                     .hover(|el| el.bg(cx.theme().accent))
-                                    .child(Label::new(cat.option_label(field, opt).to_string()))
+                                    .child(combo_option_row(
+                                        cat.option_label(field, opt).to_string(),
+                                        opt,
+                                        field.options.iter().any(|o| o.icon.is_some()),
+                                        cx,
+                                    ))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, _ev, window, cx| {

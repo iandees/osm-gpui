@@ -50,6 +50,14 @@ fn schema_base(version: &str) -> String {
 /// like `fas-apple-alt`), then Font Awesome's own canonical file.
 fn icon_urls(icon_name: &str) -> Vec<String> {
     let mut urls: Vec<String> = icon_url(icon_name).into_iter().collect();
+    // iD's field-option pictograms (`crossing_markings-zebra`, ...) sit
+    // beside the preset ones, in a folder per field.
+    if let Some(n) = icon_name.strip_prefix("iD-crossing_markings-") {
+        urls.push(format!(
+            "https://raw.githubusercontent.com/openstreetmap/iD/{}/svg/iD-sprite/fields/crossing_markings/crossing_markings-{}.svg",
+            ID_VERSION, n
+        ));
+    }
     for (prefix, dir) in [("fas-", "solid"), ("far-", "regular"), ("fab-", "brands")] {
         if let Some(n) = icon_name.strip_prefix(prefix) {
             urls.push(format!(
@@ -139,6 +147,13 @@ fn main() {
     let fields_root: Value = serde_json::from_str(&fields_body).expect("parse fields.json");
     let field_translations_map = field_translations(&translations_body);
     let trimmed_fields = trim_fields(&fields_root, &field_translations_map);
+    // Icons of field options (the dropdown shows them next to each value).
+    let option_icons: Vec<String> = trimmed_fields
+        .iter()
+        .filter_map(|f| f.get("options")?.as_array())
+        .flatten()
+        .filter_map(|o| o.get("icon")?.as_str().map(str::to_string))
+        .collect();
 
     // The field-id lists are kept exactly as upstream wrote them: entries
     // like `{highway/primary}` (insert that preset's list here) and a missing
@@ -190,6 +205,7 @@ fn main() {
     // references them.
     let icon_names: BTreeSet<String> = icon_names
         .into_iter()
+        .chain(option_icons)
         .chain(
             osm_gpui::presets::FALLBACK_ICON_NAMES
                 .iter()
@@ -473,6 +489,7 @@ struct FieldTranslation {
     label: Option<String>,
     placeholder: Option<String>,
     options: HashMap<String, String>, // option value -> translated label
+    descriptions: HashMap<String, String>, // option value -> short description
     types: HashMap<String, String>,   // sub-key -> label (multi-key fields)
 }
 
@@ -481,6 +498,13 @@ struct FieldTranslation {
 fn entry_title(v: &Value) -> Option<String> {
     v.as_str()
         .or_else(|| v.get("title").and_then(|t| t.as_str()))
+        .map(str::to_string)
+}
+
+/// An option entry's English `description`, when it has one.
+fn entry_description(v: &Value) -> Option<String> {
+    v.get("description")
+        .and_then(|t| t.as_str())
         .map(str::to_string)
 }
 
@@ -518,11 +542,21 @@ fn field_translations(body: &str) -> HashMap<String, FieldTranslation> {
                 })
                 .unwrap_or_default()
         };
+        let descriptions = entry
+            .get("options")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| entry_description(v).map(|s| (k.clone(), s)))
+                    .collect()
+            })
+            .unwrap_or_default();
         out.insert(
             id.clone(),
             FieldTranslation {
                 label,
                 placeholder,
+                descriptions,
                 options: titles("options"),
                 types: titles("types"),
             },
@@ -561,7 +595,18 @@ fn trim_fields(root: &Value, translations: &HashMap<String, FieldTranslation>) -
                         let label = translation
                             .and_then(|t| t.options.get(value).cloned())
                             .unwrap_or_default();
-                        serde_json::json!({ "value": value, "label": label })
+                        let mut opt = serde_json::json!({ "value": value, "label": label });
+                        if let Some(d) = translation.and_then(|t| t.descriptions.get(value)) {
+                            opt["description"] = Value::String(d.clone());
+                        }
+                        if let Some(i) = entry
+                            .get("icons")
+                            .and_then(|m| m.get(value))
+                            .and_then(|v| v.as_str())
+                        {
+                            opt["icon"] = Value::String(i.to_string());
+                        }
+                        opt
                     })
                     .collect()
             })
