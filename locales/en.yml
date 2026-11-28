@@ -53,6 +53,8 @@ menu:
     # Opens a dialog for a PMTiles vector-tile archive (an address or a file).
     pmtiles_add: "Add PMTiles Vector Layer…"
     osm_carto: "OpenStreetMap Carto"
+    # Opens a file picker for a photo or scanned map to lay over the map.
+    photo_add: "Add Photo or Scanned Map…"
     loading: "(Loading imagery index…)"
     unavailable: "(Imagery index unavailable)"
     # A recommended imagery source in the menu.
@@ -83,6 +85,7 @@ menu:
     title: "Select a file to open"
     map_files: "OSM, GPX and GeoJSON files"
     osm_files: "OSM files"
+    image_files: "Photos and scans"
     all_files: "All files"
   export_dialog:
     title: "Export OSM data"
@@ -161,6 +164,20 @@ imagery_offset:
   no_layer: "There is no visible imagery layer to adjust"
   reset_done: "Imagery offset reset"
 
+# Laying a photo or scanned map over the map and stretching it to fit.
+photo_overlay:
+  title: "Place photo on the map"
+  hint: "Drag the corner handles until the photo lines up with the map. Hold Shift to keep its shape (scale and rotate only). Drag inside to move it. Esc cancels."
+  opacity: "Opacity"
+  less: "−"
+  more: "+"
+  reset: "Reset"
+  done: "Done"
+  open_title: "Select a photo or scanned map"
+  loading: "Loading %{name}…"
+  load_failed: "Could not open %{name}: %{error}"
+  added: "Added %{name}. Drag its corners to line it up with the map."
+
 # The card over the map while no OSM data is loaded.
 welcome:
   title: "Welcome to osm-gpui"
@@ -194,6 +211,7 @@ status:
     improve_idle: "Click a way to improve · Esc to exit"
     improve_way_chosen: "Click to move the nearest node · Cmd/Ctrl/Alt-click to add a node · Cmd/Ctrl+Alt-click to delete the nearest node · hold Shift to lock the node · Esc to pick another way"
     adjust_offset: "Drag to move the imagery · arrow keys nudge (Shift for 10 px) · Space-drag to pan · Enter to keep · Esc to cancel"
+    adjust_photo: "Drag a corner to stretch the photo (Shift keeps its shape) · drag inside to move it · arrow keys nudge · Space-drag to pan · Enter to keep · Esc to cancel"
   pending_edits:
     one: "%{count} unsaved edit"
     other: "%{count} unsaved edits"
@@ -303,6 +321,7 @@ panel:
     delete: "Delete"
     adjust_offset: "Adjust imagery offset"
     reset_offset: "Reset imagery offset"
+    adjust_photo: "Adjust photo placement"
     # Tag on an imagery layer that is drawn shifted; the values are metres.
     offset_tag: "offset E %{east}, N %{north}"
   selection:

@@ -1223,7 +1223,9 @@ impl MapViewer {
                         Kind::Osm => Some(script::LayerKind::Osm),
                         Kind::Tile => Some(script::LayerKind::Imagery),
                         // The script language has no word for these.
-                        Kind::Notes | Kind::VectorTile | Kind::Extension => None,
+                        Kind::Notes | Kind::VectorTile | Kind::Extension | Kind::ImageOverlay => {
+                            None
+                        }
                     }
                 };
                 let layers = self.layer_manager.layers();

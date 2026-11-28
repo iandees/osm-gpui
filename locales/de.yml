@@ -51,6 +51,7 @@ menu:
     esri_add: "Esri-Ebene hinzufügen …"
     pmtiles_add: "PMTiles-Vektorebene hinzufügen …"
     osm_carto: "OpenStreetMap Carto"
+    photo_add: "Foto oder Kartenscan hinzufügen…"
     loading: "(Lade Bildquellenverzeichnis …)"
     unavailable: "(Bildquellenverzeichnis nicht verfügbar)"
     # Eine empfohlene Bildquelle im Menü.
@@ -81,6 +82,7 @@ menu:
     title: "Datei zum Öffnen auswählen"
     map_files: "OSM-, GPX- und GeoJSON-Dateien"
     osm_files: "OSM-Dateien"
+    image_files: "Fotos und Scans"
     all_files: "Alle Dateien"
   export_dialog:
     title: "OSM-Daten exportieren"
@@ -156,6 +158,20 @@ imagery_offset:
   no_layer: "Es gibt keine sichtbare Bildebene zum Anpassen"
   reset_done: "Luftbildversatz zurückgesetzt"
 
+# Ein Foto oder einen Kartenscan über die Karte legen und passend strecken.
+photo_overlay:
+  title: "Foto auf der Karte platzieren"
+  hint: "Die Eckpunkte ziehen, bis das Foto zur Karte passt. Umschalt behält die Form (nur skalieren und drehen). Ziehen im Foto verschiebt es. Esc bricht ab."
+  opacity: "Deckkraft"
+  less: "−"
+  more: "+"
+  reset: "Zurücksetzen"
+  done: "Fertig"
+  open_title: "Foto oder Kartenscan auswählen"
+  loading: "%{name} wird geladen …"
+  load_failed: "%{name} konnte nicht geöffnet werden: %{error}"
+  added: "%{name} hinzugefügt. Die Ecken ziehen, bis es zur Karte passt."
+
 # Der Hinweiskasten über der Karte, solange keine OSM-Daten geladen sind.
 welcome:
   title: "Willkommen bei osm-gpui"
@@ -189,6 +205,7 @@ status:
     improve_idle: "Weg zum Verbessern anklicken · Esc zum Beenden"
     improve_way_chosen: "Klicken, um den nächsten Knoten zu verschieben · Cmd/Strg/Alt-Klick fügt einen Knoten hinzu · Cmd/Strg+Alt-Klick löscht den nächsten Knoten · Umschalt hält den Knoten fest · Esc, um einen anderen Weg zu wählen"
     adjust_offset: "Ziehen verschiebt das Luftbild · Pfeiltasten schieben (Umschalt: 10 px) · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
+    adjust_photo: "Ecke ziehen streckt das Foto (Umschalt behält die Form) · Ziehen im Foto verschiebt es · Pfeiltasten schieben · Leertaste-Ziehen verschiebt die Karte · Eingabe übernimmt · Esc bricht ab"
   pending_edits:
     one: "%{count} ungesicherte Änderung"
     other: "%{count} ungesicherte Änderungen"
@@ -291,6 +308,7 @@ panel:
     delete: "Löschen"
     adjust_offset: "Luftbildversatz anpassen"
     reset_offset: "Luftbildversatz zurücksetzen"
+    adjust_photo: "Fotoposition anpassen"
     # Markierung an einer Bildebene, die verschoben gezeichnet wird; Werte in Metern.
     offset_tag: "Versatz O %{east}, N %{north}"
   selection:

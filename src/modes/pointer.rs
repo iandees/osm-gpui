@@ -114,6 +114,11 @@ impl MapViewer {
             self.pointer.interaction = Interaction::Idle;
             return;
         }
+        // Placing a photo: the press grabs a corner or the photo.
+        if self.photo_adjust_mouse_down(position) {
+            self.pointer.interaction = Interaction::Idle;
+            return;
+        }
         self.mode_press(position, modifiers);
     }
 }

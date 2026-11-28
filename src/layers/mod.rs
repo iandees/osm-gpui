@@ -11,6 +11,7 @@ use reference_layer::ReferenceLayer;
 pub mod area_labels;
 pub mod diff;
 pub mod extension_layer;
+pub mod image_overlay;
 pub mod labels;
 pub mod line_labels;
 pub mod merge;
@@ -120,6 +121,16 @@ pub trait MapLayer: Send + Sync {
         None
     }
 
+    /// This layer as a photo / scanned-map overlay, if it is one.
+    fn as_image_overlay(&self) -> Option<&image_overlay::ImageOverlayLayer> {
+        None
+    }
+
+    /// Mutable counterpart to `as_image_overlay`.
+    fn as_image_overlay_mut(&mut self) -> Option<&mut image_overlay::ImageOverlayLayer> {
+        None
+    }
+
     /// This layer as a reference (GPX/GeoJSON) layer, if it is one.
     fn as_reference(&self) -> Option<&ReferenceLayer> {
         None
@@ -155,13 +166,15 @@ pub enum LayerKind {
     VectorTile,
     /// An extension's markers.
     Extension,
+    /// A photo or scanned map stretched over the map by the user.
+    ImageOverlay,
 }
 
 impl LayerKind {
     /// Imagery: drawn as image elements (`MapLayer::render_elements`), not on
     /// a canvas, and placed at the bottom of the stack when added.
     pub fn is_imagery(self) -> bool {
-        self == LayerKind::Tile
+        matches!(self, LayerKind::Tile | LayerKind::ImageOverlay)
     }
 
     /// Pins drawn over the map (notes, extension markers), kept above the
@@ -766,8 +779,9 @@ impl LayerManager {
     /// Where `add_layer` puts a new layer of `kind`, as an index into
     /// `layers()` (bottom first):
     ///
-    /// - Imagery: just above the topmost imagery layer, or at the bottom when
-    ///   there is none, so it goes under everything that is not imagery.
+    /// - Tile imagery: just above the topmost tile layer, or at the bottom
+    ///   when there is none, so it goes under everything that is not imagery.
+    /// - Photo overlays: just above the topmost imagery layer of any kind.
     /// - Reference layers (GPX, GeoJSON, GPS traces) and vector-tile
     ///   overlays (PMTiles): above the topmost imagery and below the first
     ///   OSM data layer above it, so the data being edited stays on top of
@@ -783,7 +797,14 @@ impl LayerManager {
             .rposition(|l| l.kind().is_imagery())
             .map_or(0, |i| i + 1);
         match kind {
-            LayerKind::Tile => above_imagery,
+            // New basemaps go above the other basemaps but under any photo
+            // overlay, which is traced against the map below it.
+            LayerKind::Tile => self
+                .layers
+                .iter()
+                .rposition(|l| l.kind() == LayerKind::Tile)
+                .map_or(0, |i| i + 1),
+            LayerKind::ImageOverlay => above_imagery,
             LayerKind::Reference | LayerKind::VectorTile => self.layers[above_imagery..]
                 .iter()
                 .position(|l| l.kind() == LayerKind::Osm)
@@ -1743,7 +1764,35 @@ mod tests {
                 "ext".into(),
                 MarkerStore::default(),
             )),
+            LayerKind::ImageOverlay => Box::new(image_overlay::ImageOverlayLayer::new(
+                id,
+                "photo".into(),
+                image::RgbaImage::new(2, 2),
+                crate::georeference::initial_corners((2, 2), Default::default(), 10.0),
+            )),
         }
+    }
+
+    #[gpui::test]
+    fn photo_overlays_sit_above_all_imagery_and_below_the_data(cx: &mut gpui::TestAppContext) {
+        let mut m = LayerManager::new();
+        m.add_layer(layer_of(cx, LayerKind::Tile, 1));
+        m.add_layer(layer_of(cx, LayerKind::Osm, 2));
+        m.add_layer(layer_of(cx, LayerKind::ImageOverlay, 3));
+        assert_eq!(stack(&m), [1, 3, 2]);
+        // A basemap added later still goes under the photo.
+        m.add_layer(layer_of(cx, LayerKind::Tile, 4));
+        assert_eq!(stack(&m), [1, 4, 3, 2]);
+        // The photo is drawn as an element step, like imagery.
+        assert_eq!(
+            m.draw_plan(true),
+            [
+                DrawStep::Elements(LayerId(1)),
+                DrawStep::Elements(LayerId(4)),
+                DrawStep::Elements(LayerId(3)),
+                run(true, &[2]),
+            ]
+        );
     }
 
     /// The ids of `m`'s layers, bottom first.
