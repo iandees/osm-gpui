@@ -39,6 +39,11 @@ use crate::tags::Tags;
 /// Pixel distance within which a pointer snaps onto a way segment.
 pub const WAY_SNAP_TOLERANCE_PX: f32 = 6.0;
 
+/// Pixel distance within which a pointer already snapping onto a way segment
+/// is pulled onto one of that segment's end vertices instead, so vertices
+/// along a way are "stickier" than the stretches between them.
+pub const VERTEX_PULL_PX: f32 = 14.0;
+
 /// Whether the held modifiers turn snapping off for this click / drag.
 pub fn snapping_disabled(alt: bool, control: bool) -> bool {
     alt || control

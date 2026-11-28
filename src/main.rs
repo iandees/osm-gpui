@@ -3510,6 +3510,27 @@ impl MapViewer {
             osm_gpui::snap::WAY_SNAP_TOLERANCE_PX,
             |w| Some(w) != avoid_way && snap_way_ok(editable, layer_id, sources, node, w),
         )?;
+        // Pull toward the nearer end vertex of the snapped segment when the
+        // pointer is close to it, so vertices out-stick the open stretches.
+        if with_nodes {
+            let pull = osm_gpui::snap::VERTEX_PULL_PX;
+            let nearest_vertex = [a, b]
+                .into_iter()
+                .filter_map(|n| {
+                    let p = self.viewport.geo_to_screen(editable.node_lat_lon(n)?);
+                    let (dx, dy) = (f32::from(p.x - screen_pt.x), f32::from(p.y - screen_pt.y));
+                    let d = dx.hypot(dy);
+                    (d <= pull
+                        && snap_node_ok(editable, layer_id, sources, node, n)
+                        && avoid_way.is_none_or(|w| !editable.ways_using_node(n).contains(&w)))
+                    .then_some((d, n))
+                })
+                .min_by(|x, y| x.0.total_cmp(&y.0));
+            if let Some((_, id)) = nearest_vertex {
+                let at = editable.node_lat_lon(id)?;
+                return Some(SnapTarget::Node { id, at });
+            }
+        }
         // `index` counts only the way's nodes that are loaded, so with some
         // missing (a partial download) it is not a position in the node
         // list. Find the segment by its two end nodes instead; if they are
