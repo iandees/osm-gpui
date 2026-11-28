@@ -433,7 +433,6 @@ fn second_click_on_an_osm_node_under_a_reference_vertex_connects_to_the_osm_node
         // no node.
         assert_eq!(second.nodes, first.nodes);
         assert_eq!(second.ways, first.ways + 1);
-        assert!(view.add_progress().is_none());
         let way = view.selected[0].id;
         let nodes = view
             .layer_manager
@@ -444,6 +443,10 @@ fn second_click_on_an_osm_node_under_a_reference_vertex_connects_to_the_osm_node
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[1], NodeId(3));
         assert_eq!(second.steps, first.steps + 1);
+        // Drawing continues from the node just connected to.
+        assert!(view
+            .add_progress()
+            .is_some_and(|p| p.last_node_id == NodeId(3)));
         // Undo the connect: the OSM node stays.
         view.on_undo(&Undo, w, cx);
         assert_eq!(state(view, layer).nodes, first.nodes);
