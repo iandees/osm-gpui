@@ -139,8 +139,8 @@ impl MapViewer {
             }
         }
 
-        // Clicking an existing node finishes the in-progress way by
-        // connecting to it. Skipped when a snapping-off modifier is held.
+        // Clicking an existing node connects the in-progress way to it.
+        // Skipped when a snapping-off modifier is held.
         if !ctrl_held && self.add_progress().is_some() {
             let per_layer = self.layer_manager.hit_test_all(&self.viewport, screen_pt);
             let sources = self.add_snap_sources(layer_id);
@@ -172,8 +172,25 @@ impl MapViewer {
                         })
                 });
             if let Some(node_id) = hit_node {
+                let at_start = self.add_progress().is_some_and(|p| p.at_start);
                 let way_id = self.add_extend_or_start_way(layer_id, node_id, Vec::new(), None);
-                self.set_add_progress(None);
+                // Connecting to an existing node keeps the way going; only
+                // closing it back onto its own first node ends it.
+                let closed = self
+                    .layer_manager
+                    .find_layer(layer_id)
+                    .and_then(|l| l.as_editable())
+                    .and_then(|e| e.way_node_ids(way_id))
+                    .is_some_and(|n| n.len() > 2 && n.first() == n.last());
+                if closed {
+                    self.set_add_progress(None);
+                } else {
+                    self.set_add_progress(Some(AddProgress {
+                        way_id: Some(way_id),
+                        last_node_id: node_id,
+                        at_start,
+                    }));
+                }
                 self.selected = vec![osm_gpui::selection::FeatureRef {
                     layer_id,
                     kind: osm_gpui::selection::FeatureKind::Way,
