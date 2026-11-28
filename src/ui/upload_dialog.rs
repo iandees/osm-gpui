@@ -936,6 +936,7 @@ impl UploadDialog {
             for (index, text) in self.recent_comments.iter().enumerate() {
                 list = list.child(
                     div()
+                        .flex_none()
                         .px_2()
                         .py_1()
                         .overflow_hidden()
