@@ -271,3 +271,21 @@ fn add_mode_press_on_a_vertex_does_not_grab_it(cx: &mut TestAppContext) {
         })
         .unwrap();
 }
+
+#[gpui::test]
+fn hovering_an_unselected_way_offers_midpoint_handles(cx: &mut TestAppContext) {
+    let window = select_setup(cx);
+    window
+        .update(cx, |view, _w, cx| {
+            assert!(view.selected.is_empty());
+            pointer_to(view, point(px(400.0), px(500.0)), false, cx);
+            assert!(view.midpoint_handles().is_empty());
+            pointer_to(view, point(px(400.0), px(300.0)), false, cx);
+            assert_eq!(preview_way_of(view), Some(10));
+            assert!(!view.midpoint_handles().is_empty());
+            assert!(view.midpoint_handles().iter().all(|h| h.way.get() == 10));
+            pointer_to(view, point(px(400.0), px(500.0)), false, cx);
+            assert!(view.midpoint_handles().is_empty());
+        })
+        .unwrap();
+}
