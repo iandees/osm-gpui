@@ -31,6 +31,9 @@ struct RawField {
     placeholder: Option<String>,
     #[serde(default)]
     options: HashMap<String, String>,
+    /// Short explanations of option values, where upstream has them.
+    #[serde(default)]
+    option_descriptions: HashMap<String, String>,
     /// Labels of the sub-keys of a multi-key field (`access`: "Foot", ...).
     #[serde(default)]
     types: HashMap<String, String>,
@@ -49,6 +52,7 @@ impl RawField {
             self.placeholder = None;
         }
         self.options.retain(|_, v| !is_ref(v));
+        self.option_descriptions.retain(|_, v| !is_ref(v));
         self.types.retain(|_, v| !is_ref(v));
     }
 }
@@ -125,6 +129,14 @@ impl PresetTranslations {
             .get(field_id)?
             .types
             .get(key)
+            .map(String::as_str)
+    }
+
+    pub fn option_description(&self, field_id: &str, value: &str) -> Option<&str> {
+        self.fields
+            .get(field_id)?
+            .option_descriptions
+            .get(value)
             .map(String::as_str)
     }
 
@@ -210,6 +222,15 @@ mod tests {
         assert_eq!(resolve_locale("tlh"), "en");
         assert!(translations_for("tlh").is_none());
         assert!(translations_for("en").is_none());
+    }
+
+    #[test]
+    fn german_option_descriptions() {
+        let de = translations_for("de").unwrap();
+        assert!(de
+            .option_description("kerb", "flush")
+            .is_some_and(|d| d.contains("bündig")));
+        assert_eq!(de.option_description("kerb", "no-such-value"), None);
     }
 
     #[test]

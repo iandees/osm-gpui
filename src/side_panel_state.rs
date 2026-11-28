@@ -3,6 +3,13 @@
 
 use crate::{tag_suggest_ui, InlineTagEdit, MemberRef, PendingTagEditOpen, RoleEdit};
 
+/// The state of one taginfo description lookup.
+pub(crate) enum OptionDescriptions {
+    Loading,
+    Ready(std::collections::HashMap<String, String>),
+    Failed,
+}
+
 /// The Fields section.
 #[derive(Default)]
 pub(crate) struct FieldsState {
@@ -23,6 +30,10 @@ pub(crate) struct FieldsState {
     /// Which field's combo/multiCombo option list is currently expanded,
     /// if any (`None` = all collapsed). Only one at a time.
     pub(crate) fields_open_combo: Option<String>,
+    /// Wiki descriptions of a key's values from taginfo, by (key, language),
+    /// fetched the first time a combo for that key is opened and kept for the
+    /// session (a failed lookup is not retried).
+    pub(crate) option_descriptions: std::collections::HashMap<(String, String), OptionDescriptions>,
     /// What the user has typed into the open combo to filter its options.
     pub(crate) fields_combo_query: String,
     /// Focus target that receives the typing while a combo is open.

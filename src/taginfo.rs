@@ -27,7 +27,7 @@
 
 use crate::http::{HttpClient, HttpError, HttpRequest};
 use crate::tags::Tags;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 pub const API_BASE: &str = "https://taginfo.openstreetmap.org/api/4";
@@ -575,6 +575,71 @@ impl TaginfoState {
     }
 }
 
+/// The most values of one key whose descriptions are asked for at once
+/// (taginfo's page size; the common values come first, by usage).
+const DESCRIPTION_VALUES: u32 = 200;
+/// Longest description kept.
+const MAX_DESCRIPTION_CHARS: usize = 400;
+
+/// Whether the wiki descriptions of `key`'s values may be asked for. Only a
+/// schema field's own key is ever sent, never anything typed, and keys that
+/// hold free text or personal data are refused as a second guard.
+pub fn may_describe_values(key: &str) -> bool {
+    let key = key.trim();
+    !key.is_empty()
+        && key.chars().count() <= MAX_QUERY_CHARS
+        && !key.ends_with(':')
+        && !key.chars().any(char::is_control)
+        && !is_free_text_key(key)
+}
+
+/// `GET /api/4/key/values` for `key` with the wiki `description` of each
+/// value in language `lang` (taginfo falls back to English).
+pub fn value_descriptions_url(key: &str, lang: &str) -> String {
+    use urlencoding::encode;
+    format!(
+        "{API_BASE}/key/values?key={}&lang={}&sortname=count_all&sortorder=desc&rp={DESCRIPTION_VALUES}&page=1",
+        encode(key),
+        encode(lang)
+    )
+}
+
+/// The `value -> description` pairs of a `key/values` answer; values with no
+/// (or an odd) description are left out. `None` if it is not the expected JSON.
+pub fn parse_value_descriptions(body: &str) -> Option<HashMap<String, String>> {
+    let json: serde_json::Value = serde_json::from_str(body).ok()?;
+    let data = json.get("data")?.as_array()?;
+    Some(
+        data.iter()
+            .filter_map(|entry| {
+                let value = entry.get("value")?.as_str()?;
+                let text = entry.get("description")?.as_str()?.trim();
+                let sane = !text.is_empty()
+                    && text.chars().count() <= MAX_DESCRIPTION_CHARS
+                    && !text.chars().any(char::is_control);
+                sane.then(|| (value.to_string(), text.to_string()))
+            })
+            .collect(),
+    )
+}
+
+/// Ask taginfo for the descriptions of the values of `key` (one attempt).
+pub fn fetch_value_descriptions(
+    client: &dyn HttpClient,
+    key: &str,
+    lang: &str,
+) -> Result<HashMap<String, String>, FetchError> {
+    let mut req =
+        HttpRequest::get(value_descriptions_url(key, lang)).header("Accept", "application/json");
+    req.timeout = REQUEST_TIMEOUT;
+    let body = client
+        .request(req)
+        .map_err(FetchError::Http)?
+        .into_string()
+        .map_err(FetchError::Http)?;
+    parse_value_descriptions(&body).ok_or(FetchError::BadResponse)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +667,41 @@ mod tests {
         assert!(fetch(&client, &keys("hig")).is_err());
         let other = client.request(HttpRequest::get("https://example.test/"));
         assert!(other.is_err());
+    }
+
+    #[test]
+    fn value_descriptions_are_parsed_and_junk_is_dropped() {
+        let body = r#"{"data": [
+            {"value": "house", "count": 5, "description": "A home for one family."},
+            {"value": "yes", "count": 9},
+            {"value": "shed", "count": 3, "description": "  "},
+            {"value": "hut", "count": 2, "description": "bad\u0007text"}
+        ]}"#;
+        let got = parse_value_descriptions(body).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["house"], "A home for one family.");
+        assert!(parse_value_descriptions("nope").is_none());
+    }
+
+    #[test]
+    fn value_descriptions_are_fetched_per_key_in_the_given_language() {
+        let client = FakeClient::new(vec![ok(
+            200,
+            r#"{"data": [{"value": "house", "description": "Haus"}]}"#,
+        )]);
+        let got = fetch_value_descriptions(&client, "building", "de").unwrap();
+        assert_eq!(got["house"], "Haus");
+        let url = client.requests.lock().unwrap()[0].url.clone();
+        assert!(url.contains("key=building&lang=de"), "{url}");
+    }
+
+    #[test]
+    fn only_plain_schema_keys_may_be_described() {
+        assert!(may_describe_values("building"));
+        assert!(!may_describe_values(""));
+        assert!(!may_describe_values("name"));
+        assert!(!may_describe_values("addr:street"));
+        assert!(!may_describe_values("cycleway:"));
     }
 
     #[test]

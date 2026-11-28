@@ -97,6 +97,12 @@ pub struct FieldOption {
     pub value: String,
     #[serde(default)]
     pub label: String,
+    /// A short English explanation of the value, where iD has one.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The preset-icon name (`temaki-speed_bump`) drawn beside the value.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 /// `prerequisiteTag`: the field is only available when this holds.
@@ -384,6 +390,21 @@ impl Field {
             })
             .unwrap_or(&option.label)
     }
+
+    /// The description of one of this field's options, translated where
+    /// possible, else iD's English one.
+    pub fn display_option_description<'a>(
+        &'a self,
+        option: &'a FieldOption,
+        translations: Option<&'a PresetTranslations>,
+    ) -> Option<&'a str> {
+        translations
+            .and_then(|t| {
+                t.option_description(&self.id, &option.value)
+                    .or_else(|| t.option_description(&self.strings_id, &option.value))
+            })
+            .or(option.description.as_deref())
+    }
 }
 
 /// A parsed, in-memory collection of vendored `Field`s, keyed by id, with all
@@ -561,9 +582,18 @@ fn resolve_string_references(fields: &mut HashMap<String, Field>, order: &[Strin
                     .find(|l| usable(l))
                     .map(str::to_string)
                     .unwrap_or_else(|| opt.value.replace('_', " "));
+                let first = |pick: fn(&FieldOption) -> Option<&String>| {
+                    chain
+                        .iter()
+                        .filter_map(|f| f.options.iter().find(|o| o.value == opt.value))
+                        .find_map(pick)
+                        .cloned()
+                };
                 FieldOption {
                     value: opt.value.clone(),
                     label,
+                    description: first(|o| o.description.as_ref()),
+                    icon: first(|o| o.icon.as_ref()),
                 }
             })
             .collect();
@@ -675,6 +705,7 @@ mod tests {
                 vec![FieldOption {
                     value: "v".into(),
                     label: String::new(),
+                    ..FieldOption::default()
                 }]
             } else {
                 Vec::new()
@@ -1359,6 +1390,20 @@ mod tests {
                 "type/multipolygon"
             ],
             "presets with no fields (out of {total}): the schema's own, expected"
+        );
+    }
+
+    #[test]
+    fn vendored_options_carry_icons_and_descriptions() {
+        let fields = FieldIndex::from_json(include_str!("../assets/presets/fields.json")).unwrap();
+        let kerb = fields.get("kerb").unwrap();
+        let flush = kerb.options.iter().find(|o| o.value == "flush").unwrap();
+        assert!(flush.description.as_deref().is_some_and(|d| !d.is_empty()));
+        let raised = kerb.options.iter().find(|o| o.value == "raised").unwrap();
+        let icon = raised.icon.as_deref().expect("raised kerb has an icon");
+        assert!(
+            crate::presets::icon_path(icon).is_some(),
+            "{icon} must be embedded"
         );
     }
 
